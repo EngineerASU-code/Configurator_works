@@ -16,9 +16,102 @@ public partial class ProjectModeView
     private readonly Dictionary<string, IReadOnlyList<LookupOption>> _offlineLookupCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (Core.Projects.ProjectTableSchema Schema, IReadOnlyList<Core.Projects.ProjectRecord> Records)> _offlineLookupTableCache = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyList<Core.Projects.ProjectTableSchema> _offlineTablesCache;
+
+    private void RenderConfigurationObjectDetails(DataRow row)
+    {
+        ObjectEditor.Children.Clear();
+        ObjectEditor.RowDefinitions.Clear();
+        ObjectEditor.ColumnDefinitions.Clear();
+        ObjectEditor.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        if (row == null) return;
+
+        var content = new Grid();
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        int index = 0;
+        foreach (DataColumn column in row.Table.Columns)
+        {
+            int rowIndex = index / 2;
+            int columnIndex = index % 2;
+            while (content.RowDefinitions.Count <= rowIndex)
+                content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+            var field = new Grid { Margin = new Thickness(columnIndex == 0 ? 0 : 7, 0, columnIndex == 0 ? 7 : 0, 7) };
+            field.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(0.75, GridUnitType.Star) });
+            field.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.25, GridUnitType.Star) });
+            var label = new TextBlock
+            {
+                Text = column.ColumnName,
+                FontSize = 10,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 7, 0),
+                ToolTip = $"{column.ColumnName} · тип: {column.DataType.Name}"
+            };
+            label.SetResourceReference(TextBlock.ForegroundProperty, "BrushTextSecondary");
+            field.Children.Add(label);
+
+            var value = new TextBox
+            {
+                Text = row.IsNull(column) ? "—" : Convert.ToString(row[column]) ?? "—",
+                Height = 30,
+                Padding = new Thickness(7, 3, 7, 3),
+                IsReadOnly = true,
+                IsTabStop = false,
+                ToolTip = $"{column.ColumnName} · тип: {column.DataType.Name}"
+            };
+            value.SetResourceReference(Control.BackgroundProperty, "BrushPanel");
+            value.SetResourceReference(Control.ForegroundProperty, "BrushText");
+            value.SetResourceReference(Control.BorderBrushProperty, "BrushBorder");
+            Grid.SetColumn(value, 1);
+            field.Children.Add(value);
+            Grid.SetColumn(field, columnIndex);
+            Grid.SetRow(field, rowIndex);
+            content.Children.Add(field);
+            index++;
+        }
+
+        var section = new StackPanel();
+        var heading = new TextBlock
+        {
+            Text = $"Основные данные · {index} полей",
+            FontSize = 11,
+            FontWeight = FontWeights.SemiBold,
+            Margin = new Thickness(0, 0, 0, 9)
+        };
+        heading.SetResourceReference(TextBlock.ForegroundProperty, "BrushText");
+        section.Children.Add(heading);
+        section.Children.Add(content);
+        var card = new Border
+        {
+            Margin = new Thickness(0, 0, 0, 9),
+            Padding = new Thickness(12),
+            CornerRadius = new CornerRadius(8),
+            BorderThickness = new Thickness(1),
+            Child = section
+        };
+        card.SetResourceReference(Border.BackgroundProperty, "BrushBase");
+        card.SetResourceReference(Border.BorderBrushProperty, "BrushBorder");
+        ObjectEditor.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        Grid.SetRow(card, 0);
+        ObjectEditor.Children.Add(card);
+    }
+
     private async void RenderLookupObjectDetailsAsync()
     {
-        if (_selectedRow == null || _selectedClass == null) return;
+        int generation = ++_objectDetailsGeneration;
+        var selectedRow = _selectedRow;
+        var selectedClass = _selectedClass;
+        if (selectedRow == null) return;
+        if (_configurationKind is ConfigurationKind.Plc or ConfigurationKind.Area)
+        {
+            RenderConfigurationObjectDetails(selectedRow);
+            return;
+        }
+        if (selectedClass == null) return;
+        bool IsCurrentRender() => generation == _objectDetailsGeneration
+            && ReferenceEquals(_selectedRow, selectedRow)
+            && ReferenceEquals(_selectedClass, selectedClass)
+            && _configurationKind == ConfigurationKind.Class;
         bool offline = _offlineProject != null;
         if (!offline && (_connection == null || string.IsNullOrWhiteSpace(_selectedDatabase))) return;
 
@@ -27,7 +120,7 @@ public partial class ProjectModeView
         ObjectEditor.Children.Clear();
         ObjectEditor.RowDefinitions.Clear();
         ObjectEditor.ColumnDefinitions.Clear();
-        ObjectEditor.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 500 });
+        ObjectEditor.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
         TxtObjectName.Text = PickName(_selectedRow, _selectedClass);
         // PLC / Area / Record are displayed once in TxtObjectContext below.
@@ -93,8 +186,8 @@ public partial class ProjectModeView
             card.BorderThickness = new Thickness(1);
 
             var content = new Grid();
-            content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 360 });
-            content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 360 });
+            content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
             int index = 0;
@@ -106,8 +199,8 @@ public partial class ProjectModeView
 
                 var field = item.Field;
                 var rowPanel = new Grid { Margin = new Thickness(col == 0 ? 0 : 7, 0, col == 0 ? 7 : 0, 7) };
-                rowPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(0.75, GridUnitType.Star), MinWidth = 110 });
-                rowPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.25, GridUnitType.Star), MinWidth = 180 });
+                rowPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(0.75, GridUnitType.Star) });
+                rowPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.25, GridUnitType.Star) });
 
                 var label = new TextBlock
                 {
@@ -146,6 +239,7 @@ public partial class ProjectModeView
                     options = Array.Empty<LookupOption>();
                     WriteTypeLookupDiagnostic($"EDITOR_OPTIONS_ERROR class={_selectedClass?.Name} field={field.Name} offline={offline} error={ex}");
                 }
+                if (!IsCurrentRender()) return;
                 if (field.Name.Equals("Type", StringComparison.OrdinalIgnoreCase))
                 {
                     string currentValueForLog = GetText(field.Name);
@@ -238,21 +332,24 @@ public partial class ProjectModeView
                 index++;
             }
 
-            var expander = new Expander
+            var section = new StackPanel();
+            var heading = new TextBlock
             {
-                Header = $"{groupEntry.Key}  ·  {group.Count} полей",
-                Content = content,
-                IsExpanded = true,
-                Padding = new Thickness(2),
-                HorizontalAlignment = HorizontalAlignment.Stretch
+                Text = $"{groupEntry.Key} · {group.Count} полей",
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Margin = new Thickness(0, 0, 0, 9)
             };
-            expander.SetResourceReference(Control.ForegroundProperty, "BrushText");
-            card.Child = expander;
+            heading.SetResourceReference(TextBlock.ForegroundProperty, "BrushText");
+            section.Children.Add(heading);
+            section.Children.Add(content);
+            card.Child = section;
             Grid.SetColumn(card, 0);
             Grid.SetRow(card, groupRow++);
             ObjectEditor.Children.Add(card);
         }
 
+        if (!IsCurrentRender()) return;
         TxtStatus.Text = $"{(offline ? "Offline · " : string.Empty)}{_selectedClass.Name} · показаны все {actualFields.Count} полей · {(offline ? "значения взяты из локального снимка" : "связанные поля — выпадающие списки")}";
     }
 
@@ -603,6 +700,7 @@ public partial class ProjectModeView
                     if (_objects.Columns.Contains(pair.Key)) _selectedRow[pair.Key] = pair.Value ?? DBNull.Value;
                 await RenderLookupObjectDetailsAsyncTask();
                 TxtStatus.Text = "Объект сохранён в локальном проекте";
+                ShowActionFeedback($"Изменения объекта «{PickName(_selectedRow, _selectedClass)}» сохранены");
                 return;
             }
 
@@ -629,6 +727,7 @@ public partial class ProjectModeView
                 if (_objects.Columns.Contains(pair.Key)) _selectedRow[pair.Key] = pair.Value ?? DBNull.Value;
             await RenderLookupObjectDetailsAsyncTask();
             TxtStatus.Text = "Объект сохранён · связанные поля проверены по справочникам";
+            ShowActionFeedback($"Изменения объекта «{PickName(_selectedRow, _selectedClass)}» сохранены");
         }
         catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Сохранение объекта", MessageBoxButton.OK, MessageBoxImage.Error); }
     }

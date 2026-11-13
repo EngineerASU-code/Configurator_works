@@ -19,8 +19,6 @@ public partial class ProjectModeView
             new RoutedEventHandler(ProjectModeView_LoadedDynamic));
         EventManager.RegisterClassHandler(typeof(ProjectModeView), ButtonBase.ClickEvent,
             new RoutedEventHandler(ProjectModeView_ButtonClickedDynamic), true);
-        EventManager.RegisterClassHandler(typeof(ProjectModeView), Selector.SelectionChangedEvent,
-            new SelectionChangedEventHandler(ProjectModeView_SelectionChangedDynamic), true);
         EventManager.RegisterClassHandler(typeof(ProjectModeView), UIElement.PreviewMouseLeftButtonDownEvent,
             new System.Windows.Input.MouseButtonEventHandler(ProjectModeView_PreviewMouseDownDynamic), true);
         return true;
@@ -36,13 +34,6 @@ public partial class ProjectModeView
         var content = button.Content?.ToString() ?? "";
         if (content == "Выбрать проект" || content == "↻")
             ScheduleDynamicArchitecture(view);
-    }
-
-    private static void ProjectModeView_SelectionChangedDynamic(object sender, SelectionChangedEventArgs e)
-    {
-        var view = (ProjectModeView)sender;
-        if (e.OriginalSource == view.ObjectList)
-            view.Dispatcher.BeginInvoke(new Action(() => view.RenderLookupObjectDetailsAsync()), DispatcherPriority.ContextIdle);
     }
 
     private static void ProjectModeView_PreviewMouseDownDynamic(object sender, System.Windows.Input.MouseButtonEventArgs e)

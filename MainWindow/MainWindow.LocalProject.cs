@@ -824,7 +824,10 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
         {
             if (!UserAuthorizationService.Require(Permission.Mode1Add)) return;
             if (_offlineCurrentDataTable is null || _offlineCurrentTableName is null || _openedLocalProject is null) return;
-            var window = new AddRowWindow(_offlineCurrentTableName, _offlineCurrentColumns, 0, "", null, null, null, null, new Dictionary<string, List<LookupOption>>()) { Owner = this };
+            var classNumber = ResolveSystemClassNumber(_offlineCurrentTableName);
+            var classNumberColumn = classNumber.HasValue ? ResolveClassNumberColumn(_offlineCurrentColumns) : null;
+            var window = new AddRowWindow(_offlineCurrentTableName, _offlineCurrentColumns, 0, "", null, null,
+                classNumber, classNumberColumn, new Dictionary<string, List<LookupOption>>()) { Owner = this };
             window.ShowDialog();
             if (!window.Confirmed || window.Values is null || window.Values.Count == 0) return;
             var row = _offlineCurrentDataTable.NewRow();

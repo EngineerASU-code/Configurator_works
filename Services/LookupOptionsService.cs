@@ -25,6 +25,7 @@ public sealed class LookupOptionsService
         string preferredKey = string.IsNullOrWhiteSpace(explicitLookupKeyField) ? null : explicitLookupKeyField.Trim();
         string displayHint = string.IsNullOrWhiteSpace(explicitLookupDisplayField) ? null : explicitLookupDisplayField.Trim();
         bool combineAreaNames = false;
+        bool useAreaNameLookup = false;
         LookupGenerationRule configuredRule = null;
 
         // Project rules apply to any source field (not only "Type"). The most specific rule wins and a
@@ -49,11 +50,10 @@ public sealed class LookupOptionsService
         else switch (fieldName.Trim().ToUpperInvariant())
         {
             case "AREA":
-            case "AREANAME":
                 lookupTable = "dbo.Areas";
-                preferredKey = "Record";
+                preferredKey = "AreaName";
                 displayHint = "AreaNameL2";
-                combineAreaNames = false;
+                useAreaNameLookup = true;
                 break;
             case "UNIT":
                 lookupTable = "dbo.Units";
@@ -183,6 +183,8 @@ public sealed class LookupOptionsService
             _columnCache[lookupTable] = columns;
         }
         if (columns.Count == 0) return Array.Empty<LookupOption>();
+        if (useAreaNameLookup && !columns.Any(c => c.Name.Equals("AreaName", StringComparison.OrdinalIgnoreCase)))
+            return Array.Empty<LookupOption>();
 
         string key = columns.FirstOrDefault(c => !string.IsNullOrWhiteSpace(preferredKey) && c.Name.Equals(preferredKey, StringComparison.OrdinalIgnoreCase))?.Name
                      ?? (fieldName.Equals("PLCClassNumber", StringComparison.OrdinalIgnoreCase) ? columns.FirstOrDefault(c => c.Name.Equals("PLCClasssNumber", StringComparison.OrdinalIgnoreCase))?.Name : null)
@@ -225,15 +227,14 @@ public sealed class LookupOptionsService
                 string nameColumn = columns.FirstOrDefault(c => c.Name.Equals("Name", StringComparison.OrdinalIgnoreCase))?.Name
                     ?? columns.FirstOrDefault(c => c.Name.Equals("NameL1", StringComparison.OrdinalIgnoreCase))?.Name
                     ?? columns.FirstOrDefault(c => c.Name.Equals("Title", StringComparison.OrdinalIgnoreCase))?.Name;
-                if (fieldName.Equals("Area", StringComparison.OrdinalIgnoreCase) || fieldName.Equals("AreaName", StringComparison.OrdinalIgnoreCase))
+                if (useAreaNameLookup)
                 {
-                    string areaLabelColumn = columns.FirstOrDefault(c => c.Name.Equals("AreaNameL2", StringComparison.OrdinalIgnoreCase))?.Name;
-                    if (!string.IsNullOrWhiteSpace(recordColumn) && !string.IsNullOrWhiteSpace(areaLabelColumn))
-                    {
-                        string areaRecord = Convert.ToString(row[recordColumn]) ?? keyText;
-                        string areaLabel = Convert.ToString(row[areaLabelColumn]) ?? string.Empty;
-                        if (!string.IsNullOrWhiteSpace(areaLabel)) display = AreaDisplayFormatter.Format(areaRecord, areaLabel);
-                    }
+                    string areaLabelColumn = columns.FirstOrDefault(c => c.Name.Equals("AreaNameL2", StringComparison.OrdinalIgnoreCase))?.Name
+                        ?? columns.FirstOrDefault(c => c.Name.Equals("AreaName", StringComparison.OrdinalIgnoreCase))?.Name;
+                    string areaLabel = string.IsNullOrWhiteSpace(areaLabelColumn) || row[areaLabelColumn] == DBNull.Value
+                        ? string.Empty
+                        : Convert.ToString(row[areaLabelColumn]) ?? string.Empty;
+                    display = string.IsNullOrWhiteSpace(areaLabel) ? keyText : areaLabel;
                 }
                 else if (!combineAreaNames && !string.IsNullOrWhiteSpace(recordColumn) && !string.IsNullOrWhiteSpace(nameColumn)
                     && row.Table.Columns.Contains(recordColumn) && row.Table.Columns.Contains(nameColumn))

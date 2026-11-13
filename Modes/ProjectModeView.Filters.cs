@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Controls;
+using System.Windows.Shapes;
 
 namespace Configurator;
 
@@ -119,6 +120,29 @@ public partial class ProjectModeView
                 && (areaKey == "*" || string.Equals(areaKey, area, StringComparison.OrdinalIgnoreCase));
         }).ToList();
         ObjectList.ItemsSource = result;
+        if (_configurationKind == ConfigurationKind.Class && TxtObjectCount != null)
+            TxtObjectCount.Text = plcKey == "*" && areaKey == "*"
+                ? $"{result.Count} объектов"
+                : $"{result.Count} из {_objects.Rows.Count} объектов";
+        UpdateObjectFilterIndicator(plcKey, areaKey);
+    }
+
+    private void UpdateObjectFilterIndicator(string plcKey = null, string areaKey = null)
+    {
+        plcKey ??= GetSelectedFilterKey(CmbPlcFilter);
+        areaKey ??= GetSelectedFilterKey(CmbAreaFilter);
+        bool plcActive = _configurationKind == ConfigurationKind.Class && plcKey != "*";
+        bool areaActive = _configurationKind == ConfigurationKind.Class && areaKey != "*";
+        bool active = plcActive || areaActive;
+        if (FilterActiveBadge != null) FilterActiveBadge.Visibility = active ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
+        FilterIcon?.SetResourceReference(Shape.FillProperty, active ? "BrushAccent" : "BrushTextSecondary");
+        if (BtnObjectFilter != null)
+        {
+            var activeFilters = new List<string>();
+            if (plcActive && CmbPlcFilter.SelectedItem is FilterOption plc) activeFilters.Add($"PLC: {plc.Title}");
+            if (areaActive && CmbAreaFilter.SelectedItem is FilterOption area) activeFilters.Add($"Area: {area.Title}");
+            BtnObjectFilter.ToolTip = active ? $"Фильтр активен · {string.Join(" · ", activeFilters)}" : "Фильтр по PLC и Area";
+        }
     }
 
     private void ObjectFilter_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)

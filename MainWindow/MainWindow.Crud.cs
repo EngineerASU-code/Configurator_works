@@ -27,6 +27,7 @@ namespace Configurator
 
             _fieldsBuilder?.Clear();
             UpdateFilterButtonState();
+            SafeSetButtonEnabled(_rightPanel.BtnFilter, false);
 
             if (_rightPanel.InputPanel != null)
                 _rightPanel.InputPanel.Visibility = _fieldsPanelExpanded ? Visibility.Visible : Visibility.Collapsed;
@@ -82,6 +83,7 @@ namespace Configurator
 
                 _rightPanel.TableTitle.Text = tableTitle;
                 UpdateFilterButtonState();
+                SafeSetButtonEnabled(_rightPanel.BtnFilter, vm.Columns?.Count > 0);
                 BindPageData(pageData, preferredRowIndex, preferredIdentity, resetScroll: preferredRowIndex < 0);
 
                 SafeSetButtonEnabled(_rightPanel.BtnAdd, true);
@@ -383,7 +385,7 @@ namespace Configurator
                 foreach (var column in columns)
                 {
                     var name = column.Name;
-                    if (!new[] { "Type", "PLC", "Area", "AreaName", "PLCClassNumber", "PLCClasssNumber", "Class", "Unit" }
+                    if (!new[] { "Type", "PLC", "Area", "PLCClassNumber", "PLCClasssNumber", "Class", "Unit" }
                         .Contains(name, StringComparer.OrdinalIgnoreCase)) continue;
                     var options = await lookupService.TryGetAsync("", tableName, name);
                     if (options.Count > 0)

@@ -26,6 +26,7 @@ public partial class ProjectModeView : UserControl
     private DataRow _selectedRow;
     private CancellationTokenSource _loadCts;
     private int _loadGeneration;
+    private int _objectDetailsGeneration;
     private ClassRegistryService _classRegistry;
     private bool _filterSelectionGuard;
     private bool _suppressClassSelectionChanged;
@@ -528,6 +529,7 @@ public partial class ProjectModeView : UserControl
         if (_offlineProject != null)
         {
             _configurationKind = kind;
+            UpdateObjectFilterIndicator();
             var candidates = kind == ConfigurationKind.Plc ? new[] { "dbo.PLC", "dbo.PLCs", "PLC", "PLCs" } : kind == ConfigurationKind.Area ? new[] { "dbo.Area", "dbo.Areas", "Area", "Areas" } : Array.Empty<string>();
             var localTable = _offlineProject.TableSchemas.FirstOrDefault(x => candidates.Any(t => x.TableName.Equals(t, StringComparison.OrdinalIgnoreCase)))?.TableName
                 ?? _offlineProject.LocalRecords.Select(x => x.TableName).FirstOrDefault(t => candidates.Any(c => t.Equals(c, StringComparison.OrdinalIgnoreCase)));
@@ -576,6 +578,7 @@ public partial class ProjectModeView : UserControl
             return;
         }
         _configurationKind = kind;
+        UpdateObjectFilterIndicator();
         _configurationRows = new DataTable();
         _configurationTableName = kind == ConfigurationKind.Plc ? "dbo.PLC" : "dbo.Areas";
         // dbo.Areas.Record is the relationship key stored in object tables' Area field.
@@ -615,7 +618,7 @@ public partial class ProjectModeView : UserControl
                     ?? columns.Select(c => c.Name).FirstOrDefault(n => n.Equals("AreaNameL1", StringComparison.OrdinalIgnoreCase))
                     ?? columns.Select(c => c.Name).FirstOrDefault(n => n.Equals("AreaName", StringComparison.OrdinalIgnoreCase))
                     ?? _configurationKeyColumn;
-            var select = columns.Select(c => c.Name).Where(n => n.Equals(_configurationKeyColumn, StringComparison.OrdinalIgnoreCase) || n.Equals(_configurationDisplayColumn, StringComparison.OrdinalIgnoreCase)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            var select = columns.Select(c => c.Name).ToList();
             _configurationRows = await db.GetTableDataPageAsync(_configurationTableName, 1, 5000, select, null);
             var items = new List<ObjectItem>();
             for (int i = 0; i < _configurationRows.Rows.Count; i++)
@@ -751,6 +754,7 @@ public partial class ProjectModeView : UserControl
         ClearObjectEditor();
         SessionTestLog.Trace("РЕЖИМ3-КЛАСС", $"Selected class='{cls.Name}', classNumber={cls.ClassNumber}, primaryStorage='{cls.PrimaryStorage?.TableName ?? "<null>"}', fieldCount={cls.Fields?.Count ?? 0}, database='{_selectedDatabase}'");
         _configurationKind = ConfigurationKind.Class;
+        UpdateObjectFilterIndicator();
         _selectedConfigurationItem = new ConfigurationItem(ConfigurationKind.Class, cls.Name, cls.Name, false, false, cls);
         BtnConfigDelete.IsEnabled = false;
         BtnConfigDelete.Visibility = Visibility.Collapsed;
@@ -857,7 +861,6 @@ public partial class ProjectModeView : UserControl
                 ApplyObjectFilters();
                 SelectInitialObjectForPreview();
                 TxtStatus.Text = $"Offline · {_selectedClass.Name} · объектов: {_objects.Rows.Count}";
-                if (TxtObjectCount != null) TxtObjectCount.Text = $"{_objects.Rows.Count} объектов";
                 BtnNewObject.IsEnabled = UserAuthorizationService.Has(Permission.AddData); BtnNewObjectsBatch.IsEnabled = UserAuthorizationService.Has(Permission.AddData);
                 return;
             }
@@ -880,7 +883,6 @@ public partial class ProjectModeView : UserControl
             ApplyObjectFilters();
             SelectInitialObjectForPreview();
             TxtStatus.Text = $"{_selectedClass.Name} · объектов: {_objects.Rows.Count}";
-            if (TxtObjectCount != null) TxtObjectCount.Text = $"{_objects.Rows.Count} объектов";
             SessionTestLog.Trace("РЕЖИМ3-ОБЪЕКТЫ", $"END OK: rows={_objects.Rows.Count}, status='{TxtStatus.Text}'");
         }
         catch (OperationCanceledException) { SessionTestLog.Trace("РЕЖИМ3-ОБЪЕКТЫ", "CANCELLED: load token cancelled"); }
@@ -1019,6 +1021,7 @@ public partial class ProjectModeView : UserControl
                     TxtObjectContext.Text = $"Значение: {GetConfigurationKeyValue()}";
                     TxtPreviewGlyph.Text = _configurationKind == ConfigurationKind.Plc ? "PLC" : "AREA";
                     TxtPreviewClass.Text = _configurationKind == ConfigurationKind.Plc ? "Конфигурация · PLC" : "Конфигурация · Area";
+                    RenderConfigurationObjectDetails(_selectedRow);
                     TxtStatus.Text = $"Выбрано значение: {configItem.Name}";
                 }
             }
@@ -2043,6 +2046,7 @@ public partial class ProjectModeView : UserControl
 
     private void ClearObjectEditor()
     {
+        _objectDetailsGeneration++;
         _selectedRow = null;
         ObjectEditor.Children.Clear();
         TxtObjectName.Text = "Выберите объект";

@@ -119,7 +119,10 @@ public partial class MainWindow
         var ct = cts.Token;
         var oldCount = vm.TotalCount;
         var current = _rightPanel.DataTableGrid?.ItemsSource as DataView;
+        int currentPage = vm.CurrentPage;
+        int loadGeneration = _loadGeneration;
         var freshCount = await vm.GetFreshTotalCountAsync(ct);
+        if (!ReferenceEquals(vm, _activeVm) || vm.CurrentPage != currentPage || _loadGeneration != loadGeneration) return;
         if (current == null || vm.CurrentPageData == null)
         {
             await LoadDataAsync();
@@ -127,6 +130,7 @@ public partial class MainWindow
         }
 
         var freshPage = await vm.LoadPageAsync(ct);
+        if (!ReferenceEquals(vm, _activeVm) || vm.CurrentPage != currentPage || _loadGeneration != loadGeneration) return;
         if (freshCount == oldCount && TablesEqual(current.Table, freshPage)) return;
 
         Dictionary<string, object> identity = null;

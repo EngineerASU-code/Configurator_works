@@ -151,7 +151,7 @@ namespace Configurator
                     var textBox = input as TextBox;
                     if (isClassNumber && textBox != null)
                     {
-                        textBox.Text = _forcedClassNumber.Value.ToString(CultureInfo.InvariantCulture);
+                        textBox.Text = FormatClassNumberDisplay(_forcedClassNumber.Value);
                         textBox.IsReadOnly = true;
                         textBox.ToolTip = "Номер класса назначается автоматически и не редактируется для системного класса.";
                     }
@@ -183,10 +183,19 @@ namespace Configurator
             }
         }
 
+        private static string FormatClassNumberDisplay(int classNumber)
+        {
+            var className = Configurator.Core.Architecture.SystemClassCatalog.CreateDefaults()
+                .FirstOrDefault(item => item.ClassNumber == classNumber)?.Name;
+            return string.IsNullOrWhiteSpace(className)
+                ? classNumber.ToString(CultureInfo.InvariantCulture)
+                : $"{classNumber} · {className}";
+        }
+
         private static bool IsKnownLookupField(string name)
         {
             var n = (name ?? "").Replace("_", "").Replace(" ", "");
-            return new[] { "Type", "PLC", "Area", "AreaName", "PLCClassNumber", "PLCClasssNumber", "Class", "Unit" }
+            return new[] { "Type", "PLC", "Area", "PLCClassNumber", "PLCClasssNumber", "Class", "Unit" }
                 .Contains(n, StringComparer.OrdinalIgnoreCase);
         }
 

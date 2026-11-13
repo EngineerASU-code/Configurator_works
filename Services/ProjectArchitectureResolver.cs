@@ -35,6 +35,22 @@ public sealed class ProjectArchitectureResolver
             ["Matrix"] = new[] { "dbo.Matrix", "dbo.Matrices" }
         };
 
+    public static int? ResolveSystemClassNumber(string tableName)
+    {
+        if (string.IsNullOrWhiteSpace(tableName)) return null;
+
+        var normalized = NormalizeTableName(tableName);
+        foreach (var definition in SystemClassCatalog.CreateDefaults())
+            if (Candidates.TryGetValue(definition.Name, out var candidates) &&
+                candidates.Any(candidate => NormalizeTableName(candidate).Equals(normalized, StringComparison.OrdinalIgnoreCase)))
+                return definition.ClassNumber;
+
+        return null;
+    }
+
+    private static string NormalizeTableName(string value)
+        => (value ?? string.Empty).Trim().Replace("[", "").Replace("]", "");
+
     public async Task ResolveAsync(
         ClassArchitectureService architecture,
         DatabaseService db,

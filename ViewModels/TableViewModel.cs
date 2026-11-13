@@ -16,6 +16,8 @@ namespace Configurator
         public string KeyColumn => KeyColumns.Count > 0 ? KeyColumns[0] : "";
         public bool UsesValueIdentity { get; private set; }
         public bool HasValidKey => KeyColumns.Count > 0 || UsesValueIdentity;
+        private bool HasApplicableFilter => Filter?.IsActive == true &&
+            Columns?.Any(c => c.Name.Equals(Filter.Column, StringComparison.OrdinalIgnoreCase)) == true;
         public bool CanDuplicateCurrentRow => KeyColumns.Count > 0 || Columns?.Any(c =>
             c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase) &&
             !c.IsIdentity && !c.IsReadOnly && IsNumericRecordType(c.DataType)) == true;
@@ -100,7 +102,7 @@ namespace Configurator
 
         // === P1-11: Async ===
         public Task<DataTable> LoadPageAsync(CancellationToken ct = default)
-            => LoadPageWithFilterAsync(Filter, ct);
+            => LoadPageWithFilterAsync(HasApplicableFilter ? Filter : null, ct);
 
         public Task<DataTable> LoadPageIgnoringFilterAsync(CancellationToken ct = default)
             => LoadPageWithFilterAsync(null, ct);
@@ -143,7 +145,7 @@ namespace Configurator
         }
 
         public Task<int> GetTotalCountAsync(CancellationToken ct = default)
-            => GetTotalCountWithFilterAsync(Filter, ct);
+            => GetTotalCountWithFilterAsync(HasApplicableFilter ? Filter : null, ct);
 
         public Task<int> GetTotalCountIgnoringFilterAsync(CancellationToken ct = default)
             => GetTotalCountWithFilterAsync(null, ct);
@@ -151,7 +153,7 @@ namespace Configurator
         public async Task<int> GetFreshTotalCountAsync(CancellationToken ct = default)
         {
             if (string.IsNullOrWhiteSpace(CurrentTable)) return 0;
-            var count = await _db.GetTableRowCountAsync(CurrentTable, Filter, ct);
+            var count = await _db.GetTableRowCountAsync(CurrentTable, HasApplicableFilter ? Filter : null, ct);
             TotalCount = count;
             return count;
         }
@@ -349,20 +351,17 @@ namespace Configurator
                 return;
             }
 
-            // If the user changes a key such as AnaIN.Record, target the original row
-            // by its full pre-edit snapshot; otherwise the key column would be filtered
-            // out of SET and silently remain unchanged.
+            // Keep the old key in WHERE, but include edited key columns in SET. SQL Server's
+            // unique constraint rejects a conflicting new key and the update transaction rolls back.
             bool keyIsBeingChanged = KeyColumns.Any(k => values.ContainsKey(k) &&
                 CurrentRawRowValues.TryGetValue(k, out var oldKey) &&
                 !Equals(oldKey ?? DBNull.Value, values[k] ?? DBNull.Value));
-            if (keyIsBeingChanged)
-                throw new InvalidOperationException("Изменение первичного ключа недоступно для безопасной идентификации строки.");
 
-            var nonKeyValues = values
-                .Where(v => !KeyColumns.Contains(v.Key))
+            var updateValues = values
+                .Where(v => keyIsBeingChanged || !KeyColumns.Contains(v.Key, StringComparer.OrdinalIgnoreCase))
                 .ToDictionary(v => v.Key, v => v.Value);
 
-            await _db.UpdateRowAsync(CurrentTable, KeyColumns, CurrentKeyValues, nonKeyValues, ct,
+            await _db.UpdateRowAsync(CurrentTable, KeyColumns, CurrentKeyValues, updateValues, ct,
                 new Dictionary<string, object>(CurrentRawRowValues, StringComparer.OrdinalIgnoreCase));
             InvalidateCountCache();
         }

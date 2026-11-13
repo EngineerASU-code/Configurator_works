@@ -41,30 +41,34 @@ namespace Configurator
 
         public async void BtnFirst_Click(object sender, System.Windows.RoutedEventArgs e)
         {
-            if (_activeVm == null) return;
+            if (_activeVm == null || _activeVm.CurrentPage <= 1) return;
             _activeVm.CurrentPage = 1;
-            await LoadDataAsync();
+            UpdatePagination();
+            await ReloadCurrentPageFastAsync();
         }
 
         public async void BtnPrev_Click(object sender, System.Windows.RoutedEventArgs e)
         {
             if (_activeVm == null || _activeVm.CurrentPage <= 1) return;
             _activeVm.CurrentPage--;
-            await LoadDataAsync();
+            UpdatePagination();
+            await ReloadCurrentPageFastAsync();
         }
 
         public async void BtnNext_Click(object sender, System.Windows.RoutedEventArgs e)
         {
             if (_activeVm == null || _activeVm.CurrentPage >= _activeVm.TotalPages) return;
             _activeVm.CurrentPage++;
-            await LoadDataAsync();
+            UpdatePagination();
+            await ReloadCurrentPageFastAsync();
         }
 
         public async void BtnLast_Click(object sender, System.Windows.RoutedEventArgs e)
         {
-            if (_activeVm == null) return;
+            if (_activeVm == null || _activeVm.CurrentPage >= _activeVm.TotalPages) return;
             _activeVm.CurrentPage = _activeVm.TotalPages;
-            await LoadDataAsync();
+            UpdatePagination();
+            await ReloadCurrentPageFastAsync();
         }
 
         public async Task JumpToLastPageAsync()
@@ -72,7 +76,8 @@ namespace Configurator
             if (_activeVm == null) return;
             // Не используем int.MaxValue: это приводит к переполнению OFFSET.
             _activeVm.CurrentPage = _activeVm.TotalPages;
-            await LoadDataAsync();
+            UpdatePagination();
+            await ReloadCurrentPageFastAsync();
         }
     }
 }

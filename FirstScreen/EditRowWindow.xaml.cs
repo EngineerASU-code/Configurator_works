@@ -55,7 +55,7 @@ namespace Configurator
                 bool isClassNumber = (_forcedClassNumber.HasValue &&
                     !string.IsNullOrWhiteSpace(_classNumberColumn) &&
                     col.Name.Equals(_classNumberColumn, StringComparison.OrdinalIgnoreCase)) ||
-                    normalizedColumnName is "plcclassnumber" or "classnumber" or "plcclassno";
+                    normalizedColumnName is "plcclassnumber" or "plcclasssnumber" or "classnumber" or "plcclassno";
                 string titleText = isClassNumber ? "🔒 " : (isKey ? "🔑 " : "");
                 titleText += $"{col.Name} ({col.DataType})";
                 if (col.IsNullable) titleText += " — nullable";
@@ -72,7 +72,7 @@ namespace Configurator
 
                 bool hasLookupDefinition = _lookupOptions.TryGetValue(col.Name, out var options);
                 bool hasLookupOptions = hasLookupDefinition && options.Count > 0;
-                bool isLookup = hasLookupDefinition || IsKnownLookupField(col.Name);
+                bool isLookup = !isClassNumber && (hasLookupDefinition || IsKnownLookupField(col.Name));
                 options ??= new List<LookupOption>();
                 if (isLookup && !hasLookupOptions && _currentValues != null && _currentValues.TryGetValue(col.Name, out string existingLookupValue) && !string.IsNullOrWhiteSpace(existingLookupValue))
                 {
@@ -93,7 +93,8 @@ namespace Configurator
                 else
                 {
                     textBox = new TextBox { Width = 250, Padding = new Thickness(8, 6, 8, 6), FontSize = 13, IsReadOnly = isClassNumber };
-                    if (_currentValues != null && _currentValues.TryGetValue(col.Name, out string currentVal)) textBox.Text = currentVal ?? "";
+                    if (_currentValues != null && _currentValues.TryGetValue(col.Name, out string currentVal))
+                        textBox.Text = isClassNumber ? FormatClassNumberDisplay(currentVal, _forcedClassNumber) : currentVal ?? "";
                     input = textBox;
                 }
                 if (isClassNumber && textBox != null) textBox.ToolTip = "PLC Class Number определяет класс строки и не может быть изменён вручную.";
@@ -132,8 +133,19 @@ namespace Configurator
         private static bool IsKnownLookupField(string name)
         {
             var n = (name ?? "").Replace("_", "").Replace(" ", "");
-            return new[] { "Type", "PLC", "Area", "AreaName", "PLCClassNumber", "PLCClasssNumber", "Class", "Unit" }
+            return new[] { "Type", "PLC", "Area", "PLCClassNumber", "PLCClasssNumber", "Class", "Unit" }
                 .Contains(n, StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static string FormatClassNumberDisplay(string value, int? classNumber)
+        {
+            if (!classNumber.HasValue) return value ?? "";
+            if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out _))
+                return value ?? "";
+
+            var className = Configurator.Core.Architecture.SystemClassCatalog.CreateDefaults()
+                .FirstOrDefault(item => item.ClassNumber == classNumber.Value)?.Name;
+            return string.IsNullOrWhiteSpace(className) ? value : $"{value} · {className}";
         }
 
         private void ValidateFields()
