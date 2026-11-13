@@ -1,0 +1,37 @@
+﻿<UserControl x:Class="Configurator.LeftPanel"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Border Background="{DynamicResource BrushPanel}">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <Grid Grid.Row="0" Margin="18,12,18,14">
+                <Button x:Name="BtnAddDb" Content="＋  Добавить базу" Style="{StaticResource BtnPrimary}" Click="BtnAddDb_Click"/>
+            </Grid>
+
+            <Border Grid.Row="1" Margin="12,0,12,12" CornerRadius="9" Background="{DynamicResource BrushBase}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1">
+                <TreeView x:Name="ServerTree" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource BrushText}" Padding="7" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto" HorizontalContentAlignment="Stretch">
+                    <TreeView.ItemContainerStyle>
+                        <StaticResource ResourceKey="ProjectTreeItemStyle"/>
+                    </TreeView.ItemContainerStyle>
+                </TreeView>
+            </Border>
+
+            <Border Grid.Row="1" x:Name="EmptyTreePlaceholder" Margin="12,0,12,12" Background="{DynamicResource BrushBase}" CornerRadius="9" Padding="28" Visibility="Visible">
+                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
+                    <TextBlock Text="◎" FontSize="28" HorizontalAlignment="Center" Foreground="{DynamicResource BrushTextSecondary}"/>
+                    <TextBlock x:Name="DbInstruction" Text="Нет подключённых баз" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource BrushText}" HorizontalAlignment="Center" TextAlignment="Center" Margin="0,8,0,3"/>
+                    <TextBlock Text="Добавьте подключение, чтобы увидеть таблицы" FontSize="11" Foreground="{DynamicResource BrushTextSecondary}" TextWrapping="Wrap" TextAlignment="Center"/>
+                </StackPanel>
+            </Border>
+
+            <StackPanel Grid.Row="2" Margin="14,0,14,10">
+                <TextBlock x:Name="DbLoadingStatus" Text="Автопроверка соединения включена" Margin="4,0,4,0" FontSize="10" Foreground="{DynamicResource BrushTextSecondary}" TextWrapping="Wrap"/>
+            </StackPanel>
+        </Grid>
+    </Border>
+</UserControl>

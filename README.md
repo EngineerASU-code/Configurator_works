@@ -1,7 +1,17 @@
 # Configurator
 
-## Version 1.0 — upload pending
+Source code for the GASS Configurator desktop application (C# / .NET 8 / WPF).
 
-The prepared local package is `Configurator_v1.0.zip`. It has not yet been uploaded to this repository; the current GitHub connector supports text-file commits but does not expose a binary archive upload or Git push operation.
+The solution and project are in this repository root. The source, tests, and project files are tracked; local build outputs, IDE state, test artifacts, reports, and workspace-specific instructions are excluded.
 
-> Validation status: not compiled or test-executed in the current environment. The package includes `IMPLEMENTATION_STATUS.md` with implementation coverage and outstanding work.
+Build from the repository root:
+
+```powershell
+dotnet build Configurator.csproj -c Release --no-restore
+```
+
+Run the security tests from the repository root:
+
+```powershell
+dotnet test tests\Configurator.Security.Tests\Configurator.Security.Tests.csproj -c Release --no-restore --logger 'console;verbosity=minimal' -v quiet
+```
