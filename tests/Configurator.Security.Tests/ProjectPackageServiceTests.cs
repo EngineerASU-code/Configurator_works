@@ -19,7 +19,7 @@ public sealed class ProjectPackageServiceTests
             await service.SaveAsync(path, CreateProject());
             var reopened = await service.OpenAsync(path);
             Assert.Equal("Test project", reopened.Manifest.Name);
-            Assert.Equal(2, reopened.Manifest.FormatVersion);
+            Assert.Equal(3, reopened.Manifest.FormatVersion);
         }
         finally { Delete(path); }
     }

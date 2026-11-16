@@ -12,6 +12,7 @@ public sealed class DependencyHit
 {
     public string SourceTable { get; init; } = "";
     public IReadOnlyDictionary<string, object> SourceKey { get; init; } = new Dictionary<string, object>();
+    public IReadOnlyDictionary<string, object> SourceReferenceValues { get; init; } = new Dictionary<string, object>();
     public string SourceColumnDescription { get; init; } = "";
     public string TargetTable { get; init; } = "";
     public DatabaseRelation Relation { get; init; } = new();

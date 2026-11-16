@@ -13,21 +13,32 @@ namespace Configurator;
 
 public partial class ProjectModeView
 {
+    private readonly List<string> _lookupWarnings = new();
+    private readonly HashSet<string> _lookupWarningFields = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IReadOnlyList<LookupOption>> _offlineLookupCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (Core.Projects.ProjectTableSchema Schema, IReadOnlyList<Core.Projects.ProjectRecord> Records)> _offlineLookupTableCache = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyList<Core.Projects.ProjectTableSchema> _offlineTablesCache;
 
-    private void RenderConfigurationObjectDetails(DataRow row)
+    private async Task RenderConfigurationObjectDetailsAsync(DataRow row, int generation)
     {
         ObjectEditor.Children.Clear();
         ObjectEditor.RowDefinitions.Clear();
         ObjectEditor.ColumnDefinitions.Clear();
         ObjectEditor.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         if (row == null) return;
+        _lookupWarnings.Clear();
+        _lookupWarningFields.Clear();
 
         var content = new Grid();
         content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        IReadOnlyList<LookupOption> plcTypeOptions = Array.Empty<LookupOption>();
+        if (_configurationKind == ConfigurationKind.Plc && row.Table.Columns.Contains("Type"))
+        {
+            try { plcTypeOptions = await LoadConfigurationPlcTypeOptionsAsync(); }
+            catch { plcTypeOptions = Array.Empty<LookupOption>(); }
+            if (generation != _objectDetailsGeneration || !ReferenceEquals(_selectedRow, row)) return;
+        }
         int index = 0;
         foreach (DataColumn column in row.Table.Columns)
         {
@@ -50,15 +61,66 @@ public partial class ProjectModeView
             label.SetResourceReference(TextBlock.ForegroundProperty, "BrushTextSecondary");
             field.Children.Add(label);
 
-            var value = new TextBox
+            FrameworkElement value;
+            var currentValue = row.IsNull(column) ? "" : Convert.ToString(row[column]) ?? "";
+            if (_configurationKind == ConfigurationKind.Plc && column.ColumnName.Equals("Type", StringComparison.OrdinalIgnoreCase)
+                && plcTypeOptions.Count > 0)
             {
-                Text = row.IsNull(column) ? "—" : Convert.ToString(row[column]) ?? "—",
-                Height = 30,
-                Padding = new Thickness(7, 3, 7, 3),
-                IsReadOnly = true,
-                IsTabStop = false,
-                ToolTip = $"{column.ColumnName} · тип: {column.DataType.Name}"
-            };
+                var options = plcTypeOptions.ToList();
+                if (!string.IsNullOrWhiteSpace(currentValue) && !options.Any(option => option.Key.Equals(currentValue, StringComparison.OrdinalIgnoreCase)))
+                {
+                    options.Add(new LookupOption { Key = currentValue, Display = $"{currentValue} · текущее значение" });
+                    AddLookupWarning(column.ColumnName, $"Type={currentValue}: этого значения нет в справочнике PLC Type.");
+                }
+                if (column.AllowDBNull && !options.Any(option => string.IsNullOrEmpty(option.Key)))
+                    options.Insert(0, new LookupOption { Key = "", Display = "(не задано)" });
+                var combo = new ComboBox
+                {
+                    ItemsSource = options,
+                    DisplayMemberPath = nameof(LookupOption.Display),
+                    SelectedValuePath = nameof(LookupOption.Key),
+                    SelectedValue = currentValue,
+                    Height = 30,
+                    Padding = new Thickness(6, 2, 6, 2),
+                    IsEnabled = UserAuthorizationService.Has(Permission.ManageObjects),
+                    Tag = column.ColumnName,
+                    ToolTip = $"Type · справочник PLC ({plcTypeOptions.Count} знач.)"
+                };
+                combo.SelectionChanged += (_, _) =>
+                {
+                    if (ReferenceEquals(_selectedRow, row)) BtnSave.IsEnabled = UserAuthorizationService.Has(Permission.ManageObjects);
+                };
+                value = combo;
+            }
+            else
+            {
+                if (_configurationKind == ConfigurationKind.Plc && column.ColumnName.Equals("Type", StringComparison.OrdinalIgnoreCase)
+                    && !string.IsNullOrWhiteSpace(currentValue) && plcTypeOptions.Count == 0)
+                    AddLookupWarning(column.ColumnName, $"Type={currentValue}: справочник PLC Type отсутствует или не содержит значений.");
+                var box = new TextBox
+                {
+                    Text = currentValue,
+                    Height = 30,
+                    Padding = new Thickness(7, 3, 7, 3),
+                    IsReadOnly = IsConfigurationIdentityField(column.ColumnName)
+                        || !UserAuthorizationService.Has(Permission.ManageObjects),
+                    IsTabStop = !IsConfigurationIdentityField(column.ColumnName)
+                        && UserAuthorizationService.Has(Permission.ManageObjects),
+                    Tag = column.ColumnName,
+                    ToolTip = IsConfigurationIdentityField(column.ColumnName)
+                        ? $"{column.ColumnName} · ключевое поле, изменение отключено"
+                        : column.ColumnName.Equals("Type", StringComparison.OrdinalIgnoreCase)
+                            ? "Справочник PLC Type не найден. Введите ключ вручную или проверьте источник справочника."
+                            : $"{column.ColumnName} · тип: {column.DataType.Name}"
+                };
+                box.TextChanged += (_, _) =>
+                {
+                    if ((_configurationKind is ConfigurationKind.Plc or ConfigurationKind.Area)
+                        && ReferenceEquals(_selectedRow, row))
+                        BtnSave.IsEnabled = UserAuthorizationService.Has(Permission.ManageObjects);
+                };
+                value = box;
+            }
             value.SetResourceReference(Control.BackgroundProperty, "BrushPanel");
             value.SetResourceReference(Control.ForegroundProperty, "BrushText");
             value.SetResourceReference(Control.BorderBrushProperty, "BrushBorder");
@@ -94,6 +156,37 @@ public partial class ProjectModeView
         ObjectEditor.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         Grid.SetRow(card, 0);
         ObjectEditor.Children.Add(card);
+        UpdateLookupWarningsButton();
+    }
+
+    private bool IsConfigurationIdentityField(string fieldName) =>
+        fieldName.Equals(_configurationKeyColumn, StringComparison.OrdinalIgnoreCase)
+        || fieldName.Equals("Record", StringComparison.OrdinalIgnoreCase)
+        || (_configurationKind == ConfigurationKind.Area && fieldName.Equals("AreaName", StringComparison.OrdinalIgnoreCase));
+
+    private async Task<IReadOnlyList<LookupOption>> LoadConfigurationPlcTypeOptionsAsync()
+    {
+        if (_offlineProject != null)
+        {
+            var lookupField = new Core.Architecture.FieldDefinition
+            {
+                Name = "Type",
+                LookupTable = "dbo.PLCType",
+                LookupKeyField = "Record",
+                LookupDisplayField = "Name"
+            };
+            return GetOfflineLookupOptions(lookupField, "PLC", _configurationTableName);
+        }
+
+        if (_connection == null || string.IsNullOrWhiteSpace(_selectedDatabase)) return Array.Empty<LookupOption>();
+        var databaseKey = _connection.ToConnectionString(_selectedDatabase);
+        if (_onlineLookupOptionsService == null || !_onlineLookupDatabaseKey.Equals(databaseKey, StringComparison.Ordinal))
+        {
+            _onlineLookupOptionsService = new LookupOptionsService(new DatabaseService(databaseKey));
+            _onlineLookupDatabaseKey = databaseKey;
+        }
+        return await _onlineLookupOptionsService.TryGetAsync("PLC", _configurationTableName, "Type", default,
+            "dbo.PLCType", "Record", "Name");
     }
 
     private async void RenderLookupObjectDetailsAsync()
@@ -102,9 +195,12 @@ public partial class ProjectModeView
         var selectedRow = _selectedRow;
         var selectedClass = _selectedClass;
         if (selectedRow == null) return;
+        _lookupWarnings.Clear();
+        _lookupWarningFields.Clear();
+        UpdateLookupWarningsButton();
         if (_configurationKind is ConfigurationKind.Plc or ConfigurationKind.Area)
         {
-            RenderConfigurationObjectDetails(selectedRow);
+            await RenderConfigurationObjectDetailsAsync(selectedRow, generation);
             return;
         }
         if (selectedClass == null) return;
@@ -245,13 +341,23 @@ public partial class ProjectModeView
                     string currentValueForLog = GetText(field.Name);
                     WriteTypeLookupDiagnostic($"EDITOR_COMBO class={_selectedClass?.Name} sourceTable={_selectedClass?.PrimaryStorage?.TableName} offline={offline} currentKey='{currentValueForLog}' optionsCount={options.Count}");
                 }
-                bool knownLookupField = new[] { "Type", "PLC", "Area", "AreaName", "PLCClassNumber", "PLCClasssNumber", "Class", "Unit" }
+                bool knownLookupField = new[] { "Type", "PLC", "Area", "AreaName", "PLC_Class_Number", "PLCClassNumber", "PLCClasssNumber", "Class", "Unit" }
                     .Contains(field.Name, StringComparer.OrdinalIgnoreCase) ||
                     (!string.IsNullOrWhiteSpace(field.LookupTable) && !string.IsNullOrWhiteSpace(field.LookupKeyField));
                 var comboOptions = options.ToList();
                 string currentLookupValue = GetText(field.Name);
                 bool isGeneratedArea = field.Name.Equals("Area", StringComparison.OrdinalIgnoreCase);
                 bool isReadOnlyClassNumber = new[] { "PLC_Class_Number", "PLCClassNumber", "PLCClasssNumber" }.Contains(field.Name, StringComparer.OrdinalIgnoreCase);
+                if (knownLookupField && !string.IsNullOrWhiteSpace(currentLookupValue)
+                    && !options.Any(option => option.Key.Equals(currentLookupValue, StringComparison.OrdinalIgnoreCase)))
+                {
+                    var lookupName = field.Name.Equals("Type", StringComparison.OrdinalIgnoreCase) && _selectedClass.Name.Equals("PLC", StringComparison.OrdinalIgnoreCase)
+                        ? "PLC Type"
+                        : string.IsNullOrWhiteSpace(field.LookupTable) ? $"для поля {field.Name}" : field.LookupTable;
+                    AddLookupWarning(field.Name, options.Count == 0
+                        ? $"{field.Name}={currentLookupValue}: список «{lookupName}» отсутствует, пуст или недоступен."
+                        : $"{field.Name}={currentLookupValue}: значения нет в списке «{lookupName}».");
+                }
                 if (field.Name.Equals("Type", StringComparison.OrdinalIgnoreCase))
                     WriteTypeLookupDiagnostic($"COMBO_PREPARED class='{_selectedClass?.Name}' currentKey='{currentLookupValue}' sourceOptions={options.Count} finalOptionsBeforeCurrent={comboOptions.Count}");
                 // Area is generated/derived by the database. Show its current value as
@@ -350,7 +456,53 @@ public partial class ProjectModeView
         }
 
         if (!IsCurrentRender()) return;
+        UpdateLookupWarningsButton();
         TxtStatus.Text = $"{(offline ? "Offline · " : string.Empty)}{_selectedClass.Name} · показаны все {actualFields.Count} полей · {(offline ? "значения взяты из локального снимка" : "связанные поля — выпадающие списки")}";
+    }
+
+    private void UpdateLookupWarningsButton()
+    {
+        if (BtnLookupWarnings == null) return;
+        BtnLookupWarnings.Visibility = _lookupWarnings.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        BtnLookupWarnings.Content = $"⚠ {_lookupWarnings.Count}";
+        BtnLookupWarnings.ToolTip = _lookupWarnings.Count == 0
+            ? null
+            : string.Join(Environment.NewLine, _lookupWarnings);
+    }
+
+    private void AddLookupWarning(string fieldName, string message)
+    {
+        _lookupWarnings.Add(message);
+        if (!string.IsNullOrWhiteSpace(fieldName)) _lookupWarningFields.Add(fieldName);
+    }
+
+    private void LookupWarnings_Click(object sender, RoutedEventArgs e)
+    {
+        if (_lookupWarnings.Count == 0) return;
+        Configurator.Infrastructure.ModernDialog.Show(
+            "В выбранной карточке обнаружены проблемы со справочниками:\n\n" + string.Join("\n", _lookupWarnings),
+            "Проверка связанных значений", MessageBoxButton.OK, MessageBoxImage.Warning);
+        var fieldName = _lookupWarningFields.FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(fieldName)) return;
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            var editor = FindEditorByFieldName(ObjectEditor, fieldName);
+            if (editor == null) return;
+            editor.BringIntoView();
+            if (editor is Control control && control.IsEnabled && control.Focusable) control.Focus();
+        }));
+    }
+
+    private static FrameworkElement FindEditorByFieldName(DependencyObject root, string fieldName)
+    {
+        if (root is FrameworkElement element && element.Tag is string tag && tag.Equals(fieldName, StringComparison.OrdinalIgnoreCase))
+            return element;
+        for (var index = 0; index < System.Windows.Media.VisualTreeHelper.GetChildrenCount(root); index++)
+        {
+            var match = FindEditorByFieldName(System.Windows.Media.VisualTreeHelper.GetChild(root, index), fieldName);
+            if (match != null) return match;
+        }
+        return null;
     }
 
     private string ResolveDisplayGroupForObject(Core.Architecture.FieldDefinition field)
@@ -390,6 +542,23 @@ public partial class ProjectModeView
             lookupTable = generationRule.LookupTable;
             keyField = generationRule.KeyField;
             displayField = generationRule.DisplayField;
+        }
+        if (fieldName.Equals("Type", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(className, "PLC", StringComparison.OrdinalIgnoreCase))
+        {
+            var actualLookupTable = FindOfflineTable(lookupTable, "dbo.PLCType", "dbo.PLC_Types", "dbo.PLCTypes", "PLCType", "PLC_Types", "PLCTypes");
+            if (!string.IsNullOrWhiteSpace(actualLookupTable))
+            {
+                lookupTable = actualLookupTable;
+                var columns = (_offlineSource ?? new Core.Projects.OfflineProjectDataSource(_offlineProject))
+                    .GetSchema(actualLookupTable)?.Columns.Select(c => c.Name).ToList() ?? new List<string>();
+                keyField = new[] { "Record", "Type", "ID", "Id" }
+                    .Select(candidate => columns.FirstOrDefault(name => name.Equals(candidate, StringComparison.OrdinalIgnoreCase)))
+                    .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name)) ?? keyField;
+                displayField = new[] { "Name", "NameL2", "NameL1", "Description", "TypeName" }
+                    .Select(candidate => columns.FirstOrDefault(name => name.Equals(candidate, StringComparison.OrdinalIgnoreCase)))
+                    .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name)) ?? displayField;
+            }
         }
         string cacheKey = string.Join("|", _offlineProject.Manifest.ProjectId, sourceTable ?? string.Empty, className ?? string.Empty, fieldName, lookupTable, keyField, displayField);
         if (_offlineLookupCache.TryGetValue(cacheKey, out var cached))

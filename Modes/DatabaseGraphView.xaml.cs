@@ -26,6 +26,7 @@ public partial class DatabaseGraphView : UserControl
     private readonly List<GraphRelation> _relations = new();
     private string? _selectedTable;
     private readonly Dictionary<string, Point> _graphPositions = new(StringComparer.OrdinalIgnoreCase);
+    private string? _graphLayoutRoot;
     private string? _draggingTable;
     private Border? _draggingNodeVisual;
     private Point _dragOffset;
@@ -71,6 +72,7 @@ public partial class DatabaseGraphView : UserControl
         _graphRelationDocument = new GraphRelationProjectDocument();
         _graphRelationStore = null;
         _graphPositions.Clear();
+        _graphLayoutRoot = null;
         GraphTableList.ItemsSource = null;
         RulesList.ItemsSource = null;
         GraphCanvas.Children.Clear();
@@ -162,6 +164,7 @@ public partial class DatabaseGraphView : UserControl
         if (databaseChanged)
         {
             _graphPositions.Clear();
+            _graphLayoutRoot = null;
             _selectedTable = null;
             _selectedGraphRelation = null;
             SetGraphZoom(1.0, null);
@@ -187,6 +190,7 @@ public partial class DatabaseGraphView : UserControl
         if (!sameProject)
         {
             _graphPositions.Clear();
+            _graphLayoutRoot = null;
             _selectedTable = null;
             _selectedGraphRelation = null;
             _graphRelationStore = new GraphRelationStore(project);
@@ -546,6 +550,7 @@ ORDER BY SourceTable, ForeignKeyName, fkc.constraint_column_id;", connection))
     private void RenderGraph(bool focusSelected = true)
     {
         if (GraphCanvas == null) return;
+        string? retainedRelationId = _selectedGraphRelation?.Id;
         GraphCanvas.Children.Clear();
         _selectedGraphRelation = null;
         UpdateGraphRelationButtons();
@@ -555,13 +560,25 @@ ORDER BY SourceTable, ForeignKeyName, fkc.constraint_column_id;", connection))
         const double nodeHeight = 80;
         var selected = _tables.FirstOrDefault(t => t.FullName.Equals(_selectedTable, StringComparison.OrdinalIgnoreCase));
         if (selected == null) return;
+        // A new focus table gets a fresh compact neighborhood. Keeping coordinates
+        // from earlier tables made unrelated neighborhoods spread across the canvas
+        // and forced the fit zoom down until the graph became unreadable.
+        if (!string.Equals(_graphLayoutRoot, selected.FullName, StringComparison.OrdinalIgnoreCase))
+        {
+            _graphPositions.Clear();
+            _graphLayoutRoot = selected.FullName;
+        }
+        if (!string.IsNullOrWhiteSpace(retainedRelationId))
+            _selectedGraphRelation = _relations.FirstOrDefault(relation => relation.Id.Equals(retainedRelationId, StringComparison.Ordinal)
+                && (relation.Source.Equals(selected.FullName, StringComparison.OrdinalIgnoreCase)
+                    || relation.Target.Equals(selected.FullName, StringComparison.OrdinalIgnoreCase)));
 
         bool showIncoming = ShowIncomingRelations?.IsChecked != false;
         bool showOutgoing = ShowOutgoingRelations?.IsChecked != false;
         // Filters affect the visible neighborhood, not only the relation strokes.
         // First choose the relations that should remain, then derive visible node blocks
         // from those relations. The selected node is always retained as the graph anchor.
-        var visibleRelations = _relations.Where(r =>
+        var allVisibleRelations = _relations.Where(r =>
             r.Source.Equals(selected.FullName, StringComparison.OrdinalIgnoreCase) ||
             r.Target.Equals(selected.FullName, StringComparison.OrdinalIgnoreCase))
             .Where(r =>
@@ -572,6 +589,18 @@ ORDER BY SourceTable, ForeignKeyName, fkc.constraint_column_id;", connection))
                 if (outgoing && !incoming) return showOutgoing;
                 return showIncoming || showOutgoing;
             }).ToList();
+        const int maxOverviewRelations = 12;
+        var visibleRelations = allVisibleRelations;
+        if (ShowAllGraphRelations?.IsChecked != true && allVisibleRelations.Count > maxOverviewRelations)
+        {
+            visibleRelations = allVisibleRelations
+                .OrderByDescending(r => r.Kind.Equals("FK", StringComparison.OrdinalIgnoreCase))
+                .ThenByDescending(r => IsCoreGraphTable(r.Source) || IsCoreGraphTable(r.Target))
+                .ThenBy(r => r.Source, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(r => r.Target, StringComparer.OrdinalIgnoreCase)
+                .Take(maxOverviewRelations)
+                .ToList();
+        }
         var visibleNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { selected.FullName };
         foreach (var relation in visibleRelations)
         {
@@ -620,17 +649,19 @@ ORDER BY SourceTable, ForeignKeyName, fkc.constraint_column_id;", connection))
                 Points = route,
                 StrokeThickness = selectedRelation ? 3.2 : (relation.Source.Equals(selected.FullName, StringComparison.OrdinalIgnoreCase) || relation.Target.Equals(selected.FullName, StringComparison.OrdinalIgnoreCase) ? 2.5 : 1.2),
                 Opacity = selectedRelation ? 1 : 0.82,
-                Cursor = Cursors.Arrow, Tag = relation, Fill = Brushes.Transparent, IsHitTestVisible = false
+                Cursor = Cursors.Hand, Tag = relation, Fill = Brushes.Transparent, IsHitTestVisible = true,
+                ToolTip = BuildRelationSummary(relation)
             };
             line.SetResourceReference(Shape.StrokeProperty, relation.Kind.Equals("FK", StringComparison.OrdinalIgnoreCase) ? "BrushAccent" : "BrushTextSecondary");
             if (!relation.Kind.Equals("FK", StringComparison.OrdinalIgnoreCase)) line.StrokeDashArray = new DoubleCollection { 6, 4 };
+            line.MouseLeftButtonDown += GraphRelation_MouseLeftButtonDown;
             GraphCanvas.Children.Add(line);
             AddRelationArrow(relation, endPoint, route.Count >= 2 ? route[route.Count - 2] : startPoint, selectedRelation);
 
-            if (!_overviewMode || !relation.Kind.Equals("FK", StringComparison.OrdinalIgnoreCase))
+            if (!_overviewMode || selectedRelation || allVisibleRelations.Count <= 4)
             {
-                var label = new Border { Padding = new Thickness(5, 2, 5, 2), CornerRadius = new CornerRadius(4), IsHitTestVisible = false,
-                    Cursor = Cursors.Arrow, Tag = relation, ToolTip = relation.Kind.Equals("LOGICAL", StringComparison.OrdinalIgnoreCase) ? BuildRelationSummary(relation) + "\n\nНажмите, чтобы удалить логическую связь" : BuildRelationSummary(relation) };
+                var label = new Border { Padding = new Thickness(5, 2, 5, 2), CornerRadius = new CornerRadius(4), IsHitTestVisible = true,
+                    Cursor = Cursors.Hand, Tag = relation, ToolTip = BuildRelationSummary(relation) + "\n\nНажмите, чтобы выделить связь" };
                 label.SetResourceReference(Border.BackgroundProperty, "BrushBase");
                 label.SetResourceReference(Border.BorderBrushProperty, selectedRelation ? "BrushAccent" : "BrushBorder");
                 label.BorderThickness = new Thickness(selectedRelation ? 2 : 1);
@@ -677,9 +708,19 @@ ORDER BY SourceTable, ForeignKeyName, fkc.constraint_column_id;", connection))
         }
 
         int relationCount = visibleRelations.Count;
+        int hiddenRelationCount = allVisibleRelations.Count - relationCount;
         TxtGraphScope.Text = $"Выбрана: {selected.Name} · показано таблиц: {visibleTables.Count} · связей: {relationCount}";
+        if (GraphDensityStatus != null)
+        {
+            GraphDensityStatus.Text = hiddenRelationCount > 0 ? $"Показано {relationCount} из {allVisibleRelations.Count}" : "";
+            GraphDensityStatus.Visibility = hiddenRelationCount > 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
+        UpdateGraphRelationButtons();
         if (focusSelected) FitGraphToVisibleNodes(visibleTables);
     }
+
+    private static bool IsCoreGraphTable(string fullName)
+        => new[] { "PLC", "Areas", "Classes" }.Contains(ShortTableName(fullName), StringComparer.OrdinalIgnoreCase);
 
     private static double SnapToGrid(double value) => Math.Round(value / 10.0) * 10.0;
     private static Point SnapPoint(Point point) => new(SnapToGrid(point.X), SnapToGrid(point.Y));
@@ -819,7 +860,7 @@ ORDER BY SourceTable, ForeignKeyName, fkc.constraint_column_id;", connection))
         if (sender is Border label && label.Tag is GraphRelation relation)
         {
             _selectedGraphRelation = relation;
-            UpdateGraphRelationButtons();
+            RenderGraph(focusSelected: false);
             e.Handled = true;
         }
     }
@@ -829,7 +870,7 @@ ORDER BY SourceTable, ForeignKeyName, fkc.constraint_column_id;", connection))
         if (sender is Shape shape && shape.Tag is GraphRelation relation)
         {
             _selectedGraphRelation = relation;
-            UpdateGraphRelationButtons();
+            RenderGraph(focusSelected: false);
             e.Handled = true;
         }
     }
@@ -1140,31 +1181,17 @@ ORDER BY SourceTable, ForeignKeyName, fkc.constraint_column_id;", connection))
     {
         string sourceColumn = string.Join(",", relation.SourceColumns);
         string targetColumn = string.Join(",", relation.TargetColumns);
-        var source = _tables.FirstOrDefault(t => t.FullName.Equals(relation.Source, StringComparison.OrdinalIgnoreCase));
-        var target = _tables.FirstOrDefault(t => t.FullName.Equals(relation.Target, StringComparison.OrdinalIgnoreCase));
-        bool sourcePk = source != null && relation.SourceColumns.All(c => source.PrimaryKeyColumns.Contains(c, StringComparer.OrdinalIgnoreCase));
-        bool targetPk = target != null && relation.TargetColumns.All(c => target.PrimaryKeyColumns.Contains(c, StringComparer.OrdinalIgnoreCase));
-        string sourceRole = sourcePk ? "PK" : "FK/ключ";
-        string targetRole = targetPk ? "PK" : "ключ";
-        string kind = relation.Kind.Equals("FK", StringComparison.OrdinalIgnoreCase) ? "FK" : "LOG";
-        return $"{kind}: {ShortTableName(relation.Source)}.{sourceColumn} [{sourceRole}] → {ShortTableName(relation.Target)}.{targetColumn} [{targetRole}]";
+        return $"{ShortTableName(relation.Source)} · {sourceColumn} → {ShortTableName(relation.Target)} · {targetColumn}";
     }
 
     private string BuildRelationSummary(GraphRelation relation)
     {
-        var source = _tables.FirstOrDefault(t => t.FullName.Equals(relation.Source, StringComparison.OrdinalIgnoreCase));
-        var target = _tables.FirstOrDefault(t => t.FullName.Equals(relation.Target, StringComparison.OrdinalIgnoreCase));
         string sourceColumns = string.Join(", ", relation.SourceColumns);
         string targetColumns = string.Join(", ", relation.TargetColumns);
-        bool sourcePk = source != null && relation.SourceColumns.All(c => source.PrimaryKeyColumns.Contains(c, StringComparer.OrdinalIgnoreCase));
-        bool targetPk = target != null && relation.TargetColumns.All(c => target.PrimaryKeyColumns.Contains(c, StringComparer.OrdinalIgnoreCase));
-        string kind = relation.Kind.Equals("FK", StringComparison.OrdinalIgnoreCase) ? "FOREIGN KEY · физическая" : "ЛОГИЧЕСКАЯ СВЯЗЬ";
-        string sourceRole = sourcePk ? "зависимая сторона · поля входят в PK" : "зависимая сторона";
-        string targetRole = targetPk ? "главная сторона · поля входят в PK" : "главная/справочная сторона";
-        return $"{kind}\n" +
-               $"Зависимая: {ShortTableName(relation.Source)}.{sourceColumns} ({sourceRole})\n" +
-               $"Главная: {ShortTableName(relation.Target)}.{targetColumns} ({targetRole})\n" +
-               $"Правило: {relation.Rule}";
+        string kind = relation.Kind.Equals("FK", StringComparison.OrdinalIgnoreCase)
+            ? "Связь задана в базе данных"
+            : "Связь настроена в проекте";
+        return $"{kind}\nПоле «{sourceColumns}» таблицы «{ShortTableName(relation.Source)}» использует значение из поля «{targetColumns}» таблицы «{ShortTableName(relation.Target)}».";
     }
 
     private static string BuildTableToolTip(GraphTable table) => $"{table.FullName}\n{(table.PrimaryKeyColumns.Count == 0 ? "PK: не объявлен" : "PK: " + string.Join(", ", table.PrimaryKeyColumns))}\n\nПоля:\n{string.Join(", ", table.Columns)}";

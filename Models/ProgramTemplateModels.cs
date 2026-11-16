@@ -29,6 +29,7 @@ namespace Configurator
         public object ClassNumberValue { get; set; }
         public object RecordValue { get; set; }
         public object AreaValue { get; set; }
+        public object SeqRecordValue { get; set; }
 
         public Dictionary<string, object> Values { get; } = new(StringComparer.OrdinalIgnoreCase);
 

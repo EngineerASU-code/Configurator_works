@@ -427,3 +427,6 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# Local database credentials used by the legacy GASS reference
+testing/GASS/SQL_Configuration.ini

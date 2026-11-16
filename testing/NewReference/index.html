@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Configurator — варианты панели команд</title>
+<style>
+:root{font-family:"Segoe UI",Arial,sans-serif;color:#29313a;background:#f2f3f5}
+*{box-sizing:border-box}body{margin:0;padding:22px}button,input{font:inherit}
+.page{max-width:1580px;margin:auto}h1{font-size:24px;margin:0 0 6px}.lead{margin:0 0 16px;color:#66717c;font-size:14px}
+.tabs{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}.tabs button{border:1px solid #d3d8dd;border-radius:8px;background:#fff;color:#4b5661;padding:10px 14px;font-weight:600;cursor:pointer}.tabs button[aria-selected=true]{background:#318dcc;border-color:#318dcc;color:#fff}
+.caption{min-height:36px;margin:0 0 10px;color:#58636f;font-size:13px}
+.window{background:white;border:1px solid #d6dadd;border-radius:11px;box-shadow:0 8px 30px #29313a12;overflow:hidden}.titlebar{height:34px;padding:7px 14px;border-bottom:1px solid #e6e8ea;font-size:13px;display:flex;justify-content:space-between}.menus{display:flex;gap:24px;padding:11px 18px;color:#59636d;font-size:13px;border-bottom:1px solid #e4e6e8}
+.nav{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;padding:10px 14px;border-bottom:1px solid #e2e5e8}.nav div{height:42px;border:1px solid #d9dcdf;border-radius:8px;display:grid;place-items:center;color:#59636d;font-size:13px}.nav .on{background:#318dcc;border-color:#318dcc;color:white;font-weight:600}
+.stage{padding:12px;min-width:0}.main{display:grid;grid-template-columns:minmax(200px,.82fr) minmax(280px,1fr) minmax(430px,3.2fr);gap:10px}.panel{border:1px solid #d9dcdf;border-radius:9px;background:white;min-width:0;overflow:hidden}.config{padding:12px}.panel-title{font-size:14px;margin:0 0 12px}.config-item,.object{border:1px solid #dedfe1;background:#f7f7f8;border-radius:7px;padding:9px 11px;margin-bottom:6px;font-size:13px}.config-item.active,.object.selected{background:#dfebf8;border-color:#78add6;color:#285d83}
+.list{padding:10px;display:flex;flex-direction:column}.list-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:9px}.list-head h2{font-size:15px;margin:0}.count{font-size:11px;color:#6e7882;white-space:nowrap}
+.toolbar,.tools{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.toolbar{justify-content:space-between;padding:9px 10px;margin-bottom:10px;background:#f8f9fa;border:1px solid #e0e3e6;border-radius:9px}.group{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.tools{margin:0 0 8px}
+.search{height:34px;display:flex;align-items:center;gap:7px;padding:0 9px;border:1px solid #d4d9de;background:white;border-radius:7px;color:#76818a;min-width:140px}.search input{border:0;outline:0;width:125px;min-width:35px;color:#303941;background:transparent;font-size:13px}
+.btn{min-height:34px;padding:7px 10px;border-radius:7px;border:1px solid #d5d9dd;background:white;color:#46515b;font-weight:600;font-size:12px;white-space:nowrap;cursor:pointer}.btn:hover{border-color:#82b3d7;background:#f5faff}.primary{background:#318dcc;color:white;border-color:#318dcc}.danger{color:#8c4444}.filter-on{background:#e2eff9;border-color:#55a1d8;color:#21658f}
+.objects{overflow:auto;max-height:420px;min-height:230px}.object{cursor:pointer}.object:hover{border-color:#9ac2e0}.details{padding:12px;display:flex;flex-direction:column;gap:9px}
+.summary{border:1px solid #d9dcdf;border-radius:9px;padding:14px;display:flex;justify-content:space-between;align-items:center;gap:12px;min-height:92px}.summary h2{font-size:20px;margin:0 0 6px}.meta{font-size:11px;color:#71808d;line-height:1.7}.glyph{width:86px;min-width:86px;height:78px;border-radius:8px;background:#e0edf9;border:1px solid #83b6dc;color:#318dcc;display:grid;place-items:center;font-size:24px;font-weight:700}
+.section-title{font-size:13px;font-weight:650}.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:10px;border:1px solid #d9dcdf;border-radius:9px;background:#fbfbfc}.field{display:grid;grid-template-columns:minmax(90px,.45fr) minmax(90px,1fr);align-items:center;gap:8px;font-size:11px;color:#515c67}.value{height:31px;padding:7px 9px;border:1px solid #d5d9dc;background:white;border-radius:5px;color:#404951;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.status{display:grid;grid-template-columns:1fr 1.35fr 1.1fr auto;gap:8px;padding:9px 12px;background:#fafafa;border-top:1px solid #e1e3e5}.statusbox{border:1px solid #dcdee0;border-radius:8px;padding:7px 9px;background:white;min-width:0}.statusbox small{display:block;color:#79828a;font-size:9px;margin-bottom:3px}.statusbox strong{font-size:12px;font-weight:600;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.online{color:#22834f}
+.v3 .summary{align-items:flex-start}.v3 .summary .actions{margin-left:auto}.v4 .toolbar{display:block}.v4 .toolbar .group{padding:2px 0}.v4 .toolbar .group+.group{border-top:1px solid #e1e5e8;padding-top:8px;margin-top:6px}
+.toast{position:fixed;left:50%;bottom:20px;transform:translate(-50%,10px);opacity:0;background:#29313a;color:white;padding:10px 14px;border-radius:8px;font-size:13px;transition:.18s;pointer-events:none}.toast.show{opacity:1;transform:translate(-50%,0)}
+@media(max-width:1000px){body{padding:12px}.main{grid-template-columns:minmax(150px,.7fr) minmax(230px,1fr) minmax(350px,2fr)}.fields{grid-template-columns:1fr}.field{grid-template-columns:100px minmax(100px,1fr)}}
+@media(max-width:740px){.main{grid-template-columns:1fr}.config{display:none}.objects{max-height:230px;min-height:160px}.nav{grid-template-columns:repeat(2,1fr)}.status{grid-template-columns:1fr 1fr}.tabs button{flex:1 1 42%}}
+</style>
+</head>
+<body><main class="page">
+<h1>Расположение команд · режим 3</h1><p class="lead">Четыре интерактивных варианта для текущей карточки. Данные в макете демонстрационные.</p>
+<div class="tabs" role="tablist" aria-label="Вариант панели команд">
+<button role="tab" aria-selected="true" data-i="0">1 · Общая панель</button><button role="tab" aria-selected="false" data-i="1">2 · По контексту</button><button role="tab" aria-selected="false" data-i="2">3 · У карточки</button><button role="tab" aria-selected="false" data-i="3">4 · Две строки</button>
+</div><p class="caption" id="caption" aria-live="polite"></p>
+<section class="window"><div class="titlebar"><span>Configurator</span><span>— □ ×</span></div><div class="menus"><span>Файл</span><span>Вид</span><span>База данных</span><span>Опции</span><span>Справка</span></div><div class="nav"><div>БД проекта</div><div>Структура БД</div><div class="on">Объекты проекта</div><div>Редактор FB-блоков</div></div><div class="stage" id="stage"></div>
+<div class="status"><div class="statusbox"><small>ПОЛЬЗОВАТЕЛЬ</small><strong>Администратор · Администратор</strong></div><div class="statusbox"><small>ПОСЛЕДНЕЕ ДЕЙСТВИЕ</small><strong id="last">Готово</strong></div><div class="statusbox"><small>ТЕКУЩИЙ ПРОЕКТ</small><strong>EK_Omsk_Juice</strong></div><div class="statusbox"><small>РЕЖИМ РАБОТЫ</small><strong class="online">● ONLINE</strong></div></div></section>
+</main><div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script>
+const notes=[
+"Все команды собраны в общей панели над рабочей областью, внутри разделены на поиск, создание и работу с выбранным объектом.",
+"Поиск и фильтр находятся в заголовке списка; добавление рядом со списком, остальные действия — внизу карточки.",
+"Команды списка стоят под его заголовком, а дублирование, удаление и сохранение — прямо в заголовке выбранной карточки.",
+"Две строки общей панели: список команд сверху, действия над выбранным объектом снизу. Панель может переноситься на узком окне."
+];
+const names=["077AV0002","091AV1310","077AV0009","091AV1410","074CV0078","076AV0055","091RV1281","074CV074B"];
+const search='<label class="search"><span>⌕</span><input type="search" placeholder="Поиск объектов" aria-label="Поиск объектов"></label><button class="btn filter" data-act="Фильтр">☷ Фильтр</button>';
+const create='<button class="btn primary" data-act="Добавить">＋ Добавить</button><button class="btn" data-act="Добавить несколько">＋ Несколько</button>';
+const record='<button class="btn" data-act="Дублировать">Дублировать</button><button class="btn danger" data-act="Удалить">Удалить</button><button class="btn primary" data-act="Сохранить">☑ Сохранить</button>';
+function nav(){return '<aside class="panel config"><h2 class="panel-title">Конфигурация</h2>'+["PLC","Area","Valve","DSV","Motor","DI","DO","AI","AO","PID","Status","Program","Step","Matrix"].map(x=>'<div class="config-item '+(x==="Valve"?"active":"")+'">'+x+'</div>').join("")+'</aside>'}
+function list(extra){return '<section class="panel list"><div class="list-head"><h2>Valve</h2><span class="count"><span class="countn">8</span> объектов</span></div>'+extra+'<div class="objects">'+names.map((x,i)=>'<div class="object '+(!i?"selected":"")+'" data-name="'+x+'">'+x+'</div>').join("")+'</div></section>'}
+function details(place){const summary='<div class="summary"><div><h2 id="selected">077AV0002</h2><div class="meta">Класс: Valve<br>PLC: 8 &nbsp; · &nbsp; Area: 077 &nbsp; · &nbsp; Record: 1</div></div><div class="glyph">VAL</div></div>';const actions='<div class="tools actions">'+record+'</div>';const fields='<div class="section-title">Информация объекта</div><div class="fields"><div class="field">Record<div class="value">1</div></div><div class="field">PLC<div class="value">8 · PLC08</div></div><div class="field">PLC_Class_Number<div class="value">1</div></div><div class="field">Name<div class="value" id="fieldname">077AV0002</div></div><div class="field">DescriptionL1<div class="value">Автоматический клапан</div></div><div class="field">DescriptionL2<div class="value">Автоматический клапан</div></div><div class="field">Area<div class="value">077</div></div><div class="field">MS_Type<div class="value">КВ</div></div></div>';return '<section class="panel details">'+(place==="top"?summary.replace('<div><h2','<div><h2')+actions:summary)+(place==="bottom"?"": "")+fields+(place==="bottom"?actions:"")+'</section>'}
+function render(i){
+ document.querySelectorAll('[role=tab]').forEach((x,n)=>x.setAttribute('aria-selected',String(n===i)));
+ document.getElementById('caption').textContent=notes[i];
+ let html='';
+ if(i===0) html='<div class="toolbar"><div class="group">'+search+'</div><div class="group">'+create+'</div><div class="group">'+record+'</div></div><div class="main">'+nav()+list('')+details('none')+'</div>';
+ if(i===1) html='<div class="main">'+nav()+list('<div class="tools">'+search+'</div><div class="tools">'+create+'</div>')+details('bottom')+'</div>';
+ if(i===2) html='<div class="main v3">'+nav()+list('<div class="tools">'+search+create+'</div>')+details('none')+'</div>';
+ if(i===3) html='<div class="toolbar"><div class="group">'+search+create+'</div><div class="group">'+record+'</div></div><div class="main">'+nav()+list('')+details('none')+'</div>';
+ if(i===2){html=html.replace('</div><div class="glyph">VAL</div></div><div class="section-title">','</div><div class="glyph">VAL</div><div class="actions">'+record+'</div></div><div class="section-title">');}
+ document.getElementById('stage').innerHTML=html;
+ document.querySelectorAll('.filter').forEach(b=>b.addEventListener('click',()=>{b.classList.toggle('filter-on');b.textContent=b.classList.contains('filter-on')?'☷ Фильтр активен':'☷ Фильтр';say(b.classList.contains('filter-on')?'Фильтр включён в макете':'Фильтр сброшен в макете')}));
+ document.querySelectorAll('[data-act]:not(.filter)').forEach(b=>b.addEventListener('click',()=>{document.getElementById('last').textContent='Демонстрация: '+b.dataset.act.toLowerCase();say('Макет: команда «'+b.dataset.act+'»')}));
+ document.querySelectorAll('.object').forEach(o=>o.addEventListener('click',()=>{document.querySelectorAll('.object').forEach(x=>x.classList.toggle('selected',x===o));document.getElementById('selected').textContent=o.dataset.name;document.getElementById('fieldname').textContent=o.dataset.name}));
+ const input=document.querySelector('.search input');input.addEventListener('input',()=>{let count=0;document.querySelectorAll('.object').forEach(o=>{o.hidden=!o.dataset.name.toLowerCase().includes(input.value.toLowerCase());if(!o.hidden)count++});document.querySelectorAll('.countn').forEach(x=>x.textContent=count)});
+}
+let timer;function say(s){const t=document.getElementById('toast');t.textContent=s;t.classList.add('show');clearTimeout(timer);timer=setTimeout(()=>t.classList.remove('show'),1600)}
+document.querySelectorAll('[role=tab]').forEach(b=>b.addEventListener('click',()=>render(Number(b.dataset.i))));render(0);
+</script></body></html>

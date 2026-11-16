@@ -112,6 +112,11 @@
                                 </Style>
                             </ToggleButton.Style>
                         </ToggleButton>
+                        <CheckBox x:Name="ShowAllGraphRelations" Content="Все связи" IsChecked="False"
+                                  VerticalAlignment="Center" Margin="12,0,0,0" Checked="RelationFilter_Changed"
+                                  Unchecked="RelationFilter_Changed" ToolTip="Показать все найденные связи, включая менее важные"/>
+                        <TextBlock x:Name="GraphDensityStatus" VerticalAlignment="Center" Margin="10,0,0,0"
+                                   FontSize="10" Foreground="{DynamicResource BrushTextSecondary}" Visibility="Collapsed"/>
                     </StackPanel>
                 </Border>
                 <ScrollViewer x:Name="GraphScrollViewer" Grid.Row="1" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" Background="{DynamicResource BrushBase}">

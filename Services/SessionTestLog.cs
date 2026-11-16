@@ -20,12 +20,33 @@ public sealed class SessionTestLog : IDisposable
     private static readonly TimeSpan MaxLogAge = TimeSpan.FromDays(14);
     private readonly List<string> _lines = new();
     private readonly DateTime _started = DateTime.Now;
+    private readonly string _applicationBuild;
+    private string _lastContext;
     private readonly FileStream _stream;
     private readonly StreamWriter _writer;
     public string LogFilePath { get; }
 
     public SessionTestLog()
     {
+        var assembly = typeof(SessionTestLog).Assembly;
+        var version = assembly.GetName().Version?.ToString() ?? "unknown";
+        string fileVersion = version;
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(assembly.Location))
+            {
+                var versionInfo = FileVersionInfo.GetVersionInfo(assembly.Location);
+                if (!string.IsNullOrWhiteSpace(versionInfo.ProductVersion)) version = versionInfo.ProductVersion;
+                if (!string.IsNullOrWhiteSpace(versionInfo.FileVersion)) fileVersion = versionInfo.FileVersion;
+            }
+        }
+        catch (Exception ex) { Debug.WriteLine($"[SessionTestLog] Could not read application version: {ex.Message}"); }
+#if DEBUG
+        const string configuration = "Debug";
+#else
+        const string configuration = "Release";
+#endif
+        _applicationBuild = $"version={version}; fileVersion={fileVersion}; configuration={configuration}";
         var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Configurator", "Diagnostics");
         Directory.CreateDirectory(directory);
         CleanupOldLogs(directory);
@@ -39,7 +60,21 @@ public sealed class SessionTestLog : IDisposable
         {
             Debug.WriteLine($"[SessionTestLog] Could not open persistent diagnostic log: {ex}");
         }
-        Add("СЕССИЯ", $"Начата диагностическая запись; file='{LogFilePath}'");
+        Add("СЕССИЯ", $"Начата диагностическая запись; app={_applicationBuild}; file='{LogFilePath}'");
+    }
+
+    public void RecordContext(string user, string project, string source)
+    {
+        user = string.IsNullOrWhiteSpace(user) ? "не авторизован" : user.Trim();
+        project = string.IsNullOrWhiteSpace(project) ? "не выбран" : project.Trim();
+        source = string.IsNullOrWhiteSpace(source) ? "не выбран" : source.Trim();
+        string context = string.Join("\u001f", user, project, source);
+        lock (_sync)
+        {
+            if (string.Equals(_lastContext, context, StringComparison.Ordinal)) return;
+            _lastContext = context;
+        }
+        Add("КОНТЕКСТ", $"app={_applicationBuild}; пользователь='{user}'; проект='{project}'; источник={source}");
     }
 
     /// <summary>Keeps the newest log files and drops the ones older than two weeks. Best effort.</summary>
@@ -90,7 +125,7 @@ public sealed class SessionTestLog : IDisposable
         var header = new[]
         {
             "Configurator — диагностический лог тестирования",
-            $"Версия: {typeof(SessionTestLog).Assembly.GetName().Version?.ToString(3) ?? "unknown"}",
+            $"Приложение и сборка: {_applicationBuild}",
             $"Начало сессии: {_started:yyyy-MM-dd HH:mm:ss}",
             $"Экспорт: {DateTime.Now:yyyy-MM-dd HH:mm:ss}",
             $"Автоматический лог: {LogFilePath}",

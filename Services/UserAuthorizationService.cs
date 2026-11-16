@@ -11,7 +11,14 @@ public static class UserAuthorizationService
     private static readonly object Sync = new();
     private static readonly string DirectoryPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Configurator");
     private static readonly string FilePath = Path.Combine(DirectoryPath, "users.json");
+    private static readonly string ProjectAccountApprovalPath = Path.Combine(DirectoryPath, "project-account-approvals.json");
     private static UserStoreDocument _document;
+    private static ProjectAccountApprovalDocument _projectAccountApprovals;
+    private sealed class ProjectAccountApprovalDocument
+    {
+        public int SchemaVersion { get; set; } = 1;
+        public Dictionary<string, List<string>> Projects { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    }
     private const int LegacyHashVersion = 0;
     private const int CurrentHashVersion = 1;
     private const int LegacyIterations = 120_000;
@@ -23,6 +30,8 @@ public static class UserAuthorizationService
     private const int MaximumPasswordLength = 1024;
     private static readonly Dictionary<string, LoginAttemptState> LoginAttempts = new(StringComparer.OrdinalIgnoreCase);
     private sealed class LoginAttemptState { public int Failures; public DateTime BlockedUntilUtc; }
+    private static List<UserAccount> _projectUsers = new();
+    private static string _activeProjectId;
     public static UserAccount CurrentUser { get; private set; }
     public static RoleDefinition CurrentRole => CurrentUser == null ? null : _document?.Roles.FirstOrDefault(r => r.Name.Equals(CurrentUser.RoleName, StringComparison.OrdinalIgnoreCase));
     public static event EventHandler Changed;
@@ -36,6 +45,7 @@ public static class UserAuthorizationService
         lock (Sync)
         {
             Directory.CreateDirectory(DirectoryPath);
+            _projectAccountApprovals = LoadProjectAccountApprovals();
             bool storeExists = File.Exists(FilePath);
             _isNewInstallation = !storeExists;
             if (storeExists)
@@ -151,14 +161,19 @@ public static class UserAuthorizationService
             var engineer = _document.Users.FirstOrDefault(u => u.UserName.Equals("Инженер-ПНР", StringComparison.OrdinalIgnoreCase));
             if (engineer == null && !NeedsInitialSetup)
             {
-                engineer = new UserAccount { UserName = "Инженер-ПНР", DisplayName = "Инженер-ПНР", RoleName = "Проектировщик", Enabled = false };
+                engineer = new UserAccount { UserName = "Инженер-ПНР", DisplayName = "Инженер-ПНР", RoleName = "Инженер ПНР", Enabled = false };
                 SetPassword(engineer, Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)));
                 _document.Users.Add(engineer);
+                commissioningRoleNeedsSave = true;
             }
             if (engineer != null)
             {
                 engineer.DisplayName = "Инженер-ПНР";
-                if (!_document.Roles.Any(r => r.Name.Equals(engineer.RoleName, StringComparison.OrdinalIgnoreCase))) engineer.RoleName = "Проектировщик";
+                if (!_document.Roles.Any(role => role.Name.Equals(engineer.RoleName ?? "", StringComparison.OrdinalIgnoreCase)))
+                {
+                    engineer.RoleName = "Проектировщик";
+                    commissioningRoleNeedsSave = true;
+                }
             }
 
             // Compatibility migration: preserve the visibility of modes for existing roles.
@@ -285,7 +300,7 @@ public static class UserAuthorizationService
                 var engineer = _document.Users.FirstOrDefault(u => u.UserName.Equals("Инженер-ПНР", StringComparison.OrdinalIgnoreCase));
                 if (engineer == null)
                 {
-                    engineer = new UserAccount { UserName = "Инженер-ПНР", DisplayName = "Инженер-ПНР", RoleName = "Проектировщик", Enabled = false };
+                    engineer = new UserAccount { UserName = "Инженер-ПНР", DisplayName = "Инженер-ПНР", RoleName = "Инженер ПНР", Enabled = false };
                     SetPassword(engineer, Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)));
                     _document.Users.Add(engineer);
                 }
@@ -346,7 +361,8 @@ public static class UserAuthorizationService
                 error = $"Слишком много неудачных попыток. Повторите вход через {seconds} сек.";
                 return false;
             }
-            var user = _document.Users.FirstOrDefault(u => u.UserName.Equals(key, StringComparison.OrdinalIgnoreCase));
+            var user = _projectUsers.FirstOrDefault(u => u.UserName.Equals(key, StringComparison.OrdinalIgnoreCase))
+                ?? _document.Users.FirstOrDefault(u => IsBuiltInUser(u.UserName) && u.UserName.Equals(key, StringComparison.OrdinalIgnoreCase));
             if (user == null || !user.Enabled || !VerifyPassword(user, password))
             {
                 RegisterFailedLogin(key);
@@ -354,7 +370,7 @@ public static class UserAuthorizationService
                 return false;
             }
 
-            bool needsRehash = user.PasswordHashVersion != CurrentHashVersion || GetIterations(user) != CurrentIterations;
+            bool needsRehash = !_projectUsers.Contains(user) && (user.PasswordHashVersion != CurrentHashVersion || GetIterations(user) != CurrentIterations);
             if (needsRehash)
             {
                 string oldHash = user.PasswordHash, oldSalt = user.PasswordSalt;
@@ -483,9 +499,194 @@ public static class UserAuthorizationService
 
     public static string PermissionDisplay(Permission p) => PermissionCatalog.Get(p).Title;
 
-    public static IReadOnlyList<UserAccount> Users => _document.Users;
+    public static IReadOnlyList<UserAccount> Users => _document.Users.Where(u => IsBuiltInUser(u.UserName)).Concat(_projectUsers).ToList();
     public static IReadOnlyList<RoleDefinition> Roles => _document.Roles;
     public static bool IsBuiltInUser(string name) => string.Equals(name, "admin", StringComparison.OrdinalIgnoreCase) || string.Equals(name, "Инженер-ПНР", StringComparison.OrdinalIgnoreCase);
+    public static bool IsProjectUser(UserAccount user = null) => _projectUsers.Contains(user ?? CurrentUser);
+
+    /// <summary>Sets approved accounts for the active local project without persisting them in the machine-wide store.</summary>
+    public static void SetProjectUsers(string projectId, IEnumerable<Configurator.Core.Projects.ProjectUserAccount> accounts)
+    {
+        InitializeIfNeeded();
+        var previousProjectId = _activeProjectId;
+        var previousProjectUsers = _projectUsers;
+        var newUsers = (accounts ?? Enumerable.Empty<Configurator.Core.Projects.ProjectUserAccount>())
+            .Where(account => account.Enabled)
+            .Select(account => new UserAccount
+            {
+                UserName = account.UserName,
+                DisplayName = string.IsNullOrWhiteSpace(account.DisplayName) ? account.UserName : account.DisplayName,
+                RoleName = account.RoleName,
+                PasswordHash = account.PasswordHash,
+                PasswordSalt = account.PasswordSalt,
+                PasswordHashVersion = account.PasswordHashVersion,
+                PasswordIterations = account.PasswordIterations,
+                Enabled = account.Enabled
+            }).ToList();
+
+        if (previousProjectUsers.Contains(CurrentUser))
+        {
+            var current = CurrentUser;
+            var replacement = newUsers.FirstOrDefault(account => account.UserName.Equals(current.UserName, StringComparison.OrdinalIgnoreCase));
+            bool sameProject = string.Equals(previousProjectId, projectId, StringComparison.OrdinalIgnoreCase);
+            if (!sameProject || replacement is null ||
+                !replacement.PasswordHash.Equals(current.PasswordHash, StringComparison.Ordinal) ||
+                !replacement.PasswordSalt.Equals(current.PasswordSalt, StringComparison.Ordinal))
+                CurrentUser = null;
+            else
+                CurrentUser = replacement;
+        }
+
+        _activeProjectId = projectId;
+        _projectUsers = newUsers;
+        Changed?.Invoke(null, EventArgs.Empty);
+    }
+
+    public static IReadOnlyList<Configurator.Core.Projects.ProjectUserAccount> GetUnapprovedProjectUsers(
+        string projectId, IEnumerable<Configurator.Core.Projects.ProjectUserAccount> accounts)
+    {
+        InitializeIfNeeded();
+        return (accounts ?? Enumerable.Empty<Configurator.Core.Projects.ProjectUserAccount>())
+            .Where(account => account.Enabled && !IsProjectAccountApproved(projectId, account)).ToList();
+    }
+
+    public static IReadOnlyList<Configurator.Core.Projects.ProjectUserAccount> GetApprovedProjectUsers(
+        string projectId, IEnumerable<Configurator.Core.Projects.ProjectUserAccount> accounts)
+    {
+        InitializeIfNeeded();
+        return (accounts ?? Enumerable.Empty<Configurator.Core.Projects.ProjectUserAccount>())
+            .Where(account => account.Enabled && IsProjectAccountApproved(projectId, account)).ToList();
+    }
+
+    public static void ApproveProjectUsers(string projectId, IEnumerable<Configurator.Core.Projects.ProjectUserAccount> accounts)
+    {
+        RequireAdministrativeSession();
+        if (string.IsNullOrWhiteSpace(projectId)) throw new ArgumentException("У проекта отсутствует идентификатор.", nameof(projectId));
+
+        var next = CloneProjectAccountApprovals(_projectAccountApprovals);
+        if (!next.Projects.TryGetValue(projectId, out var fingerprints))
+            next.Projects[projectId] = fingerprints = new List<string>();
+        foreach (var account in accounts ?? Enumerable.Empty<Configurator.Core.Projects.ProjectUserAccount>())
+        {
+            if (!account.Enabled) continue;
+            string fingerprint = GetProjectAccountFingerprint(account);
+            if (!fingerprints.Contains(fingerprint, StringComparer.Ordinal)) fingerprints.Add(fingerprint);
+        }
+        SaveProjectAccountApprovals(next);
+        _projectAccountApprovals = next;
+    }
+
+    public static void ReplaceProjectUserApprovals(string projectId, IEnumerable<Configurator.Core.Projects.ProjectUserAccount> accounts)
+    {
+        RequireAdministrativeSession();
+        if (string.IsNullOrWhiteSpace(projectId)) throw new ArgumentException("У проекта отсутствует идентификатор.", nameof(projectId));
+        var next = CloneProjectAccountApprovals(_projectAccountApprovals);
+        next.Projects[projectId] = (accounts ?? Enumerable.Empty<Configurator.Core.Projects.ProjectUserAccount>())
+            .Where(account => account.Enabled)
+            .Select(GetProjectAccountFingerprint)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        SaveProjectAccountApprovals(next);
+        _projectAccountApprovals = next;
+    }
+
+    public static void SetProjectAccountPassword(Configurator.Core.Projects.ProjectUserAccount account, string password)
+    {
+        RequireAdministrativeSession();
+        ValidatePassword(password);
+        var credentials = new UserAccount();
+        SetPassword(credentials, password);
+        account.PasswordHash = credentials.PasswordHash;
+        account.PasswordSalt = credentials.PasswordSalt;
+        account.PasswordHashVersion = credentials.PasswordHashVersion;
+        account.PasswordIterations = credentials.PasswordIterations;
+    }
+
+    public static void ActivateBuiltInCommissioningEngineer(string password)
+    {
+        RequireAdministrativeSession();
+        ValidatePassword(password);
+        string beforeMutation = JsonConvert.SerializeObject(_document);
+        string sessionUserName = CurrentUser?.UserName;
+        try
+        {
+            var engineer = _document.Users.FirstOrDefault(user => user.UserName.Equals("Инженер-ПНР", StringComparison.OrdinalIgnoreCase));
+            if (engineer == null)
+            {
+                engineer = new UserAccount { UserName = "Инженер-ПНР" };
+                _document.Users.Add(engineer);
+            }
+            engineer.DisplayName = "Инженер-ПНР";
+            engineer.RoleName = "Инженер ПНР";
+            engineer.Enabled = true;
+            SetPassword(engineer, password);
+            Save();
+        }
+        catch
+        {
+            RestoreDocumentAfterFailedMutation(beforeMutation, sessionUserName);
+            throw;
+        }
+        Changed?.Invoke(null, EventArgs.Empty);
+    }
+
+    private static bool IsProjectAccountApproved(string projectId, Configurator.Core.Projects.ProjectUserAccount account) =>
+        !string.IsNullOrWhiteSpace(projectId) &&
+        _projectAccountApprovals.Projects.TryGetValue(projectId, out var fingerprints) &&
+        fingerprints.Contains(GetProjectAccountFingerprint(account), StringComparer.Ordinal);
+
+    private static string GetProjectAccountFingerprint(Configurator.Core.Projects.ProjectUserAccount account)
+    {
+        string identity = string.Join("\u001f", account.UserName.Trim().ToUpperInvariant(), account.RoleName.Trim(),
+            account.PasswordHashVersion.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            account.PasswordIterations.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            account.PasswordSalt, account.PasswordHash, account.Enabled ? "1" : "0");
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)));
+    }
+
+    private static ProjectAccountApprovalDocument CloneProjectAccountApprovals(ProjectAccountApprovalDocument source) =>
+        JsonConvert.DeserializeObject<ProjectAccountApprovalDocument>(JsonConvert.SerializeObject(source))
+            ?? new ProjectAccountApprovalDocument();
+
+    private static ProjectAccountApprovalDocument LoadProjectAccountApprovals()
+    {
+        if (!File.Exists(ProjectAccountApprovalPath)) return new ProjectAccountApprovalDocument();
+        try
+        {
+            var loaded = JsonConvert.DeserializeObject<ProjectAccountApprovalDocument>(File.ReadAllText(ProjectAccountApprovalPath));
+            if (loaded?.SchemaVersion != 1 || loaded.Projects is null) return new ProjectAccountApprovalDocument();
+            var projects = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in loaded.Projects)
+            {
+                if (string.IsNullOrWhiteSpace(entry.Key) || entry.Value is null) continue;
+                projects[entry.Key] = entry.Value
+                    .Where(value => value is not null && value.Length == 64 && value.All(Uri.IsHexDigit))
+                    .Distinct(StringComparer.Ordinal).ToList();
+            }
+            return new ProjectAccountApprovalDocument
+            {
+                SchemaVersion = 1,
+                Projects = projects
+            };
+        }
+        catch { return new ProjectAccountApprovalDocument(); }
+    }
+
+    private static void SaveProjectAccountApprovals(ProjectAccountApprovalDocument document)
+    {
+        Directory.CreateDirectory(DirectoryPath);
+        string tempPath = ProjectAccountApprovalPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            File.WriteAllText(tempPath, JsonConvert.SerializeObject(document, Formatting.Indented), new UTF8Encoding(false));
+            File.Move(tempPath, ProjectAccountApprovalPath, overwrite: true);
+        }
+        catch (Exception ex)
+        {
+            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+            throw new IOException("Не удалось сохранить подтверждения учётных записей проекта. Проект не переключён.", ex);
+        }
+    }
 
     public static void SaveUser(string originalName, string userName, string displayName, string role, bool enabled, string newPassword)
     {

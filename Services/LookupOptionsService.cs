@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
@@ -89,6 +89,31 @@ public sealed class LookupOptionsService
         var tables = _tableListCache;
         string FullName(DataRow r) => $"{Convert.ToString(r["TABLE_SCHEMA"])}.{Convert.ToString(r["TABLE_NAME"])}";
         bool Exists(string candidate) => tables.Rows.Cast<DataRow>().Any(r => FullName(r).Equals(candidate, StringComparison.OrdinalIgnoreCase));
+
+        // Older projects use PLC_Types / PLCTypes while the generated lookup rule
+        // names dbo.PLCType. Resolve those known spellings before enforcing the rule.
+        if (fieldName.Equals("Type", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(className, "PLC", StringComparison.OrdinalIgnoreCase)
+            && !Exists(lookupTable))
+        {
+            lookupTable = new[] { "dbo.PLCType", "dbo.PLC_Types", "dbo.PLCTypes", "PLCType", "PLC_Types", "PLCTypes" }
+                .FirstOrDefault(Exists);
+            if (!string.IsNullOrWhiteSpace(lookupTable))
+            {
+                if (!_columnCache.TryGetValue(lookupTable, out var plcTypeColumns))
+                {
+                    plcTypeColumns = await _db.GetTableColumnsAsync(lookupTable, ct);
+                    _columnCache[lookupTable] = plcTypeColumns;
+                }
+                var names = plcTypeColumns.Select(c => c.Name).ToList();
+                preferredKey = new[] { "Record", "Type", "ID", "Id" }
+                    .Select(candidate => names.FirstOrDefault(name => name.Equals(candidate, StringComparison.OrdinalIgnoreCase)))
+                    .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name));
+                displayHint = new[] { "Name", "NameL2", "NameL1", "Description", "TypeName" }
+                    .Select(candidate => names.FirstOrDefault(name => name.Equals(candidate, StringComparison.OrdinalIgnoreCase)))
+                    .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name));
+            }
+        }
 
         if (!Exists(lookupTable) && fieldName.Equals("PLCClassNumber", StringComparison.OrdinalIgnoreCase))
         {
@@ -203,7 +228,8 @@ public sealed class LookupOptionsService
 
         // Fetch both the stored key and human-readable columns. Without selecting
         // Name/Description, BuildDisplay can only fall back to numeric lookup keys.
-        var order = new[] { key, displayHint, "Name", "NameL1", "Name_L1", "NameL2", "Name_L2", "Description", "DescriptionL1", "Title", "Caption", "Label", "TypeName", "Type_Name", "NameL1", "AreaName", "AreaNameL2" }
+        var recordColumn = columns.FirstOrDefault(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase))?.Name;
+        var order = new[] { key, displayHint, useAreaNameLookup ? recordColumn : null, "Name", "NameL1", "Name_L1", "NameL2", "Name_L2", "Description", "DescriptionL1", "Title", "Caption", "Label", "TypeName", "Type_Name", "NameL1", "AreaName", "AreaNameL2" }
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .Select(candidate => columns.FirstOrDefault(c => c.Name.Equals(candidate, StringComparison.OrdinalIgnoreCase))?.Name)
             .Where(x => !string.IsNullOrWhiteSpace(x))
@@ -223,18 +249,26 @@ public sealed class LookupOptionsService
                 string display = BuildDisplay(row, columns.Select(x => x.Name).ToList(), key, displayHint, combineAreaNames);
                 // Prefer the meaningful pair requested for Configurator lookup combos:
                 // Record is the stored key, Name is the human-readable value.
-                string recordColumn = columns.FirstOrDefault(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase))?.Name;
                 string nameColumn = columns.FirstOrDefault(c => c.Name.Equals("Name", StringComparison.OrdinalIgnoreCase))?.Name
                     ?? columns.FirstOrDefault(c => c.Name.Equals("NameL1", StringComparison.OrdinalIgnoreCase))?.Name
                     ?? columns.FirstOrDefault(c => c.Name.Equals("Title", StringComparison.OrdinalIgnoreCase))?.Name;
                 if (useAreaNameLookup)
                 {
                     string areaLabelColumn = columns.FirstOrDefault(c => c.Name.Equals("AreaNameL2", StringComparison.OrdinalIgnoreCase))?.Name
+                        ?? columns.FirstOrDefault(c => c.Name.Equals("AreaNameL1", StringComparison.OrdinalIgnoreCase))?.Name
+                        ?? columns.FirstOrDefault(c => c.Name.Equals("NameL2", StringComparison.OrdinalIgnoreCase))?.Name
+                        ?? columns.FirstOrDefault(c => c.Name.Equals("Name_L2", StringComparison.OrdinalIgnoreCase))?.Name
+                        ?? columns.FirstOrDefault(c => c.Name.Equals("NameL1", StringComparison.OrdinalIgnoreCase))?.Name
+                        ?? columns.FirstOrDefault(c => c.Name.Equals("Name_L1", StringComparison.OrdinalIgnoreCase))?.Name
                         ?? columns.FirstOrDefault(c => c.Name.Equals("AreaName", StringComparison.OrdinalIgnoreCase))?.Name;
                     string areaLabel = string.IsNullOrWhiteSpace(areaLabelColumn) || row[areaLabelColumn] == DBNull.Value
                         ? string.Empty
                         : Convert.ToString(row[areaLabelColumn]) ?? string.Empty;
-                    display = string.IsNullOrWhiteSpace(areaLabel) ? keyText : areaLabel;
+                    string recordValue = !string.IsNullOrWhiteSpace(recordColumn) && row.Table.Columns.Contains(recordColumn) && row[recordColumn] != DBNull.Value
+                        ? Convert.ToString(row[recordColumn]) ?? string.Empty
+                        : string.Empty;
+                    display = string.IsNullOrWhiteSpace(areaLabel) ? (string.IsNullOrWhiteSpace(recordValue) ? keyText : recordValue)
+                        : string.IsNullOrWhiteSpace(recordValue) ? areaLabel : $"{recordValue}. {areaLabel}";
                 }
                 else if (!combineAreaNames && !string.IsNullOrWhiteSpace(recordColumn) && !string.IsNullOrWhiteSpace(nameColumn)
                     && row.Table.Columns.Contains(recordColumn) && row.Table.Columns.Contains(nameColumn))

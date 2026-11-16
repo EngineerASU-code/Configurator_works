@@ -48,8 +48,6 @@ public partial class MultiObjectEditorWindow : Window
         PlcOptions = (plcOptions ?? Array.Empty<(string, string)>())
             .Where(x => !string.IsNullOrWhiteSpace(x.Key))
             .Select(x => new BatchObjectPlcOption { Key = x.Key, Title = x.Title }).ToList();
-        var plcColumn = RowsGrid.Columns.OfType<DataGridComboBoxColumn>().First();
-        plcColumn.ItemsSource = PlcOptions;
         RowsGrid.ItemsSource = _rows;
         AddRow();
     }

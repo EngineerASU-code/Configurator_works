@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
@@ -692,7 +692,8 @@ public partial class TemplateArchitectureView : UserControl
     private async void AddField_Click(object sender, RoutedEventArgs e)
     {
         if (!EnsureEditable()) return;
-        if (_offlineProject == null && (_connection == null || string.IsNullOrWhiteSpace(_selectedDatabase) || !await _connection.TestConnectionAsync(_selectedDatabase)))
+        bool hasSqlStorage = !string.IsNullOrWhiteSpace(_selectedClass.PrimaryStorage?.TableName);
+        if (_offlineProject == null && hasSqlStorage && (_connection == null || string.IsNullOrWhiteSpace(_selectedDatabase) || !await _connection.TestConnectionAsync(_selectedDatabase)))
         {
             Configure(_connection, Array.Empty<string>(), string.Empty);
             TxtStatus.Text = "Связь с БД потеряна. Добавление полей заблокировано до восстановления подключения.";
@@ -843,10 +844,19 @@ public partial class TemplateArchitectureView : UserControl
                 TxtStatus.Text = "Класс сохранён в локальный проект · SQL не используется";
                 return;
             }
+            if (_selectedClass.PrimaryStorage == null || string.IsNullOrWhiteSpace(_selectedClass.PrimaryStorage.TableName))
+            {
+                _architecture.Upsert(_selectedClass);
+                _architecture.Save();
+                BtnDetachParent.IsEnabled = !string.IsNullOrWhiteSpace(_selectedClass.BaseClassId) && !_selectedClass.IsSystem;
+                RefreshClassList();
+                TxtStatus.Text = "Описание класса сохранено в библиотеке шаблонов · SQL не изменён";
+                LogMode2Action($"Сохранены сведения класса · {_selectedClass.Name}", null,
+                    $"Описание={_selectedClass.Description ?? string.Empty}; SQL-сопоставление не задано");
+                return;
+            }
             if (_connection == null || string.IsNullOrWhiteSpace(_selectedDatabase))
                 throw new InvalidOperationException("Сначала выберите БД проекта.");
-            if (_selectedClass.PrimaryStorage == null || string.IsNullOrWhiteSpace(_selectedClass.PrimaryStorage.TableName))
-                throw new InvalidOperationException("Для класса не задана SQL-таблица.");
 
             var effectiveFields = (_selectedClass.IsSystem
                 ? _selectedClass.Fields
@@ -1030,11 +1040,26 @@ public partial class TemplateArchitectureView : UserControl
         if (dialog.ShowDialog() != true || dialog.Result == null) return;
         try
         {
+            var existingClass = _architecture.Classes.FirstOrDefault(x => x.ClassNumber == dialog.Result.ClassNumber);
+            if (existingClass != null)
+            {
+                Configurator.Infrastructure.ModernDialog.Show(
+                    $"Номер класса {dialog.Result.ClassNumber} уже занят классом «{existingClass.Name}». Новый класс не создан. Укажите свободный номер и повторите добавление.",
+                    "Номер класса занят", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
             if (_offlineProject == null && _connection != null && !string.IsNullOrWhiteSpace(_selectedDatabase))
             {
                 _classRegistry ??= new ClassRegistryService(_connection.ToConnectionString(_selectedDatabase));
-                int dbNext = await _classRegistry.GetNextClassNumberAsync();
-                if (dialog.Result.ClassNumber < dbNext) dialog.Result.ClassNumber = dbNext;
+                var existingClassName = await _classRegistry.GetClassNameByNumberAsync(dialog.Result.ClassNumber);
+                if (existingClassName != null)
+                {
+                    Configurator.Infrastructure.ModernDialog.Show(
+                        $"Номер класса {dialog.Result.ClassNumber} уже занят классом «{existingClassName}». Новый класс не создан. Укажите свободный номер и повторите добавление.",
+                        "Номер класса занят", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
                 await _classRegistry.UpsertAsync(dialog.Result);
             }
             _architecture.Upsert(dialog.Result); _architecture.Save(); RefreshClassList(); ClassList.SelectedItem = _architecture.Find(dialog.Result.Id);

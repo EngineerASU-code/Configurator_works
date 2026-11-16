@@ -11,7 +11,7 @@ namespace Configurator.Infrastructure.Projects;
 /// <summary>Reads and writes portable .cfgproj packages. Opening a package never connects to a database.</summary>
 public sealed class ProjectPackageService
 {
-    private const int CurrentFormatVersion = 2;
+    private const int CurrentFormatVersion = 3;
     private const long MaxEntryBytes = 128L * 1024 * 1024;
     private const long MaxPackageExpandedBytes = 512L * 1024 * 1024;
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
@@ -42,6 +42,7 @@ public sealed class ProjectPackageService
 
         project.Manifest.Format = "ConfiguratorProject";
         project.Manifest.FormatVersion = CurrentFormatVersion;
+        project.Manifest.ConfiguratorVersion = string.Empty;
         project.Manifest.ModifiedUtc = DateTimeOffset.UtcNow;
         project.Settings.DisplayName = string.IsNullOrWhiteSpace(project.Settings.DisplayName)
             ? project.Manifest.Name : project.Settings.DisplayName;
@@ -58,6 +59,7 @@ public sealed class ProjectPackageService
                 await WriteJsonAsync(archive, "project/graph-relations.json", project.GraphRelations, cancellationToken);
                 await WriteJsonAsync(archive, "project/filters.json", project.Filters, cancellationToken);
                 await WriteJsonAsync(archive, "project/text-lists.json", project.TextLists, cancellationToken);
+                await WriteJsonAsync(archive, "project/users.json", project.Users, cancellationToken);
                 await WriteJsonAsync(archive, "data/local-snapshot.json", project.LocalRecords, cancellationToken);
                 await WriteJsonAsync(archive, "data/baseline.json", project.BaselineRecords, cancellationToken);
                 await WriteJsonAsync(archive, "data/table-schemas.json", project.TableSchemas, cancellationToken);
@@ -212,8 +214,8 @@ public sealed class ProjectPackageService
             throw new InvalidDataException("Файл не является проектом Configurator.");
         if (manifest.FormatVersion < 1 || manifest.FormatVersion > CurrentFormatVersion)
             throw new InvalidDataException($"Версия формата проекта {manifest.FormatVersion} не поддерживается этой версией Configurator.");
-        // Format v2 defines these sections as required. Format v1 is retained as a
-        // legacy import path because older packages may omit newer optional sections.
+        // Format v2/v3 define these sections as required. Older packages remain readable;
+        // project users were added in v3 and are optional when importing legacy packages.
         if (manifest.FormatVersion >= 2)
         {
             string[] requiredEntries = {
@@ -221,6 +223,8 @@ public sealed class ProjectPackageService
                 "project/graph-relations.json", "project/filters.json", "project/text-lists.json",
                 "data/local-snapshot.json", "data/baseline.json", "data/table-schemas.json"
             };
+            if (manifest.FormatVersion >= 3)
+                requiredEntries = requiredEntries.Append("project/users.json").ToArray();
             foreach (var required in requiredEntries)
             {
                 if (archive.GetEntry(required) is null)
@@ -240,6 +244,7 @@ public sealed class ProjectPackageService
             GraphRelations = await ReadJsonAsync<JsonObject>(archive, "project/graph-relations.json", cancellationToken) ?? new(),
             Filters = await ReadJsonAsync<JsonObject>(archive, "project/filters.json", cancellationToken) ?? new(),
             TextLists = await ReadJsonAsync<List<ProjectTextList>>(archive, "project/text-lists.json", cancellationToken) ?? new(),
+            Users = await ReadJsonAsync<List<ProjectUserAccount>>(archive, "project/users.json", cancellationToken) ?? new(),
             LocalRecords = await ReadJsonAsync<List<ProjectRecord>>(archive, "data/local-snapshot.json", cancellationToken) ?? new(),
             BaselineRecords = await ReadJsonAsync<List<ProjectRecord>>(archive, "data/baseline.json", cancellationToken) ?? new(),
             TableSchemas = await ReadJsonAsync<List<ProjectTableSchema>>(archive, "data/table-schemas.json", cancellationToken) ?? new()
@@ -396,6 +401,8 @@ public sealed class ProjectPackageService
                     "project/graph-relations.json", "project/filters.json", "project/text-lists.json",
                     "data/local-snapshot.json", "data/baseline.json", "data/table-schemas.json"
                 };
+                if (manifest.FormatVersion >= 3)
+                    requiredEntries = requiredEntries.Append("project/users.json").ToArray();
                 if (requiredEntries.Any(required => archive.GetEntry(required) is null)) return false;
             }
             foreach (var entry in archive.Entries)
@@ -425,7 +432,7 @@ public sealed class ProjectPackageService
         if (project.Manifest.CreatedUtc == default || project.Manifest.ModifiedUtc == default)
             throw new InvalidDataException("В метаданных отсутствует дата создания или изменения проекта.");
         if (project.Settings is null || project.Mappings is null || project.Architecture is null ||
-            project.GraphRelations is null || project.Filters is null || project.TextLists is null ||
+            project.GraphRelations is null || project.Filters is null || project.TextLists is null || project.Users is null ||
             project.LocalRecords is null || project.BaselineRecords is null || project.TableSchemas is null)
             throw new InvalidDataException("Проект содержит отсутствующий обязательный раздел или раздел с null вместо структуры данных.");
 
@@ -531,6 +538,39 @@ public sealed class ProjectPackageService
             foreach (var item in list.Items)
                 if (item is null || string.IsNullOrWhiteSpace(item.Key) || !itemKeys.Add(item.Key))
                     throw new InvalidDataException($"Список '{list.Name}' содержит пустой или повторяющийся ключ элемента.");
+        }
+
+        var userNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var user in project.Users)
+        {
+            if (user is null || string.IsNullOrWhiteSpace(user.UserName) || string.IsNullOrWhiteSpace(user.RoleName))
+                throw new InvalidDataException("Список пользователей проекта содержит запись без логина или роли.");
+            string userName = user.UserName.Trim();
+            if (!user.UserName.Equals(userName, StringComparison.Ordinal) || userName.Length > 128 || userName.Any(char.IsControl))
+                throw new InvalidDataException("Логин пользователя проекта должен быть без пробелов по краям, не длиннее 128 символов и без управляющих символов.");
+            if (!userNames.Add(userName))
+                throw new InvalidDataException($"В проекте повторяется логин пользователя '{userName}'.");
+            if (userName.Equals("admin", StringComparison.OrdinalIgnoreCase) ||
+                userName.Equals("guest", StringComparison.OrdinalIgnoreCase) ||
+                userName.Equals("Инженер-ПНР", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException($"Логин '{userName}' зарезервирован для встроенной учётной записи.");
+            if (!new[] { "Проектировщик", "Инженер ПНР", "Гость" }.Contains(user.RoleName, StringComparer.OrdinalIgnoreCase))
+                throw new InvalidDataException($"Проектный пользователь '{userName}' ссылается на недопустимую роль '{user.RoleName}'.");
+            if (user.RoleName.Equals("Администратор", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Проектная учётная запись не может получить роль Администратора.");
+            if (user.PasswordHashVersion != 1 || user.PasswordIterations != 600_000)
+                throw new InvalidDataException($"Для пользователя '{userName}' заданы неподдерживаемые параметры хеширования пароля.");
+            try
+            {
+                byte[] hash = Convert.FromBase64String(user.PasswordHash ?? string.Empty);
+                byte[] salt = Convert.FromBase64String(user.PasswordSalt ?? string.Empty);
+                if (hash.Length != 32 || salt.Length < 16 || salt.Length > 64)
+                    throw new FormatException();
+            }
+            catch (FormatException ex)
+            {
+                throw new InvalidDataException($"Для пользователя '{userName}' заданы некорректные данные пароля.", ex);
+            }
         }
 
         // Local and baseline snapshots intentionally may differ (pending local edits,

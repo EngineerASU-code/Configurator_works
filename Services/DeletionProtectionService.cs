@@ -23,21 +23,45 @@ public sealed class DeletionProtectionService
 
     public async Task<DeletionPlan> BuildPlanAsync(DeletionRequest request, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(request);
         var plan = new DeletionPlan { Request = request };
+        if (_schema.Relations.Any(relation => relation == null))
+            plan.ValidationErrors.Add("Удаление заблокировано: карта зависимостей содержит пустую связь, которую невозможно проверить.");
         foreach (var relation in _schema.Relations.Where(r =>
-                     r.TargetTable.Equals(request.TableName, StringComparison.OrdinalIgnoreCase) &&
-                     r.IsUsableForDeletionProtection))
+                     r != null && r.TargetTable.Equals(request.TableName, StringComparison.OrdinalIgnoreCase)))
         {
-            if (relation.SourceTable.Equals(request.TableName, StringComparison.OrdinalIgnoreCase)) continue;
+            if (!relation.IsUsableForDeletionProtection)
+            {
+                plan.ValidationErrors.Add($"Удаление заблокировано: связь {relation.SourceTable} → {relation.TargetTable} не подтверждена для защиты зависимостей.");
+                continue;
+            }
 
-            // IMPORTANT: do not silently discard a logical dependency merely because
-            // its source column cannot be written. Previously such a relation was
-            // filtered out here, so deleting dbo.Areas could leave AnaIn/Valve/etc.
-            // containing a now-orphaned Area value with no warning at all.
+            var sourceTable = _schema.FindTable(relation.SourceTable);
+            var targetTable = _schema.FindTable(relation.TargetTable);
+            if (sourceTable == null || targetTable == null || relation.SourceColumns.Count == 0 ||
+                relation.SourceColumns.Count != relation.TargetColumns.Count ||
+                relation.SourceColumns.Any(column => !sourceTable.Columns.Any(c => c.Name.Equals(column, StringComparison.OrdinalIgnoreCase))) ||
+                relation.TargetColumns.Any(column => !targetTable.Columns.Any(c => c.Name.Equals(column, StringComparison.OrdinalIgnoreCase))))
+            {
+                plan.ValidationErrors.Add($"Удаление заблокировано: связь {relation.SourceTable} → {relation.TargetTable} имеет неполную или неизвестную схему столбцов.");
+                continue;
+            }
+
+            if (relation.TargetColumns.Any(column => request.Key == null || !request.Key.ContainsKey(column)))
+            {
+                plan.ValidationErrors.Add($"Удаление заблокировано: для проверки связи {relation.SourceTable} → {relation.TargetTable} не хватает ключевых значений строки.");
+                continue;
+            }
+
+            // Self-referencing relations are checked too; a self-link must not silently
+            // bypass dependency protection.
             var hits = await FindDependentsAsync(relation, request.Key, cancellationToken);
             if (hits.Count == 0) continue;
 
             plan.Dependencies.AddRange(hits);
+
+            if (hits.Any(hit => !HasStableIdentity(sourceTable, hit.SourceKey.Keys)))
+                plan.ValidationErrors.Add($"Удаление заблокировано: для зависимых строк в {relation.SourceTable} нет подтверждённого первичного или уникального ключа.");
 
             if (!RelationCanBeWritten(relation))
             {
@@ -109,14 +133,16 @@ public sealed class DeletionProtectionService
 
     private async Task<List<DependencyHit>> FindDependentsAsync(DatabaseRelation relation, IReadOnlyDictionary<string, object> targetKey, CancellationToken ct)
     {
-        if (relation.TargetColumns.Count == 0 || relation.TargetColumns.Count != relation.SourceColumns.Count) return new List<DependencyHit>();
+        if (relation.TargetColumns.Count == 0 || relation.TargetColumns.Count != relation.SourceColumns.Count)
+            throw new InvalidOperationException($"Не удалось проверить зависимость {relation.SourceTable} → {relation.TargetTable}: столбцы связи не сопоставлены.");
         await using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
         await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection, ct);
         var where = new List<string>();
         await using var command = new SqlCommand { Connection = connection };
         for (var i = 0; i < relation.TargetColumns.Count; i++)
         {
-            if (!targetKey.TryGetValue(relation.TargetColumns[i], out var value)) return new List<DependencyHit>();
+            if (!targetKey.TryGetValue(relation.TargetColumns[i], out var value))
+                throw new InvalidOperationException($"Не удалось проверить зависимость {relation.SourceTable} → {relation.TargetTable}: отсутствует значение ключа «{relation.TargetColumns[i]}».");
             var p = "@p" + i;
             where.Add($"{QuoteColumn(relation.SourceTable, relation.SourceColumns[i])} = {p}");
             command.Parameters.AddWithValue(p, value ?? DBNull.Value);
@@ -150,7 +176,10 @@ public sealed class DeletionProtectionService
                     if (available.Contains(sourceColumn))
                         sourceKey[sourceColumn] = reader[sourceColumn] == DBNull.Value ? null : reader[sourceColumn];
             }
-            hits.Add(new DependencyHit { SourceTable = relation.SourceTable, SourceKey = sourceKey, SourceColumnDescription = string.Join(", ", relation.SourceColumns), TargetTable = relation.TargetTable, Relation = relation });
+            var sourceReferenceValues = relation.SourceColumns
+                .Where(available.Contains)
+                .ToDictionary(column => column, column => reader[column] == DBNull.Value ? null : reader[column], StringComparer.OrdinalIgnoreCase);
+            hits.Add(new DependencyHit { SourceTable = relation.SourceTable, SourceKey = sourceKey, SourceReferenceValues = sourceReferenceValues, SourceColumnDescription = string.Join(", ", relation.SourceColumns), TargetTable = relation.TargetTable, Relation = relation });
         }
         return hits;
     }
@@ -166,6 +195,8 @@ public sealed class DeletionProtectionService
 
         var sourceTable = _schema.FindTable(dependency.SourceTable);
         if (sourceTable == null) return new List<ReplacementCandidate>();
+        if (!HasStableIdentity(sourceTable, dependency.SourceKey.Keys))
+            throw new InvalidOperationException($"Безопасная замена для {dependency.SourceTable} невозможна: не найден подтверждённый первичный или уникальный ключ зависимой строки.");
         var sourceRow = await LoadSourceRowAsync(connection, dependency, sourceTable, ct);
         if (sourceRow.Count == 0) return new List<ReplacementCandidate>();
 
@@ -345,10 +376,16 @@ public sealed class DeletionProtectionService
         return string.Equals(Convert.ToString(a), Convert.ToString(b), StringComparison.OrdinalIgnoreCase);
     }
 
-    private static async Task ApplyReplacementAsync(SqlConnection connection, SqlTransaction transaction, ReferenceReplacement replacement, CancellationToken ct)
+    private async Task ApplyReplacementAsync(SqlConnection connection, SqlTransaction transaction, ReferenceReplacement replacement, CancellationToken ct)
     {
         if (replacement.SourceColumns.Count != replacement.NewValues.Count || replacement.KeyColumns.Count != replacement.KeyValues.Count)
             throw new ArgumentException("Количество полей и значений в замене не совпадает.");
+        if (replacement.ExpectedOldValues == null || replacement.SourceColumns.Any(column => !replacement.ExpectedOldValues.ContainsKey(column)))
+            throw new InvalidOperationException("Безопасная замена невозможна: отсутствуют исходные значения связанных полей. Повторно загрузите зависимости.");
+        var sourceTable = _schema.FindTable(replacement.SourceTable);
+        if (sourceTable == null || !HasStableIdentity(sourceTable, replacement.KeyColumns))
+            throw new InvalidOperationException($"Безопасная замена в {replacement.SourceTable} невозможна: условие не использует подтверждённый первичный или уникальный ключ.");
+
         var set = new List<string>(); var where = new List<string>();
         await using var command = new SqlCommand { Connection = connection, Transaction = transaction };
         for (var i = 0; i < replacement.SourceColumns.Count; i++)
@@ -365,12 +402,60 @@ public sealed class DeletionProtectionService
         }
         for (var i = 0; i < replacement.KeyColumns.Count; i++)
         {
-            var p = "@key" + i; where.Add($"{QuoteColumn(replacement.SourceTable, replacement.KeyColumns[i])} = {p}");
-            command.Parameters.AddWithValue(p, replacement.KeyValues[i] ?? DBNull.Value);
+            var column = QuoteColumn(replacement.SourceTable, replacement.KeyColumns[i]);
+            if (replacement.KeyValues[i] == null || replacement.KeyValues[i] == DBNull.Value)
+                where.Add($"{column} IS NULL");
+            else
+            {
+                var p = "@key" + i;
+                where.Add($"{column} = {p}");
+                command.Parameters.AddWithValue(p, replacement.KeyValues[i]);
+            }
+        }
+        for (var i = 0; i < replacement.SourceColumns.Count; i++)
+        {
+            var column = QuoteColumn(replacement.SourceTable, replacement.SourceColumns[i]);
+            var value = replacement.ExpectedOldValues[replacement.SourceColumns[i]];
+            if (value == null || value == DBNull.Value)
+                where.Add($"{column} IS NULL");
+            else
+            {
+                var p = "@expected" + i;
+                where.Add($"{column} = {p}");
+                command.Parameters.AddWithValue(p, value);
+            }
         }
         if (set.Count == 0 || where.Count == 0) throw new ArgumentException("Пустая операция замены.");
-        command.CommandText = $"UPDATE {QuoteTable(replacement.SourceTable)} SET {string.Join(", ", set)} WHERE {string.Join(" AND ", where)}";
+
+        var table = QuoteTable(replacement.SourceTable);
+        var whereClause = string.Join(" AND ", where);
+        await using (var count = new SqlCommand($"SELECT COUNT_BIG(1) FROM {table} WITH (UPDLOCK, HOLDLOCK) WHERE {whereClause}", connection, transaction))
+        {
+            foreach (SqlParameter parameter in command.Parameters)
+                if (parameter.ParameterName.StartsWith("@key", StringComparison.Ordinal) ||
+                    parameter.ParameterName.StartsWith("@expected", StringComparison.Ordinal))
+                    count.Parameters.AddWithValue(parameter.ParameterName, parameter.Value);
+            var matches = Convert.ToInt64(await count.ExecuteScalarAsync(ct));
+            if (matches != 1)
+                throw new InvalidOperationException(matches == 0
+                    ? $"Зависимая строка {replacement.SourceTable} изменилась или удалена. Удаление отменено."
+                    : $"Условие замены в {replacement.SourceTable} соответствует нескольким строкам. Удаление отменено.");
+        }
+
+        var updatedParameter = command.Parameters.Add("@updated", SqlDbType.BigInt);
+        updatedParameter.Direction = ParameterDirection.Output;
+        command.CommandText = $"DECLARE @affected TABLE (RowMarker int NOT NULL); UPDATE {table} SET {string.Join(", ", set)} OUTPUT 1 INTO @affected (RowMarker) WHERE {whereClause}; SET @updated = (SELECT COUNT_BIG(*) FROM @affected);";
         await command.ExecuteNonQueryAsync(ct);
+        var updated = Convert.ToInt64(updatedParameter.Value);
+        if (updated != 1)
+            throw new InvalidOperationException($"Замена в {replacement.SourceTable} затронула {updated} строк вместо одной. Удаление отменено.");
+    }
+
+    private static bool HasStableIdentity(DatabaseTable table, IEnumerable<string> columns)
+    {
+        var requested = columns?.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return requested?.Count > 0 && table.Keys.Any(key => (key.IsPrimary || key.IsUnique) &&
+            key.Columns.Count == requested.Count && key.Columns.All(requested.Contains));
     }
 
     private static async Task DeleteTargetAsync(SqlConnection connection, SqlTransaction transaction, DeletionRequest request, CancellationToken ct)
@@ -440,6 +525,7 @@ public sealed class ReferenceReplacement
     public IReadOnlyList<object> NewValues { get; init; } = Array.Empty<object>();
     public IReadOnlyList<string> KeyColumns { get; init; } = Array.Empty<string>();
     public IReadOnlyList<object> KeyValues { get; init; } = Array.Empty<object>();
+    public IReadOnlyDictionary<string, object> ExpectedOldValues { get; init; } = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
     public IReadOnlyDictionary<string, object> AdditionalAssignments { get; init; } = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
 }
 

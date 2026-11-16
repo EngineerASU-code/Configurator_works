@@ -1,3 +1,4 @@
+#nullable enable annotations
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -116,7 +117,9 @@ public sealed class ChangeJournalRowChange
     [Newtonsoft.Json.JsonIgnore]
     public string ChangeSummary => Kind == ChangeJournalOperationKind.Update
         ? string.Join(", ", ChangedBefore.Keys.Select(k => $"{k}: {ValueText(Before, k)} → {ValueText(After, k)}"))
-        : Kind == ChangeJournalOperationKind.Delete ? "Удалена запись" : Kind == ChangeJournalOperationKind.Insert || Kind == ChangeJournalOperationKind.Duplicate ? "Добавлена запись" : KindDisplay;
+        : Kind == ChangeJournalOperationKind.Delete ? "Удалена запись"
+        : Kind == ChangeJournalOperationKind.Duplicate ? $"Источник: {FormatIdentity(IdentityBefore)} → новый объект: {FormatIdentity(IdentityAfter)}"
+        : Kind == ChangeJournalOperationKind.Insert ? "Добавлена запись" : KindDisplay;
     private static string ValueText(Dictionary<string, ChangeJournalValue> values, string key) => values.TryGetValue(key, out var v) ? (v?.ToObject()?.ToString() ?? "NULL") : "NULL";
     private static Dictionary<string, ChangeJournalValue> FilterChanged(Dictionary<string, ChangeJournalValue> source, Dictionary<string, ChangeJournalValue> other)
     {
@@ -134,6 +137,8 @@ public sealed class ChangeJournalRowChange
     }
     private static string Format(Dictionary<string, ChangeJournalValue> values)
         => values == null || values.Count == 0 ? "—" : string.Join(", ", values.Select(x => $"{x.Key}={x.Value?.ToObject() ?? "NULL"}"));
+    private static string FormatIdentity(Dictionary<string, ChangeJournalValue> values)
+        => values == null || values.Count == 0 ? "не определён" : string.Join(", ", values.Select(x => $"{x.Key}={x.Value?.ToObject() ?? "NULL"}"));
 }
 
 public sealed class ChangeJournalEntry
@@ -158,6 +163,8 @@ public sealed class ChangeJournalEntry
     public string EntityIdentity { get; set; } = "";
     public string Result { get; set; } = "Успешно";
     public ChangeJournalOperationKind OperationKind { get; init; }
+    /// <summary>False when a mutation updated related rows that are not fully represented in Changes.</summary>
+    public bool RestoreIncludesAllChanges { get; init; } = true;
     public DateTime? RestoredUtc { get; set; }
     public string RestoredBy { get; set; } = "";
     [Newtonsoft.Json.JsonIgnore]
@@ -176,7 +183,7 @@ public sealed class ChangeJournalEntry
     {
         get
         {
-            if (RestoredUtc.HasValue || !string.Equals(Result, "Успешно", StringComparison.OrdinalIgnoreCase)) return false;
+            if (!RestoreIncludesAllChanges || RestoredUtc.HasValue || !string.Equals(Result, "Успешно", StringComparison.OrdinalIgnoreCase)) return false;
             if ((Changes?.Count ?? 0) > 0)
                 return Changes.All(change => change != null && (change.Kind switch
                 {

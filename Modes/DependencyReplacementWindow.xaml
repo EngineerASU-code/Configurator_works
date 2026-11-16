@@ -6,7 +6,7 @@
     <Grid Margin="18">
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
         <TextBlock Text="Найдены зависимые записи" FontSize="19" FontWeight="SemiBold" Foreground="{DynamicResource BrushText}"/>
-        <TextBlock Grid.Row="1" Margin="0,5,0,12" Text="Для каждой группы зависимостей можно задать свою общую замену. Это важно, когда разные таблицы используют разные справочники или параметры. Индивидуальные значения можно изменить ниже. Изменения выполняются вместе с удалением в одной транзакции." TextWrapping="Wrap" Foreground="{DynamicResource BrushTextSecondary}"/>
+        <TextBlock Grid.Row="1" Margin="0,5,0,12" Text="Выберите новое значение для зависимых записей. Замены и удаление применятся вместе." TextWrapping="Wrap" Foreground="{DynamicResource BrushTextSecondary}"/>
         <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
             <StackPanel>
                 <StackPanel x:Name="GlobalGroupsHost" Margin="0,0,0,10"/>

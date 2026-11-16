@@ -12,13 +12,33 @@
         </StackPanel>
         <DataGrid x:Name="RowsGrid" Grid.Row="1" AutoGenerateColumns="False" CanUserAddRows="False"
                   HeadersVisibility="Column" SelectionMode="Single" SelectionUnit="FullRow"
-                  IsReadOnly="False" GridLinesVisibility="Horizontal" MinHeight="180">
+                  IsReadOnly="False" GridLinesVisibility="All" HorizontalGridLinesBrush="{DynamicResource BrushGridLine}"
+                  VerticalGridLinesBrush="{DynamicResource BrushGridLine}" MinHeight="180"
+                  CanUserResizeColumns="True" ScrollViewer.HorizontalScrollBarVisibility="Auto">
             <DataGrid.Columns>
-                <DataGridTextColumn Header="Record" Binding="{Binding Record, UpdateSourceTrigger=PropertyChanged}" Width="120"/>
-                <DataGridComboBoxColumn Header="PLC" DisplayMemberPath="Title" SelectedValuePath="Key"
-                                        SelectedValueBinding="{Binding PlcKey, UpdateSourceTrigger=PropertyChanged}" Width="220"/>
-                <DataGridTextColumn Header="Name" Binding="{Binding Name, UpdateSourceTrigger=PropertyChanged}" Width="*"/>
-                <DataGridTemplateColumn Header="Действие" Width="110">
+                <DataGridTextColumn Header="Record" Binding="{Binding Record, UpdateSourceTrigger=PropertyChanged}" Width="110"/>
+                <DataGridTemplateColumn Header="PLC" Width="2*">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <ComboBox ItemsSource="{Binding PlcOptions, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
+                                      DisplayMemberPath="Title" SelectedValuePath="Key"
+                                      SelectedValue="{Binding PlcKey, Mode=OneWay}"
+                                      IsHitTestVisible="False" Focusable="False" Height="30" Padding="6,2"
+                                      MaxDropDownHeight="280" ToolTip="Выбранный PLC"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                    <DataGridTemplateColumn.CellEditingTemplate>
+                        <DataTemplate>
+                            <ComboBox ItemsSource="{Binding PlcOptions, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
+                                      DisplayMemberPath="Title" SelectedValuePath="Key"
+                                      SelectedValue="{Binding PlcKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                      Height="30" Padding="6,2" MaxDropDownHeight="280"
+                                      ToolTip="Выберите контроллер"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellEditingTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTextColumn Header="Name" Binding="{Binding Name, UpdateSourceTrigger=PropertyChanged}" Width="3*" MinWidth="180"/>
+                <DataGridTemplateColumn Header="Действие" Width="120">
                     <DataGridTemplateColumn.CellTemplate>
                         <DataTemplate>
                             <Button Content="Удалить" Tag="{Binding}" Click="RemoveRow_Click" Padding="8,3"/>

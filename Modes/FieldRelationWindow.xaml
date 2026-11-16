@@ -9,7 +9,7 @@
         </Grid.RowDefinitions>
         <StackPanel>
             <TextBlock x:Name="TxtTitle" FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource BrushText}"/>
-            <TextBlock Text="Укажите таблицу-справочник и поля, которые задают допустимые значения." Margin="0,4,0,14" TextWrapping="Wrap" Foreground="{DynamicResource BrushTextSecondary}"/>
+            <TextBlock Text="Выберите список, из которого поле будет брать допустимые значения." Margin="0,4,0,14" TextWrapping="Wrap" Foreground="{DynamicResource BrushTextSecondary}"/>
         </StackPanel>
         <Grid Grid.Row="1">
             <Grid.RowDefinitions>

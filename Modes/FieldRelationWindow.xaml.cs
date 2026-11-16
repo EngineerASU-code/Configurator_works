@@ -62,7 +62,7 @@ public partial class FieldRelationWindow : Window
             CmbDisplay.SelectedItem = names.FirstOrDefault(x => x.Equals(_field.LookupDisplayField, StringComparison.OrdinalIgnoreCase))
                                       ?? names.FirstOrDefault(x => x.Equals("Name", StringComparison.OrdinalIgnoreCase))
                                       ?? CmbKey.SelectedItem;
-            TxtStatus.Text = $"Связь: {_field.Name} → {table}";
+            TxtStatus.Text = $"Поле «{_field.Name}» будет использовать значения из списка «{table}» ({CmbDisplay.SelectedItem ?? CmbKey.SelectedItem}).";
         }
         catch (Exception ex) { TxtStatus.Text = $"Не удалось получить поля таблицы: {ex.Message}"; }
     }

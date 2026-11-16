@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
@@ -13,44 +13,119 @@ public partial class ProjectModeView
 {
     private async Task PopulateGlobalFilterListsAsync()
     {
-        if (_connection == null || string.IsNullOrWhiteSpace(_selectedDatabase))
-        {
-            InitializeEmptyFilterLists();
-            return;
-        }
+        var selectedPlcKey = GetSelectedFilterKey(CmbPlcFilter);
+        var selectedAreaKey = GetSelectedFilterKey(CmbAreaFilter);
 
         try
         {
-            var db = new DatabaseService(_connection.ToConnectionString(_selectedDatabase));
+            List<FilterOption> plcLookup;
+            List<FilterOption> areaLookup;
+            if (_offlineProject != null)
+            {
+                plcLookup = await LoadOfflineLookupOptionsAsync(
+                    new[] { "dbo.PLCs", "dbo.PLC", "PLCs", "PLC" },
+                    new[] { "Record" },
+                    new[] { "NameL2", "Name_L2", "NameL1", "Name_L1", "Name", "Title", "Description", "PLCName" });
+                areaLookup = await LoadOfflineLookupOptionsAsync(
+                    new[] { "dbo.Areas", "dbo.Area", "Areas", "Area" },
+                    new[] { "AreaName" },
+                    new[] { "AreaNameL2", "AreaNameL1", "NameL2", "Name_L2", "NameL1", "Name_L1", "AreaName", "Name", "DescriptionL2", "DescriptionL1", "Description", "Title" },
+                    includeRecordInTitle: true);
+            }
+            else
+            {
+                if (_connection == null || string.IsNullOrWhiteSpace(_selectedDatabase))
+                {
+                    InitializeEmptyFilterLists();
+                    return;
+                }
 
-            // Filter choices come from the reference tables themselves, keyed by Record.
-            var plcLookup = await LoadLookupOptionsAsync(db,
-                new[] { "dbo.PLCs", "dbo.PLC", "PLCs", "PLC" },
-                new[] { "Record" },
-                new[] { "NameL2", "Name_L2", "NameL1", "Name_L1", "Name", "Title", "Description", "PLCName" });
-            var areaLookup = await LoadLookupOptionsAsync(db,
-                new[] { "dbo.Areas", "Areas" },
-                new[] { "Record" },
-                new[] { "AreaNameL2" });
+                var db = new DatabaseService(_connection.ToConnectionString(_selectedDatabase));
+                plcLookup = await LoadLookupOptionsAsync(db,
+                    new[] { "dbo.PLCs", "dbo.PLC", "PLCs", "PLC" },
+                    new[] { "Record" },
+                    new[] { "NameL2", "Name_L2", "NameL1", "Name_L1", "Name", "Title", "Description", "PLCName" });
+                areaLookup = await LoadLookupOptionsAsync(db,
+                    new[] { "dbo.Areas", "dbo.Area", "Areas", "Area" },
+                    new[] { "AreaName" },
+                    new[] { "AreaNameL2", "AreaNameL1", "NameL2", "Name_L2", "NameL1", "Name_L1", "AreaName", "Name", "DescriptionL2", "DescriptionL1", "Description", "Title" },
+                    includeRecordInTitle: true);
+            }
 
-            var plcOptions = new List<FilterOption> { new("*", "Все PLC") };
-            plcOptions.AddRange(plcLookup.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase));
-            var areaOptions = new List<FilterOption> { new("*", "Все Area") };
-            areaOptions.AddRange(areaLookup.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase));
-
-            _filterSelectionGuard = true;
-            CmbPlcFilter.ItemsSource = plcOptions;
-            CmbPlcFilter.SelectedIndex = 0;
-            CmbAreaFilter.ItemsSource = areaOptions;
-            CmbAreaFilter.SelectedIndex = 0;
-            _filterSelectionGuard = false;
-            ApplyObjectFilters();
+            SetGlobalFilterLists(plcLookup, areaLookup, selectedPlcKey, selectedAreaKey);
         }
         catch (Exception ex)
         {
             TxtStatus.Text = $"Фильтры: {ex.Message}";
             InitializeEmptyFilterLists();
         }
+    }
+
+    private async Task<List<FilterOption>> LoadOfflineLookupOptionsAsync(
+        IEnumerable<string> tableCandidates,
+        IEnumerable<string> keyCandidates,
+        IEnumerable<string> titleCandidates,
+        bool includeRecordInTitle = false)
+    {
+        var tables = _offlineProject?.TableSchemas ?? new List<Core.Projects.ProjectTableSchema>();
+        var tableName = tables.FirstOrDefault(t => tableCandidates.Any(c => t.TableName.Equals(c, StringComparison.OrdinalIgnoreCase)))?.TableName
+            ?? _offlineProject?.LocalRecords.Select(r => r.TableName).FirstOrDefault(t => tableCandidates.Any(c => t.Equals(c, StringComparison.OrdinalIgnoreCase)));
+        if (string.IsNullOrWhiteSpace(tableName) || _offlineReader == null) return new List<FilterOption>();
+
+        var data = await _offlineReader.ReadRowsAsync(tableName, 10000);
+        var names = data.Columns.Cast<DataColumn>().Select(c => c.ColumnName).ToList();
+        string key = keyCandidates.Select(c => names.FirstOrDefault(n => n.Equals(c, StringComparison.OrdinalIgnoreCase))).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n));
+        if (string.IsNullOrWhiteSpace(key)) return new List<FilterOption>();
+        string title = titleCandidates.Select(c => names.FirstOrDefault(n => n.Equals(c, StringComparison.OrdinalIgnoreCase))).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n));
+        string record = includeRecordInTitle ? names.FirstOrDefault(n => n.Equals("Record", StringComparison.OrdinalIgnoreCase)) : null;
+
+        var result = new List<FilterOption>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (DataRow row in data.Rows)
+        {
+            if (row[key] == DBNull.Value) continue;
+            string value = Convert.ToString(row[key]) ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(value) || !seen.Add(value)) continue;
+            string label = !string.IsNullOrWhiteSpace(title) && row[title] != DBNull.Value ? Convert.ToString(row[title]) ?? string.Empty : string.Empty;
+            string display = string.IsNullOrWhiteSpace(label) ? value : label;
+            if (!string.IsNullOrWhiteSpace(record) && row[record] != DBNull.Value)
+            {
+                string recordValue = Convert.ToString(row[record]) ?? string.Empty;
+                if (!string.IsNullOrWhiteSpace(recordValue)) display = string.IsNullOrWhiteSpace(label) ? recordValue : $"{recordValue}. {label}";
+            }
+            result.Add(new FilterOption(value, display));
+        }
+        return result.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    private void SetGlobalFilterLists(IReadOnlyList<FilterOption> plcLookup, IReadOnlyList<FilterOption> areaLookup, string selectedPlcKey, string selectedAreaKey)
+    {
+        var plcOptions = new List<FilterOption> { new("*", "Все PLC") };
+        plcOptions.AddRange(plcLookup.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase));
+        var areaOptions = new List<FilterOption> { new("*", "Все Area") };
+        areaOptions.AddRange(areaLookup.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase));
+
+        _filterSelectionGuard = true;
+        CmbPlcFilter.ItemsSource = plcOptions;
+        CmbPlcFilter.SelectedItem = plcOptions.FirstOrDefault(x => x.Key.Equals(selectedPlcKey, StringComparison.OrdinalIgnoreCase)) ?? plcOptions[0];
+        CmbAreaFilter.ItemsSource = areaOptions;
+        CmbAreaFilter.SelectedItem = areaOptions.FirstOrDefault(x => x.Key.Equals(selectedAreaKey, StringComparison.OrdinalIgnoreCase)) ?? areaOptions[0];
+        _filterSelectionGuard = false;
+        ApplyObjectFilters();
+    }
+
+    private async Task RefreshConfigurationLookupsAsync()
+    {
+        _onlineLookupOptionsService = null;
+        _onlineLookupDatabaseKey = string.Empty;
+        _offlineLookupCache.Clear();
+        _offlineLookupTableCache.Clear();
+        _offlineTablesCache = null;
+        _offlineSource?.InvalidateIndex();
+
+        await LoadConfigurationValuesAsync(_configurationKind);
+        await PopulateGlobalFilterListsAsync();
+        RebuildObjectFilters();
     }
 
     private void InitializeEmptyFilterLists()
@@ -64,7 +139,7 @@ public partial class ProjectModeView
         ApplyObjectFilters();
     }
 
-    private static async Task<List<FilterOption>> LoadLookupOptionsAsync(DatabaseService db, IEnumerable<string> tableCandidates, IEnumerable<string> keyCandidates, IEnumerable<string> titleCandidates)
+    private static async Task<List<FilterOption>> LoadLookupOptionsAsync(DatabaseService db, IEnumerable<string> tableCandidates, IEnumerable<string> keyCandidates, IEnumerable<string> titleCandidates, bool includeRecordInTitle = false)
     {
         foreach (var table in tableCandidates)
         {
@@ -76,8 +151,10 @@ public partial class ProjectModeView
                 var key = keyCandidates.Select(candidate => names.FirstOrDefault(n => n.Equals(candidate, StringComparison.OrdinalIgnoreCase))).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n));
                 if (string.IsNullOrWhiteSpace(key)) continue;
                 var title = titleCandidates.Select(candidate => names.FirstOrDefault(n => n.Equals(candidate, StringComparison.OrdinalIgnoreCase))).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n));
+                var record = includeRecordInTitle ? names.FirstOrDefault(n => n.Equals("Record", StringComparison.OrdinalIgnoreCase)) : null;
                 var select = new List<string> { key };
                 if (!string.IsNullOrWhiteSpace(title) && !select.Contains(title, StringComparer.OrdinalIgnoreCase)) select.Add(title);
+                if (!string.IsNullOrWhiteSpace(record) && !select.Contains(record, StringComparer.OrdinalIgnoreCase)) select.Add(record);
                 var data = await db.GetTableDataPageAsync(table, 1, 10000, select, null);
                 var result = new List<FilterOption>();
                 var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -91,6 +168,11 @@ public partial class ProjectModeView
                     {
                         var text = Convert.ToString(row[title]);
                         if (!string.IsNullOrWhiteSpace(text)) display = text;
+                    }
+                    if (!string.IsNullOrWhiteSpace(record) && data.Columns.Contains(record) && row[record] != DBNull.Value)
+                    {
+                        var recordValue = Convert.ToString(row[record]);
+                        if (!string.IsNullOrWhiteSpace(recordValue)) display = string.Equals(display, id, StringComparison.OrdinalIgnoreCase) ? recordValue : $"{recordValue}. {display}";
                     }
                     result.Add(new FilterOption(id, display));
                 }

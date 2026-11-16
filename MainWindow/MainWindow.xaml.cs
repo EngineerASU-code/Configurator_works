@@ -107,6 +107,8 @@ namespace Configurator
         private void UpdateWorkspaceModeUi()
         {
             if (OnlineModeButton == null || OfflineModeButton == null) return;
+            UpdateProjectAccountsMenuState();
+            UpdateBuiltInEngineerMenuState();
 
             // Offline can always be requested from Online; a project must be selected before its editor is unlocked.
             OfflineModeButton.IsEnabled = true;
@@ -468,7 +470,8 @@ namespace Configurator
             bool canJournalRestore = UserAuthorizationService.Has(Permission.RestoreJournal);
             if (_rightPanel != null) { bool tableMode = _currentMode == 1 && UserAuthorizationService.Has(Permission.Mode1View); bool hasTable = _isOfflineWorkspace ? _offlineCurrentDataTable != null : _activeVm != null; _rightPanel.BtnAdd.IsEnabled = tableMode && canAdd && hasTable; _rightPanel.BtnUpdate.IsEnabled = tableMode && canEdit && hasTable && _rightPanel.DataTableGrid?.SelectedItem != null; _rightPanel.BtnDuplicate.IsEnabled = tableMode && canAdd && hasTable && _rightPanel.DataTableGrid?.SelectedItem != null; _rightPanel.BtnDelete.IsEnabled = tableMode && canDelete && hasTable && _rightPanel.DataTableGrid?.SelectedItems.Count > 0; }
             if (MenuRemoveDb != null) MenuRemoveDb.IsEnabled = canDb && _leftPanel?.ServerTree?.SelectedItem != null;
-            if (MenuUserSettings != null) { MenuUserSettings.Visibility = Visibility.Visible; MenuUserSettings.IsEnabled = UserAuthorizationService.IsSuperAdmin; MenuUserSettings.ToolTip = UserAuthorizationService.IsSuperAdmin ? "Настройка пользователей и прав доступа для режимов 1, 2 и 3" : "Настройка прав доступна пользователю Администратор"; }
+            UpdateProjectAccountsMenuState();
+            UpdateBuiltInEngineerMenuState();
             UpdateCurrentProjectText();
             if (CurrentUserText != null)
             {
@@ -613,65 +616,6 @@ namespace Configurator
                     await ContinueStartupAfterAuthorizationAsync();
                 else
                     ApplyAuthorizationUi();
-            }
-        }
-
-        private void MenuUserSettings_Click(object sender, RoutedEventArgs e)
-        {
-            if (!UserAuthorizationService.IsSuperAdmin) { UserAuthorizationService.Require(Permission.ManageUsers); return; }
-            new UserSettingsWindow { Owner = this }.ShowDialog();
-        }
-
-        private void MenuExportUserSettings_Click(object sender, RoutedEventArgs e)
-        {
-            if (!UserAuthorizationService.IsSuperAdmin) { UserAuthorizationService.Require(Permission.ManageUsers); return; }
-            var dialog = new SaveFileDialog
-            {
-                Title = "Экспорт настроек пользователей",
-                Filter = "Настройки пользователей (*.json)|*.json|Все файлы (*.*)|*.*",
-                DefaultExt = ".json",
-                AddExtension = true,
-                OverwritePrompt = true,
-                FileName = $"Configurator_Users_{DateTime.Now:yyyy-MM-dd_HHmmss}.json"
-            };
-            if (dialog.ShowDialog(this) != true) return;
-            try
-            {
-                UserAuthorizationService.ExportSettings(dialog.FileName);
-                Configurator.Infrastructure.ModernDialog.Show("Настройки пользователей экспортированы. Файл содержит учётные записи, роли, права и защищённые хеши паролей. Храните его в безопасном месте.", "Экспорт настроек", MessageBoxButton.OK, MessageBoxImage.Information);
-            }
-            catch (Exception ex)
-            {
-                Configurator.Infrastructure.ModernDialog.Show($"Не удалось экспортировать настройки пользователей.\n{ex.Message}", "Экспорт настроек", MessageBoxButton.OK, MessageBoxImage.Warning);
-            }
-        }
-
-        private void MenuImportUserSettings_Click(object sender, RoutedEventArgs e)
-        {
-            if (!UserAuthorizationService.IsSuperAdmin) { UserAuthorizationService.Require(Permission.ManageUsers); return; }
-            var dialog = new OpenFileDialog
-            {
-                Title = "Импорт настроек пользователей",
-                Filter = "Настройки пользователей (*.json)|*.json|Все файлы (*.*)|*.*",
-                DefaultExt = ".json",
-                CheckFileExists = true,
-                Multiselect = false
-            };
-            if (dialog.ShowDialog(this) != true) return;
-            var confirm = Configurator.Infrastructure.ModernDialog.Show(
-                "Импорт полностью заменит текущие учётные записи и роли. Перед заменой будет создана резервная копия текущего users.json.\n\nПродолжить?",
-                "Подтверждение импорта", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-            if (confirm != MessageBoxResult.Yes) return;
-            try
-            {
-                string backupPath = UserAuthorizationService.ImportSettings(dialog.FileName);
-                string message = "Настройки пользователей успешно импортированы.";
-                if (!string.IsNullOrWhiteSpace(backupPath)) message += $"\nРезервная копия: {backupPath}";
-                Configurator.Infrastructure.ModernDialog.Show(message, "Импорт настроек", MessageBoxButton.OK, MessageBoxImage.Information);
-            }
-            catch (Exception ex)
-            {
-                Configurator.Infrastructure.ModernDialog.Show($"Импорт не выполнен. Текущие настройки не должны быть изменены.\n{ex.Message}", "Импорт настроек", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
 
@@ -926,6 +870,7 @@ namespace Configurator
             {
                 CurrentProjectText.Content = _openedLocalProject.Manifest.Name + " · Offline";
                 CurrentProjectText.ToolTip = "Текущий локальный проект. Изменения сохраняются в .cfgproj и не отправляются в SQL Server.";
+                RecordSessionContext($"{_openedLocalProject.Manifest.Name} [id:{_openedLocalProject.Manifest.ProjectId}]", "Offline");
                 return;
             }
             // A remembered database name is not proof that a project is active.
@@ -937,7 +882,12 @@ namespace Configurator
             string activeProjectName = selectedOnlineProjectIsActive ? _selectedDbName : string.Empty;
             CurrentProjectText.Content = string.IsNullOrWhiteSpace(activeProjectName) ? "не выбран" : activeProjectName;
             CurrentProjectText.ToolTip = string.IsNullOrWhiteSpace(activeProjectName) ? "Нажмите, чтобы выбрать проект" : $"Текущий проект: {activeProjectName}. Нажмите, чтобы сменить.";
+            string projectIdentity = selectedOnlineProjectIsActive ? $"{_connection.Server}/{activeProjectName}" : activeProjectName;
+            RecordSessionContext(projectIdentity, _workspaceModeChosen ? "Online" : "не выбран");
         }
+
+        private void RecordSessionContext(string project, string source) =>
+            _sessionTestLog.RecordContext(UserAuthorizationService.CurrentUser?.UserName, project, source);
 
         private void FooterProject_Click(object sender, RoutedEventArgs e)
         {
@@ -1040,7 +990,7 @@ namespace Configurator
         private void MenuHelpHotkeys_Click(object sender, RoutedEventArgs e) { var window = new HotkeysWindow { Owner = this }; window.ShowDialog(); }
         private void MenuHelpAbout_Click(object sender, RoutedEventArgs e)
         {
-            Configurator.Infrastructure.ModernDialog.Show($"Configurator v{typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "unknown"}\nФундамент Online/Offline · Переносимый проект · Основа безопасной синхронизации\n\nProgram/Matrix работают как расширяемые иерархии.", "О программе", MessageBoxButton.OK, MessageBoxImage.Information);
+            Configurator.Infrastructure.ModernDialog.Show("Configurator\nФундамент Online/Offline · Переносимый проект · Основа безопасной синхронизации\n\nProgram/Matrix работают как расширяемые иерархии.", "О программе", MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
         private async void MenuFileExportProject_Click(object sender, RoutedEventArgs e)

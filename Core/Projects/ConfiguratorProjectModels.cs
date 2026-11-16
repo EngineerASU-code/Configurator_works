@@ -3,7 +3,7 @@ using System.Text.Json.Nodes;
 
 namespace Configurator.Core.Projects;
 
-/// <summary>Portable project metadata. Secrets and live connection strings must never be stored here.</summary>
+/// <summary>Portable project metadata. Live connection strings and plaintext credentials must never be stored here.</summary>
 public sealed class ConfiguratorProject
 {
     public ConfiguratorProjectManifest Manifest { get; set; } = new();
@@ -14,9 +14,25 @@ public sealed class ConfiguratorProject
     public JsonObject GraphRelations { get; set; } = new();
     public JsonObject Filters { get; set; } = new();
     public List<ProjectTextList> TextLists { get; set; } = new();
+    /// <summary>Project-scoped accounts. Passwords are represented only as salted password hashes.</summary>
+    public List<ProjectUserAccount> Users { get; set; } = new();
     public List<ProjectRecord> LocalRecords { get; set; } = new();
     public List<ProjectRecord> BaselineRecords { get; set; } = new();
     public List<ProjectTableSchema> TableSchemas { get; set; } = new();
+}
+
+public sealed class ProjectUserAccount
+{
+    public string UserName { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public string RoleName { get; set; } = "Проектировщик";
+    public string PasswordHash { get; set; } = string.Empty;
+    public string PasswordSalt { get; set; } = string.Empty;
+    public int PasswordHashVersion { get; set; } = 1;
+    public int PasswordIterations { get; set; } = 600_000;
+    public bool Enabled { get; set; } = true;
+
+    public override string ToString() => $"{(string.IsNullOrWhiteSpace(DisplayName) ? UserName : DisplayName)} · {UserName}";
 }
 
 public sealed class ConfiguratorProjectManifest
@@ -27,7 +43,7 @@ public sealed class ConfiguratorProjectManifest
     public string Name { get; set; } = "Новый проект";
     public DateTimeOffset CreatedUtc { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset ModifiedUtc { get; set; } = DateTimeOffset.UtcNow;
-    public string ConfiguratorVersion { get; set; } = "6.0.1";
+    public string ConfiguratorVersion { get; set; } = string.Empty;
 }
 
 public sealed class ProjectSettings

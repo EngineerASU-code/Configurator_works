@@ -75,6 +75,21 @@ public sealed class ClassRegistryService
         return Convert.ToInt32(await command.ExecuteScalarAsync(ct));
     }
 
+    public async Task<string> GetClassNameByNumberAsync(int classNumber, CancellationToken ct = default)
+    {
+        await EnsureRegistryAsync(ct);
+
+        using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
+        await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection, ct);
+        string numberColumn = await ResolveNumberColumnAsync(connection, ct);
+        using var command = new SqlCommand(
+            $"SELECT TOP (1) [Name] FROM [dbo].[Classes] WHERE [{numberColumn}] = @Number",
+            connection);
+        command.Parameters.Add("@Number", SqlDbType.Int).Value = classNumber;
+        var value = await command.ExecuteScalarAsync(ct);
+        return value == null || value == DBNull.Value ? null : Convert.ToString(value);
+    }
+
     public async Task<Dictionary<int, bool>> GetAvailabilityAsync(CancellationToken ct = default)
     {
         await EnsureRegistryAsync(ct);

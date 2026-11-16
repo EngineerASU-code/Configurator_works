@@ -219,6 +219,41 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
         return Task.FromResult(removed);
     }
 
+    /// <summary>Runs several local CRUD operations as one snapshot transaction.</summary>
+    public async Task ExecuteMutationTransactionAsync(Func<Task> mutation, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(mutation);
+        if (_suspendNotifications)
+            throw new InvalidOperationException("В локальном проекте уже выполняется пакетное изменение.");
+
+        var backup = _project.LocalRecords.Select(record => new ProjectRecord
+        {
+            TableName = record.TableName,
+            Key = record.Key,
+            RowVersion = record.RowVersion,
+            Values = (System.Text.Json.Nodes.JsonObject)record.Values.DeepClone()
+        }).ToList();
+        var previousModifiedUtc = _project.Manifest.ModifiedUtc;
+        _suspendNotifications = true;
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await mutation();
+            cancellationToken.ThrowIfCancellationRequested();
+            _suspendNotifications = false;
+            Touch();
+        }
+        catch
+        {
+            _project.LocalRecords.Clear();
+            _project.LocalRecords.AddRange(backup);
+            _project.Manifest.ModifiedUtc = previousModifiedUtc;
+            _suspendNotifications = false;
+            InvalidateIndexes();
+            throw;
+        }
+    }
+
     private static string BuildKey(ProjectTableSchema schema, IReadOnlyList<string> keyColumns, IReadOnlyDictionary<string, object?> values) =>
         ProjectKeyCodec.Encode(schema, keyColumns, name => ProjectKeyCodec.ToNode(values.TryGetValue(name, out var value) ? value : null));
 

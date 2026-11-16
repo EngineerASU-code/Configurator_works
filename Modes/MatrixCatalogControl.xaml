@@ -1,0 +1,31 @@
+<UserControl x:Class="Configurator.MatrixCatalogControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid Margin="8">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Grid Grid.Row="0" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="88"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="270"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="240"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <TextBlock Text="PLC" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="{DynamicResource BrushTextSecondary}"/>
+            <TextBox x:Name="PlcInput" Grid.Column="1" Height="38" Padding="8,2" VerticalContentAlignment="Center" KeyDown="PlcInput_KeyDown"/>
+            <Button x:Name="LoadPlcButton" Grid.Column="2" Content="Загрузить" Height="38" Margin="6,0,12,0" Padding="10,0" Style="{StaticResource BtnSecondary}" Click="LoadPlc_Click"/>
+            <TextBlock Grid.Column="3" Text="Раздел" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="{DynamicResource BrushTextSecondary}"/>
+            <ComboBox x:Name="SectionBox" Grid.Column="4" Height="38" Padding="8,2" DisplayMemberPath="Caption" SelectedValuePath="Id" SelectionChanged="SectionBox_SelectionChanged"/>
+            <TextBlock x:Name="MatrixRecordLabel" Grid.Column="5" Text="Матрица" VerticalAlignment="Center" Margin="14,0,8,0" Foreground="{DynamicResource BrushTextSecondary}" Visibility="Collapsed"/>
+            <ComboBox x:Name="MatrixRecordBox" Grid.Column="6" Height="38" Padding="8,2" DisplayMemberPath="Caption" SelectedValuePath="Record" SelectionChanged="MatrixRecordBox_SelectionChanged" Visibility="Collapsed"/>
+            <TextBlock x:Name="ContextText" Grid.Column="7" Margin="14,0,0,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource BrushTextSecondary}"/>
+        </Grid>
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
+            <Button x:Name="AddButton" Content="＋ Добавить" Width="120" Height="38" Style="{StaticResource BtnPrimary}" Click="Add_Click"/>
+            <Button x:Name="DeleteButton" Content="Удалить строку" Width="140" Height="38" Margin="8,0,0,0" Style="{StaticResource BtnSecondary}" Click="Delete_Click"/>
+            <Button x:Name="SaveButton" Content="Сохранить" Width="120" Height="38" Margin="8,0,0,0" Style="{StaticResource BtnPrimary}" Click="Save_Click"/>
+            <Button x:Name="RefreshButton" Content="Обновить" Width="110" Height="38" Margin="8,0,0,0" Style="{StaticResource BtnSecondary}" Click="Refresh_Click"/>
+        </StackPanel>
+        <DataGrid x:Name="RowsGrid" Grid.Row="2" AutoGenerateColumns="True" CanUserAddRows="False" CanUserDeleteRows="False"
+                  IsReadOnly="False" SelectionMode="Single" SelectionUnit="FullRow" AutoGeneratingColumn="RowsGrid_AutoGeneratingColumn"
+                  BeginningEdit="RowsGrid_BeginningEdit" RowEditEnding="RowsGrid_RowEditEnding" SelectionChanged="RowsGrid_SelectionChanged"
+                  HeadersVisibility="Column" EnableRowVirtualization="True"/>
+        <TextBlock x:Name="StatusText" Grid.Row="3" Margin="0,8,0,0" TextWrapping="Wrap" Foreground="{DynamicResource BrushTextSecondary}"/>
+    </Grid>
+</UserControl>

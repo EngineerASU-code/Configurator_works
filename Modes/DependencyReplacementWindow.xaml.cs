@@ -309,6 +309,7 @@ public partial class DependencyReplacementWindow : Window
                 NewValues = selected.Values.ToList(),
                 KeyColumns = row.Option.Hit.SourceKey.Keys.ToList(),
                 KeyValues = row.Option.Hit.SourceKey.Values.ToList(),
+                ExpectedOldValues = row.Option.Hit.SourceReferenceValues,
                 AdditionalAssignments = selected.AutoAssignments
             });
         }

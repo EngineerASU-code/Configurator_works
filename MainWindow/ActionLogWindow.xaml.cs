@@ -32,8 +32,8 @@ public partial class ActionLogWindow : Window
     {
         if ((sender as System.Windows.Controls.Button)?.Tag is not ChangeJournalEntry entry) return;
         var result = Configurator.Infrastructure.ModernDialog.Show(
-            $"Восстановить операцию?\n\n{entry.Description}\n{entry.Database}\n\nБудут отменены все изменения этой операции одной транзакцией.",
-            "Восстановление операции", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            $"Отменить действие?\n\n{entry.Description}\n{entry.Database}\n\nБудут отменены все изменения этой операции одной транзакцией.",
+            "Отмена действия", MessageBoxButton.YesNo, MessageBoxImage.Question);
         if (result != MessageBoxResult.Yes) return;
         try
         {

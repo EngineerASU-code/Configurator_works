@@ -3,6 +3,7 @@
     <Color x:Key="ColorBase">#292D33</Color>
     <Color x:Key="ColorPanel">#353B44</Color>
     <Color x:Key="ColorBorder">#505965</Color>
+    <Color x:Key="ColorGridLine">#66505965</Color>
     <Color x:Key="ColorText">#F0F2F5</Color>
     <Color x:Key="ColorTextSecondary">#B6BEC9</Color>
     <Color x:Key="ColorAccent">#6D9EFF</Color>
@@ -11,6 +12,7 @@
     <SolidColorBrush x:Key="BrushBase" Color="{StaticResource ColorBase}"/>
     <SolidColorBrush x:Key="BrushPanel" Color="{StaticResource ColorPanel}"/>
     <SolidColorBrush x:Key="BrushBorder" Color="{StaticResource ColorBorder}"/>
+    <SolidColorBrush x:Key="BrushGridLine" Color="{StaticResource ColorGridLine}"/>
     <SolidColorBrush x:Key="BrushText" Color="{StaticResource ColorText}"/>
     <SolidColorBrush x:Key="BrushTextSecondary" Color="{StaticResource ColorTextSecondary}"/>
     <SolidColorBrush x:Key="BrushAccent" Color="{StaticResource ColorAccent}"/>

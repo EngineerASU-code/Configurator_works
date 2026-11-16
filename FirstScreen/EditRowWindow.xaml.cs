@@ -66,6 +66,7 @@ namespace Configurator
                     Text = titleText,
                     FontSize = 12,
                     FontWeight = FontWeights.SemiBold,
+                    TextWrapping = TextWrapping.Wrap,
                     Margin = new Thickness(0, 0, 0, 4)
                 };
                 label.SetResourceReference(TextBlock.ForegroundProperty, "BrushText");
@@ -84,7 +85,7 @@ namespace Configurator
                 TextBox textBox = null;
                 if (isLookup)
                 {
-                    var combo = new ComboBox { Width = 250, Height = 32, FontSize = 13, ItemsSource = options, DisplayMemberPath = nameof(LookupOption.Display), SelectedValuePath = nameof(LookupOption.Key) };
+                    var combo = new ComboBox { Height = 32, FontSize = 13, MinWidth = 0, HorizontalAlignment = HorizontalAlignment.Stretch, ItemsSource = options, DisplayMemberPath = nameof(LookupOption.Display), SelectedValuePath = nameof(LookupOption.Key) };
                     _lookupInputs[col.Name] = combo;
                     if (!hasLookupOptions) { combo.IsEnabled = false; combo.ToolTip = "Для связанного поля не удалось загрузить справочник. Значение нельзя вводить вручную; проверьте подключение и наличие таблицы-справочника."; }
                     input = combo;
@@ -92,7 +93,7 @@ namespace Configurator
                 }
                 else
                 {
-                    textBox = new TextBox { Width = 250, Padding = new Thickness(8, 6, 8, 6), FontSize = 13, IsReadOnly = isClassNumber };
+                    textBox = new TextBox { Padding = new Thickness(8, 6, 8, 6), FontSize = 13, MinWidth = 0, HorizontalAlignment = HorizontalAlignment.Stretch, IsReadOnly = isClassNumber };
                     if (_currentValues != null && _currentValues.TryGetValue(col.Name, out string currentVal))
                         textBox.Text = isClassNumber ? FormatClassNumberDisplay(currentVal, _forcedClassNumber) : currentVal ?? "";
                     input = textBox;
