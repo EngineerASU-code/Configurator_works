@@ -1,5 +1,6 @@
 using System;
 using System.Data;
+using System.Linq;
 using Configurator.Core.Architecture;
 
 namespace Configurator;
@@ -33,13 +34,22 @@ public partial class ProjectModeView
         object classNumber = selectedClass.ClassNumber;
         if (isProgram)
         {
+            ProgramToolsTabs.Visibility = System.Windows.Visibility.Visible;
+            MatrixCatalogEditor.Visibility = System.Windows.Visibility.Collapsed;
             ProgramToolsTabs.SelectedIndex = 0;
             ProgramManagementEditor.Configure(connectionString, plcValue, classNumber);
         }
         else
         {
-            ProgramToolsTabs.SelectedIndex = 2;
-            MatrixCatalogEditor.Configure(connectionString, plcValue, classNumber);
+            ProgramToolsTabs.Visibility = System.Windows.Visibility.Collapsed;
+            MatrixCatalogEditor.Visibility = System.Windows.Visibility.Visible;
+            var deviceClasses = (_architecture?.Classes ?? Array.Empty<ClassDefinition>())
+                .Where(cls => cls != null && cls.ClassNumber > 0 && !string.IsNullOrWhiteSpace(cls.PrimaryStorage?.TableName))
+                .Select(cls => new MatrixDeviceClassOption(cls.ClassNumber, cls.Name, cls.PrimaryStorage.TableName))
+                .GroupBy(option => option.Number)
+                .Select(group => group.First())
+                .ToArray();
+            MatrixCatalogEditor.Configure(connectionString, plcValue, classNumber, deviceClasses);
         }
     }
 

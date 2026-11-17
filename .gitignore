@@ -430,3 +430,8 @@ FodyWeavers.xsd
 
 # Local database credentials used by the legacy GASS reference
 testing/GASS/SQL_Configuration.ini
+
+# Local verification output and obsolete packaged builds
+/Reports/
+/test-results/
+/testing/builds/

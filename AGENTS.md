@@ -1,72 +1,35 @@
-# Правила работы Codex в этом репозитории
+# Repository Guidelines
 
-## Цель
+## Project Structure & Module Organization
+Configurator is a C#/.NET 8 WPF app. App.xaml and App.xaml.cs bootstrap it; MainWindow/ is the shell, Modes/ contains screens, and FirstScreen/, Themes/, and ViewModels/ support the UI. Core/ owns architecture and project contracts; Application/ contains use cases; Services/ contains workflows; Infrastructure/ contains SQL and persistence. Tests live in tests/Configurator.Security.Tests/. The architecture map is docs/project/ARCHITECTURE_INDEX.md; task specs go in docs/tasks/ and manual evidence in testing/.
 
-Вносить минимальные, надёжные изменения, которые решают поставленную задачу, сохраняют существующее поведение и проверяются доступными средствами. Приоритеты: **корректность → безопасность данных → простота → поддерживаемость → скорость**.
+## Build, Test & Run
+Run from the repository root. Restore packages on a fresh checkout:
+```powershell
+dotnet restore .\Configurator.slnx
+dotnet build .\Configurator.csproj -c Release --no-restore
+dotnet test .\tests\Configurator.Security.Tests\Configurator.Security.Tests.csproj -c Release --no-restore --logger 'console;verbosity=minimal' -v quiet
+dotnet run --project .\Configurator.csproj
+```
+The app needs Windows and the .NET 8 Desktop Runtime. CI builds and tests Debug and Release on Windows.
 
-## Границы и контекст
+## Coding Style & Naming
+Use four spaces and follow nearby C# and XAML patterns. Use PascalCase for types and methods, _camelCase for private fields, I-prefixed interfaces, and the Async suffix for asynchronous methods. Keep changes scoped to the task; do not add dependencies or infrastructure without a demonstrated need. No dedicated linter, formatter, or coverage threshold is configured; builds provide compiler and SDK analyzer diagnostics.
 
-- Работай только в пределах текущего репозитория и поставленной задачи.
-- Перед изменениями прочитай релевантные инструкции, README и конфигурацию затрагиваемой части проекта. Учитывай более специфичные `AGENTS.md` в подпапках, если они есть.
-- Не сканируй весь проект «на всякий случай»: начинай с затронутых файлов и их непосредственных зависимостей.
-- Не предполагай язык, фреймворк, архитектуру или команды сборки: устанавливай их по фактическим файлам проекта.
-- Сохраняй существующий стиль и публичные контракты. Не делай попутных рефакторингов, переименований или массового форматирования.
-- Не добавляй новые зависимости, инфраструктуру, облачные сервисы или абстракции без доказанной необходимости.
+## Testing Guidelines
+Tests use xUnit; name files/classes *Tests.cs and add focused [Fact] or [Theory] cases. Before tests, isolate the temp root because ProjectPackageAdversarialTests deletes a fixed outside.txt there:
+```powershell
+$testTemp = Join-Path (Get-Location) ('artifacts\quality-temp-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $testTemp -Force | Out-Null
+$env:TEMP = $testTemp; $env:TMP = $testTemp
+```
+Unit tests do not replace WPF manual checks or real SQL Server integration.
 
-## Реализация
+## Security & Architecture
+Keep data access behind Core/Projects contracts. Offline must not connect to SQL; production SQL connection creation/opening goes through SqlProviderGuard. Preserve local project package validation and recovery. Never commit testing/GASS/SQL_Configuration.ini or credentials; use SQL_Configuration.example.ini. Do not run writes against a user's database during routine checks.
 
-- Сначала кратко сформулируй цель и план, если задача сложнее локальной правки.
-- Делай небольшие, понятные изменения; выбирай простое решение без преждевременного усложнения.
-- Обрабатывай ошибки осмысленно. Не скрывай сбои и не подменяй реальные результаты выдуманными.
-- Защищай пользовательские данные и секреты. Не записывай токены, ключи и пароли в код, журналы или отчёты.
-- Не выполняй разрушительные операции над данными, не меняй глобальные настройки и не делай внешние публикации без явного поручения.
-- Не перезаписывай чужие незакоммиченные изменения. Не создавай коммиты и не отправляй изменения в удалённый репозиторий без запроса.
+## Commits & Pull Requests
+History uses concise imperative subjects, sometimes docs: or chore: prefixes; no strict convention or PR template exists. Describe purpose, report exact checks, link the task, and attach screenshots for UI changes. Create commits or push only on an explicit request.
 
-## Тестирование и проверка
-
-- Для нового важного поведения или исправленного бага добавляй/обновляй **прицельные** тесты, если в проекте есть соответствующая тестовая инфраструктура.
-- Сначала запускай самую узкую подходящую проверку, затем более широкую при необходимости.
-- Сборка, тесты, линтер и статический анализ определяются **по реальному проекту**. Не придумывай команды и не объявляй непроведённые проверки успешными.
-- При ошибке кратко опиши причину и диагностический фрагмент; не выводи целые логи без необходимости.
-- Если проверки невозможны, честно укажи `NOT RUN` и конкретную причину.
-
-## Ревью изменений
-
-- Ревью фокусируется на подтверждённых дефектах, регрессиях, безопасности, целостности данных и нарушениях требований.
-- Проверяй прежде всего diff и релевантные зависимости, а не проект целиком.
-- Разделяй **доказанные ошибки** и **гипотезы**. Для замечаний указывай файл, место, сценарий, последствия и серьёзность.
-- В задаче, явно обозначенной как ревью, **не исправляй код** без отдельного поручения.
-- Не требуй абстракций, тестов и рефакторингов без конкретного выигрыша или риска.
-
-## Экономия токенов и времени
-
-- Читай только необходимые файлы; избегай бинарников, каталогов зависимостей, сборочных артефактов и сгенерированного кода.
-- Используй краткие результаты команд; не повторяй успешные проверки без изменения кода или новой причины.
-- Не запускай цепочки «исправление → ревью → исправление → ревью» бесконечно. После двух неудачных попыток объясни препятствие и предложи следующий шаг.
-- Не создавай дополнительных ИИ-агентов или внешних API-вызовов по умолчанию.
-
-## Финальный ответ по задаче
-
-Отчитайся кратко:
-1. **Что изменено:** файлы и суть.
-2. **Что проверено:** реальные команды и `PASS` / `FAIL` / `NOT RUN`.
-3. **Оставшиеся риски:** только существенные.
-4. **Рекомендация:** следующий шаг, если требуется.
-
-## Проектные уточнения
-
-В этот раздел добавляй **только подтверждённые** для данного репозитория сведения: точные команды сборки/тестов, важные инварианты, особые правила хранения данных и границы модулей. Не копируй сюда общие инструкции повторно.
-
-- Git-репозиторий находится в `GASS_Configurator/.git`; корень `D:/AI_lobby` отдельным Git-репозиторием не является. Локальный `AGENTS.md` исключён из Git.
-- Существующий `.github/workflows/ci.yml` выполняет restore решения и сборку/тесты в Debug и Release на Windows; локальная Release-проверка не подтверждает состояние CI. На 13.11.2026 локально доступен SDK `10.0.401`; `global.json` отсутствует.
-- Стек: C# / .NET 8 (`net8.0-windows`), WPF; SQL Server через Microsoft.Data.SqlClient, ScriptDom и Newtonsoft.Json. Тесты: xUnit в `tests/Configurator.Security.Tests/` с ссылкой на основной проект; параллельный запуск тестов отключён.
-- Все следующие команды выполняются из `D:\AI_lobby\GASS_Configurator`.
-- Сборка: `dotnet build Configurator.csproj -c Release --no-restore`. Включает штатные проверки компилятора и анализаторы SDK; отдельный линтер и проверка форматирования не настроены.
-- Тесты: `dotnet test tests\Configurator.Security.Tests\Configurator.Security.Tests.csproj -c Release --no-restore --logger 'console;verbosity=minimal' -v quiet`. Команда также собирает тестовый проект.
-- Перед тестами изолируй временные файлы: `$testTemp = Join-Path (Get-Location) ('artifacts\quality-temp-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $testTemp -Force | Out-Null; $env:TEMP = $testTemp; $env:TMP = $testTemp`. Выполняй вместе с тестами в отдельном процессе PowerShell: `ProjectPackageAdversarialTests` удаляет фиксированный `outside.txt` внутри TEMP.
-- При проверке 13.11.2026 Release-сборка прошла с предупреждениями `CS8632` (`Services/ChangeJournalService.cs:648`) и `NU1900` (недоступны данные уязвимостей NuGet). Проверка уязвимостей пакетов не подтверждена.
-- При проверке 13.11.2026 команда тестов завершилась с кодом 1: VSTest не подключился к testhost за 90 секунд; запуск был прерван. Это сбой запуска тестов, а не подтверждение их прохождения или дефекта прикладного кода.
-- `--no-restore` требует уже восстановленных пакетов. При их отсутствии подготовительная команда — `dotnet restore Configurator.slnx` (может обращаться в сеть). Существующий `Run-Configurator-Tests.ps1` запускает restore, сборку, тесты и пишет `test-results`; он также начинает с `dotnet --info`, который в ограниченной среде может завершиться ошибкой доступа к Service Control Manager.
-- `Core/` содержит модель архитектуры, контракты источников данных, workspace и политики синхронизации; `Application/` — сервис архитектуры; `Infrastructure/` — SQL/пакеты/хранилища; `Services/` — прикладные службы; `MainWindow/`, `FirstScreen/`, `Modes/`, `Themes/`, `ViewModels/` — WPF-интерфейс и его модели.
-- Offline не должен обращаться к SQL Server: создание и открытие соединений проходят через `SqlProviderGuard`; интерфейсы workspace сохраняют независимость от хранилища. Открытие `.cfgproj` не подключается к БД; при изменениях сохранения сохраняй восстановление после сбоев и ограничения ZIP-пакета.
-- Автотесты не заменяют ручную проверку WPF и интеграцию с реальным SQL Server. Не запускай операции записи в пользовательскую БД в рамках обычной проверки сборки/тестов.
+## Graphify
+Use docs/project/ARCHITECTURE_INDEX.md and Graphify to navigate relationships; verify the index commit and confirm findings in source. Start with the affected module and its callers instead of scanning the whole tree.

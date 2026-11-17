@@ -378,7 +378,6 @@ namespace Configurator
             _rightPanel.BtnDelete.Click += BtnDelete_Click;
             _rightPanel.BtnToggleFields.Click += BtnToggleFields_Click;
             _rightPanel.BtnFilter.Click += BtnFilter_Click;
-            _rightPanel.UndoButton.Click += BtnUndo_Click;
             _rightPanel.BtnFirst.Click += BtnFirst_Click;
             _rightPanel.BtnPrev.Click += BtnPrev_Click;
             _rightPanel.BtnNext.Click += BtnNext_Click;

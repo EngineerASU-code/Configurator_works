@@ -11,6 +11,21 @@ namespace Configurator;
 
 public partial class ProgramManagementControl : UserControl
 {
+    private enum ProgramTreeNodeKind { Program, Sequence, StepOccurrence }
+
+    private sealed class ProgramTreeNode
+    {
+        public ProgramTreeNodeKind Kind { get; init; }
+        public ProgramTreeNode Parent { get; init; }
+        public DataRowView ProgramRow { get; init; }
+        public DataRowView SequenceRow { get; init; }
+        public DataRowView TransitionRow { get; init; }
+        public DataRowView StepRow { get; init; }
+        public TreeViewItem Item { get; set; }
+        public bool ChildrenLoaded { get; set; }
+        public bool IsLoading { get; set; }
+    }
+
     private static readonly HashSet<string> ProtectedContextColumns = new(StringComparer.OrdinalIgnoreCase)
     {
         "PLC", "PLC_Class_Number", "PLC_Class_Prog_Number", "PLC_Class_Step_Number",
@@ -43,8 +58,8 @@ public partial class ProgramManagementControl : UserControl
     private bool _loading;
     private bool _revertingSelection;
     private bool _contextChangePending;
-    private bool _approveNextProgramSelection;
-    private bool _approveNextSequenceSelection;
+    private bool _syncingTreeSelection;
+    private ProgramTreeNode _pendingTreeSelection;
     private readonly Dictionary<string, HashSet<string>> _nonEditableColumns = new(StringComparer.OrdinalIgnoreCase);
 
     public ProgramContext CurrentContext { get; private set; }
@@ -76,6 +91,45 @@ public partial class ProgramManagementControl : UserControl
         bool canEdit = UserAuthorizationService.Has(Permission.EditData);
         foreach (var grid in new[] { ProgramsGrid, SequencesGrid, StepsGrid, TransitionsGrid, ProgramParamsGrid, StepParamsGrid })
             if (grid != null) grid.IsReadOnly = !canEdit;
+        UpdateCommandState();
+    }
+
+    private void UpdateCommandState()
+    {
+        if (LoadButton == null) return;
+        ProgramTreeView.IsEnabled = !_loading && !_contextChangePending;
+        if (_loading || _contextChangePending)
+        {
+            foreach (var button in new[]
+                {
+                    LoadButton, DiscardChangesButton, AddProgramButton, DeleteProgramButton, SaveProgramsButton,
+                    AddSequenceButton, DeleteSequenceButton, SaveSequencesButton, AddStepButton, SaveStepsButton,
+                    DeleteStepButton, SaveTransitionsButton, SaveProgramParamsButton, SaveStepParamsButton
+                })
+                button.IsEnabled = false;
+            return;
+        }
+
+        bool canAdd = UserAuthorizationService.Has(Permission.AddData);
+        bool canEdit = UserAuthorizationService.Has(Permission.EditData);
+        bool canDelete = UserAuthorizationService.Has(Permission.DeleteData);
+        bool hasProgram = CurrentContext?.RecordValue != null;
+        bool hasSequence = CurrentContext?.SeqRecordValue != null;
+
+        LoadButton.IsEnabled = _repository != null;
+        DiscardChangesButton.IsEnabled = HasPendingEdits();
+        AddProgramButton.IsEnabled = _repository != null && canAdd;
+        DeleteProgramButton.IsEnabled = hasProgram && ProgramsGrid.SelectedItem != null && canDelete;
+        SaveProgramsButton.IsEnabled = hasProgram && ProgramsGrid.SelectedItem != null && canEdit;
+        AddSequenceButton.IsEnabled = hasProgram && canAdd;
+        DeleteSequenceButton.IsEnabled = hasProgram && SequencesGrid.SelectedItem != null && canDelete;
+        SaveSequencesButton.IsEnabled = hasProgram && SequencesGrid.SelectedItem != null && canEdit;
+        AddStepButton.IsEnabled = hasSequence && canAdd;
+        SaveStepsButton.IsEnabled = hasSequence && StepsGrid.SelectedItem != null && canEdit;
+        DeleteStepButton.IsEnabled = hasSequence && TransitionsGrid.SelectedItem != null && canDelete;
+        SaveTransitionsButton.IsEnabled = hasSequence && TransitionsGrid.SelectedItem != null && canEdit;
+        SaveProgramParamsButton.IsEnabled = hasProgram && ProgramParamsGrid.SelectedItem != null && canEdit;
+        SaveStepParamsButton.IsEnabled = hasSequence && StepParamsGrid.SelectedItem != null && canEdit;
     }
 
     public async void Configure(string connectionString, object plcValue, object programClassValue)
@@ -90,6 +144,7 @@ public partial class ProgramManagementControl : UserControl
         _loading = true;
         foreach (var grid in new[] { ProgramsGrid, SequencesGrid, StepsGrid, TransitionsGrid, ProgramParamsGrid, StepParamsGrid })
             grid.ItemsSource = null;
+        ProgramTreeView.Items.Clear();
         CurrentContext = null;
         PublishContext();
         ContextText.Text = string.Empty;
@@ -98,6 +153,7 @@ public partial class ProgramManagementControl : UserControl
         PlcInput.Text = Convert.ToString(plcValue, CultureInfo.InvariantCulture) ?? string.Empty;
         ClassInput.Text = Convert.ToString(programClassValue, CultureInfo.InvariantCulture) ?? string.Empty;
         _loading = false;
+        UpdateCommandState();
         await LoadProgramsAsync();
     }
 
@@ -107,6 +163,328 @@ public partial class ProgramManagementControl : UserControl
         await LoadProgramsAsync(requireContextApproval: true);
     }
 
+    private async void ProgramTreeView_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
+    {
+        if (_syncingTreeSelection || _loading || e.NewValue is not TreeViewItem item || item.Tag is not ProgramTreeNode node)
+            return;
+
+        _pendingTreeSelection = node;
+        var programRow = FindRow(ProgramsGrid, "Record", GetValue(node.ProgramRow.Row, "Record"));
+        if (programRow == null)
+        {
+            SetStatus("Эта программа больше не загружена. Обновите список программ.");
+            _pendingTreeSelection = null;
+            return;
+        }
+
+        if (node.Kind == ProgramTreeNodeKind.Program)
+        {
+            DetailsTabs.SelectedItem = ProgramDetailsTab;
+            _pendingTreeSelection = null;
+            await SelectProgramAsync(programRow, ProgramsGrid.SelectedItem as DataRowView, false);
+            return;
+        }
+
+        DetailsTabs.SelectedItem = node.Kind == ProgramTreeNodeKind.Sequence ? SequenceDetailsTab : StepDetailsTab;
+        if (!IsCurrentProgram(programRow))
+            await SelectProgramAsync(programRow, ProgramsGrid.SelectedItem as DataRowView, false);
+        if (!IsCurrentProgram(programRow))
+        {
+            _pendingTreeSelection = null;
+            SyncTreeToContext();
+            return;
+        }
+
+        var sequenceRow = CurrentContext != null && SameValue(CurrentContext.RecordValue, GetValue(programRow.Row, "Record"))
+            ? FindRow(SequencesGrid, "Record", GetValue(node.SequenceRow.Row, "Record"))
+            : null;
+        if (sequenceRow != null && !SameValue(CurrentContext.SeqRecordValue, GetValue(sequenceRow.Row, "Record")))
+            await SelectSequenceAsync(sequenceRow, SequencesGrid.SelectedItem as DataRowView, _contextChangePending);
+        else if (sequenceRow == null)
+            SetStatus("Последовательность не найдена в выбранной программе. Раскройте ветку ещё раз после обновления.");
+
+        if (node.Kind == ProgramTreeNodeKind.StepOccurrence && !_contextChangePending)
+            await SelectPendingTreeStepAsync();
+
+        if (_pendingTreeSelection == node)
+        {
+            _pendingTreeSelection = null;
+            SyncTreeToContext();
+        }
+    }
+
+    private async void ProgramTreeNode_Expanded(object sender, RoutedEventArgs e)
+    {
+        if (sender is not TreeViewItem item || !ReferenceEquals(e.OriginalSource, item)) return;
+        e.Handled = true;
+        if (item.Tag is not ProgramTreeNode node || node.ChildrenLoaded || node.IsLoading) return;
+
+        node.IsLoading = true;
+        SetTreePlaceholder(node, "Загрузка ветки…");
+        try
+        {
+            if (node.Kind == ProgramTreeNodeKind.Program)
+            {
+                var rows = IsCurrentProgram(node.ProgramRow)
+                    ? SequencesGrid.Items.OfType<DataRowView>().ToList()
+                    : (await _repository.GetSequencesAsync(CreateProgramContext(node.ProgramRow))).DefaultView.Cast<DataRowView>().ToList();
+                PopulateProgramTreeNode(node, rows);
+            }
+            else if (node.Kind == ProgramTreeNodeKind.Sequence)
+            {
+                var context = CreateProgramContext(node.ProgramRow);
+                context.SeqRecordValue = GetValue(node.SequenceRow.Row, "Record");
+                var transitions = IsCurrentSequence(node.SequenceRow)
+                    ? TransitionsGrid.Items.OfType<DataRowView>().ToList()
+                    : (await _repository.GetTransitionsAsync(context)).DefaultView.Cast<DataRowView>().ToList();
+                var steps = IsCurrentSequence(node.SequenceRow)
+                    ? StepsGrid.Items.OfType<DataRowView>().ToList()
+                    : (await _repository.GetStepsAsync(context)).DefaultView.Cast<DataRowView>().ToList();
+                PopulateSequenceTreeNode(node, transitions, steps);
+            }
+        }
+        catch (Exception ex)
+        {
+            node.ChildrenLoaded = false;
+            SetTreePlaceholder(node, "Не удалось загрузить. Раскройте повторно.");
+            SetStatus("Не удалось загрузить ветку дерева: " + ex.Message);
+        }
+        finally { node.IsLoading = false; }
+    }
+
+    private void RebuildProgramTree()
+    {
+        ProgramTreeView.Items.Clear();
+        foreach (var row in ProgramsGrid.Items.OfType<DataRowView>())
+        {
+            var node = new ProgramTreeNode { Kind = ProgramTreeNodeKind.Program, ProgramRow = row };
+            node.Item = CreateTreeItem(node, FormatProgramTreeLabel(row.Row));
+            SetTreePlaceholder(node, "Раскройте список последовательностей");
+            ProgramTreeView.Items.Add(node.Item);
+        }
+        if (ProgramTreeView.Items.Count == 0)
+            ProgramTreeView.Items.Add(new TreeViewItem { Header = "Для PLC и класса программ нет записей", IsEnabled = false });
+        SyncTreeToContext();
+    }
+
+    private void PopulateProgramTreeNode(ProgramTreeNode node, IEnumerable<DataRowView> rows)
+    {
+        node.Item.Items.Clear();
+        foreach (var row in rows)
+        {
+            var child = new ProgramTreeNode
+            {
+                Kind = ProgramTreeNodeKind.Sequence,
+                Parent = node,
+                ProgramRow = node.ProgramRow,
+                SequenceRow = row
+            };
+            child.Item = CreateTreeItem(child, FormatSequenceTreeLabel(row.Row));
+            SetTreePlaceholder(child, "Раскройте список вхождений шагов");
+            node.Item.Items.Add(child.Item);
+        }
+        if (node.Item.Items.Count == 0) AddEmptyTreeNode(node.Item, "Последовательностей нет");
+        node.ChildrenLoaded = true;
+    }
+
+    private void PopulateSequenceTreeNode(ProgramTreeNode node, IEnumerable<DataRowView> transitions, IEnumerable<DataRowView> steps)
+    {
+        node.Item.Items.Clear();
+        var stepRows = steps.ToList();
+        foreach (var transition in transitions.OrderBy(row => TryGetSequenceStepNumber(row) ?? int.MaxValue))
+        {
+            var step = stepRows.FirstOrDefault(candidate => SameTransitionStep(transition, candidate));
+            var child = new ProgramTreeNode
+            {
+                Kind = ProgramTreeNodeKind.StepOccurrence,
+                Parent = node,
+                ProgramRow = node.ProgramRow,
+                SequenceRow = node.SequenceRow,
+                TransitionRow = transition,
+                StepRow = step
+            };
+            child.Item = CreateTreeItem(child, FormatStepOccurrenceLabel(transition.Row, step?.Row));
+            node.Item.Items.Add(child.Item);
+        }
+        if (node.Item.Items.Count == 0) AddEmptyTreeNode(node.Item, "Вхождений шагов нет");
+        node.ChildrenLoaded = true;
+    }
+
+    private TreeViewItem CreateTreeItem(ProgramTreeNode node, string label)
+    {
+        var item = new TreeViewItem { Header = new TextBlock { Text = label, TextTrimming = System.Windows.TextTrimming.CharacterEllipsis }, Tag = node, ToolTip = label };
+        item.Expanded += ProgramTreeNode_Expanded;
+        return item;
+    }
+
+    private void RefreshTreeLabels()
+    {
+        foreach (var item in ProgramTreeView.Items.OfType<TreeViewItem>()) RefreshTreeLabels(item);
+    }
+
+    private static void RefreshTreeLabels(TreeViewItem item)
+    {
+        if (item.Tag is ProgramTreeNode node)
+        {
+            string label = node.Kind switch
+            {
+                ProgramTreeNodeKind.Program => FormatProgramTreeLabel(node.ProgramRow.Row),
+                ProgramTreeNodeKind.Sequence => FormatSequenceTreeLabel(node.SequenceRow.Row),
+                _ => FormatStepOccurrenceLabel(node.TransitionRow.Row, node.StepRow?.Row)
+            };
+            item.Header = new TextBlock { Text = label, TextTrimming = System.Windows.TextTrimming.CharacterEllipsis };
+            item.ToolTip = label;
+        }
+        foreach (var child in item.Items.OfType<TreeViewItem>()) RefreshTreeLabels(child);
+    }
+
+    private static void SetTreePlaceholder(ProgramTreeNode node, string message)
+    {
+        node.Item.Items.Clear();
+        node.Item.Items.Add(new TreeViewItem { Header = message, IsEnabled = false });
+        node.ChildrenLoaded = false;
+    }
+
+    private static void AddEmptyTreeNode(TreeViewItem parent, string message)
+        => parent.Items.Add(new TreeViewItem { Header = message, IsEnabled = false });
+
+    private static string FormatProgramTreeLabel(DataRow row)
+        => FormatEntityTreeLabel("Программа", GetValue(row, "Record"), row);
+
+    private static string FormatSequenceTreeLabel(DataRow row)
+        => FormatEntityTreeLabel("Последовательность", GetValue(row, "Record"), row);
+
+    private static string FormatStepOccurrenceLabel(DataRow transition, DataRow step)
+    {
+        string number = Convert.ToString(GetValue(transition, "SeqStep_Number"), CultureInfo.InvariantCulture) ?? "?";
+        string stepName = GetTreeName(step);
+        string identity = $"класс {GetValue(transition, "PLC_Class_Step_Number")}, Record {GetValue(transition, "Step_Record")}";
+        return string.IsNullOrWhiteSpace(stepName) ? $"Шаг {number} · {identity}" : $"Шаг {number} · {stepName} · {identity}";
+    }
+
+    private static string FormatEntityTreeLabel(string title, object record, DataRow row)
+    {
+        string name = GetTreeName(row);
+        return string.IsNullOrWhiteSpace(name) ? $"{title} · Record {record}" : $"{title} · {name} · Record {record}";
+    }
+
+    private static string GetTreeName(DataRow row)
+    {
+        if (row == null) return string.Empty;
+        foreach (string column in new[] { "Name_L1", "NameL1", "Name_L2", "NameL2", "Description_L1", "DescriptionL1" })
+        {
+            string value = Convert.ToString(GetValue(row, column), CultureInfo.InvariantCulture)?.Trim();
+            if (!string.IsNullOrEmpty(value)) return value;
+        }
+        return string.Empty;
+    }
+
+    private void RefreshSequenceTreeFromGrids()
+    {
+        if (CurrentContext == null || SequencesGrid.ItemsSource == null) return;
+        var programNode = FindProgramTreeNode(CurrentContext.RecordValue);
+        if (programNode == null) return;
+        PopulateProgramTreeNode(programNode, SequencesGrid.Items.OfType<DataRowView>());
+        var sequenceNode = programNode.Item.Items.OfType<TreeViewItem>()
+            .Select(item => item.Tag as ProgramTreeNode)
+            .FirstOrDefault(node => node?.Kind == ProgramTreeNodeKind.Sequence
+                && SameValue(GetValue(node.SequenceRow.Row, "Record"), CurrentContext.SeqRecordValue));
+        if (sequenceNode == null) return;
+        PopulateSequenceTreeNode(sequenceNode, TransitionsGrid.Items.OfType<DataRowView>(), StepsGrid.Items.OfType<DataRowView>());
+        SyncTreeToContext();
+    }
+
+    private static ProgramContext CreateProgramContext(DataRowView row)
+    {
+        object plc = GetValue(row.Row, "PLC");
+        object classNumber = GetValue(row.Row, "PLC_Class_Number") ?? GetValue(row.Row, "PLC_Class_Prog_Number");
+        return new ProgramContext
+        {
+            PLC = Convert.ToString(plc, CultureInfo.InvariantCulture) ?? string.Empty,
+            PlcValue = plc,
+            ClassNumberValue = classNumber,
+            RecordValue = GetValue(row.Row, "Record"),
+            AreaValue = GetValue(row.Row, "Area")
+        };
+    }
+
+    private bool IsCurrentProgram(DataRowView row)
+        => CurrentContext != null && SameValue(CurrentContext.RecordValue, GetValue(row.Row, "Record"))
+            && SameValue(CurrentContext.PlcValue, GetValue(row.Row, "PLC"))
+            && SameValue(CurrentContext.ClassNumberValue,
+                GetValue(row.Row, "PLC_Class_Number") ?? GetValue(row.Row, "PLC_Class_Prog_Number"));
+
+    private bool IsCurrentSequence(DataRowView row)
+        => CurrentContext != null
+            && SameValue(CurrentContext.PlcValue, GetValue(row.Row, "PLC"))
+            && SameValue(CurrentContext.ClassNumberValue, GetValue(row.Row, "PLC_Class_Prog_Number"))
+            && SameValue(CurrentContext.RecordValue, GetValue(row.Row, "Prog_Record"))
+            && SameValue(CurrentContext.SeqRecordValue, GetValue(row.Row, "Record"));
+
+    private async Task SelectPendingTreeStepAsync()
+    {
+        var node = _pendingTreeSelection;
+        if (node?.Kind != ProgramTreeNodeKind.StepOccurrence || !IsCurrentSequence(node.SequenceRow)) return;
+        object number = GetValue(node.TransitionRow.Row, "SeqStep_Number");
+        var transition = TransitionsGrid.Items.OfType<DataRowView>()
+            .FirstOrDefault(row => SameValue(GetValue(row.Row, "SeqStep_Number"), number));
+        if (transition == null)
+        {
+            SetStatus("Вхождение шага не найдено в выбранной последовательности. Обновите ветку дерева.");
+            return;
+        }
+        _revertingSelection = true;
+        try
+        {
+            TransitionsGrid.SelectedItem = transition;
+            var step = StepsGrid.Items.OfType<DataRowView>().FirstOrDefault(row => SameTransitionStep(transition, row));
+            if (step != null) StepsGrid.SelectedItem = step;
+        }
+        finally { _revertingSelection = false; }
+        DetailsTabs.SelectedItem = StepDetailsTab;
+        if (int.TryParse(Convert.ToString(number, CultureInfo.InvariantCulture), NumberStyles.Integer, CultureInfo.InvariantCulture, out int stepNumber))
+            await LoadStepParametersAsync(stepNumber);
+        SyncTreeToContext();
+    }
+
+    private void SyncTreeToContext()
+    {
+        if (CurrentContext == null) return;
+        var programNode = FindProgramTreeNode(CurrentContext.RecordValue);
+        if (programNode == null) return;
+        TreeViewItem target = programNode.Item;
+        programNode.Item.IsExpanded = true;
+        if (CurrentContext.SeqRecordValue != null)
+        {
+            var sequenceNode = programNode.Item.Items.OfType<TreeViewItem>()
+                .Select(item => item.Tag as ProgramTreeNode)
+                .FirstOrDefault(node => node?.Kind == ProgramTreeNodeKind.Sequence
+                    && SameValue(GetValue(node.SequenceRow.Row, "Record"), CurrentContext.SeqRecordValue));
+            if (sequenceNode != null)
+            {
+                target = sequenceNode.Item;
+                sequenceNode.Item.IsExpanded = true;
+                if (TransitionsGrid.SelectedItem is DataRowView selectedTransition)
+                {
+                    var stepNode = sequenceNode.Item.Items.OfType<TreeViewItem>()
+                        .Select(item => item.Tag as ProgramTreeNode)
+                        .FirstOrDefault(node => node?.Kind == ProgramTreeNodeKind.StepOccurrence
+                            && SameValue(GetValue(node.TransitionRow.Row, "SeqStep_Number"), GetValue(selectedTransition.Row, "SeqStep_Number")));
+                    if (stepNode != null) target = stepNode.Item;
+                }
+            }
+        }
+        _syncingTreeSelection = true;
+        try { target.IsSelected = true; }
+        finally { _syncingTreeSelection = false; }
+    }
+
+    private ProgramTreeNode FindProgramTreeNode(object record)
+        => ProgramTreeView.Items.OfType<TreeViewItem>()
+            .Select(item => item.Tag as ProgramTreeNode)
+            .FirstOrDefault(node => node?.Kind == ProgramTreeNodeKind.Program
+                && SameValue(GetValue(node.ProgramRow.Row, "Record"), record));
+
     private void DiscardChangesButton_Click(object sender, RoutedEventArgs e)
     {
         if (_loading || _contextChangePending) return;
@@ -114,8 +492,7 @@ public partial class ProgramManagementControl : UserControl
         if (!HasPendingEdits()) { SetStatus("Несохранённых изменений нет."); return; }
         if (MessageBox.Show("Отменить все несохранённые изменения в открытых таблицах?",
                 "Отмена правок", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-        foreach (var grid in new[] { ProgramsGrid, SequencesGrid, StepsGrid, TransitionsGrid, ProgramParamsGrid, StepParamsGrid })
-            if (grid.ItemsSource is DataView view) view.Table.RejectChanges();
+        RejectGridChanges();
         SetStatus("Несохранённые изменения отменены.");
     }
 
@@ -135,13 +512,21 @@ public partial class ProgramManagementControl : UserControl
         }
 
         if (_loading) return false;
-        bool[] enabledBeforeLoad = SetContextGridsEnabled(false);
+        bool?[] enabledBeforeLoad = SetContextGridsEnabled(false);
         _loading = true;
         bool selectFirst = false;
+        ProgramsGrid.ItemsSource = null;
+        SequencesGrid.ItemsSource = null;
+        StepsGrid.ItemsSource = null;
+        ClearDetails();
+        CurrentContext = null;
+        PublishContext();
+        ContextText.Text = string.Empty;
         try
         {
             var table = await _repository.GetProgramsAsync(plc, classNumber);
             await BindTableAsync(ProgramsGrid, table);
+            RebuildProgramTree();
             SequencesGrid.ItemsSource = null;
             StepsGrid.ItemsSource = null;
             ClearDetails();
@@ -170,44 +555,62 @@ public partial class ProgramManagementControl : UserControl
         }
         if (selectFirst)
         {
-            _approveNextProgramSelection = true;
-            ProgramsGrid.SelectedIndex = FindRecordIndex(ProgramsGrid, selectRecord);
-            _approveNextProgramSelection = false;
+            _loading = true;
+            try { ProgramsGrid.SelectedIndex = FindRecordIndex(ProgramsGrid, selectRecord); }
+            finally { _loading = false; }
+            if (ProgramsGrid.SelectedItem is DataRowView selectedProgram)
+                await SelectProgramAsync(selectedProgram, null, true);
         }
         return true;
     }
 
     private async void ProgramsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_loading || _revertingSelection || ProgramsGrid.SelectedItem is not DataRowView row) return;
-        var previousSelection = e.RemovedItems.OfType<DataRowView>().FirstOrDefault();
-        bool preapproved = _approveNextProgramSelection;
-        _approveNextProgramSelection = false;
+        UpdateCommandState();
+        if (_loading || _revertingSelection || _syncingTreeSelection || ProgramsGrid.SelectedItem is not DataRowView row) return;
+        await SelectProgramAsync(row, e.RemovedItems.OfType<DataRowView>().FirstOrDefault(), false);
+    }
+
+    private async Task SelectProgramAsync(DataRowView row, DataRowView previousSelection, bool preapproved)
+    {
+        if (!ReferenceEquals(ProgramsGrid.SelectedItem, row))
+        {
+            _syncingTreeSelection = true;
+            try { ProgramsGrid.SelectedItem = row; }
+            finally { _syncingTreeSelection = false; }
+        }
         if (_contextChangePending && !preapproved)
         {
             RestoreSelection(ProgramsGrid, previousSelection);
+            SyncTreeToContext();
             return;
         }
-        if (!CommitGridEdits() || HasPendingEdits())
+        if (!CommitGridEdits())
         {
             RestoreSelection(ProgramsGrid, previousSelection);
             SetStatus("Есть несохранённые изменения или ошибки ввода. Сохраните их перед переключением программы.");
+            SyncTreeToContext();
             return;
         }
         bool ownsChangeLock = !_contextChangePending;
         if (ownsChangeLock) _contextChangePending = true;
-        bool[] enabledBeforeChange = SetContextGridsEnabled(false);
+        bool?[] enabledBeforeChange = SetContextGridsEnabled(false);
         try
         {
-            if (!preapproved && !await CanChangeContextAsync())
+            if (!preapproved && !await CanChangeContextAsync(allowDiscard: true))
             {
                 RestoreSelection(ProgramsGrid, previousSelection);
+                SyncTreeToContext();
                 return;
             }
             var plc = GetValue(row.Row, "PLC") ?? ParseInput(PlcInput.Text);
             var classNumber = GetValue(row.Row, "PLC_Class_Number") ?? GetValue(row.Row, "PLC_Class_Prog_Number") ?? ParseInput(ClassInput.Text);
             if (CurrentContext != null && Equals(CurrentContext.RecordValue, GetValue(row.Row, "Record"))
-                && Equals(CurrentContext.PlcValue, plc) && Equals(CurrentContext.ClassNumberValue, classNumber)) return;
+                && Equals(CurrentContext.PlcValue, plc) && Equals(CurrentContext.ClassNumberValue, classNumber))
+            {
+                SyncTreeToContext();
+                return;
+            }
             CurrentContext = new ProgramContext
             {
                 PLC = Convert.ToString(plc, CultureInfo.InvariantCulture) ?? string.Empty,
@@ -218,7 +621,11 @@ public partial class ProgramManagementControl : UserControl
             };
             PublishContext();
             ContextText.Text = CurrentContext.ContextText;
-            await LoadSequencesAsync(contextChangeApproved: true);
+            object requestedSequence = (_pendingTreeSelection?.Kind is ProgramTreeNodeKind.Sequence or ProgramTreeNodeKind.StepOccurrence)
+                && SameValue(GetValue(_pendingTreeSelection.ProgramRow.Row, "Record"), CurrentContext.RecordValue)
+                ? GetValue(_pendingTreeSelection.SequenceRow.Row, "Record") : null;
+            await LoadSequencesAsync(selectRecord: requestedSequence, contextChangeApproved: true);
+            SyncTreeToContext();
         }
         finally
         {
@@ -237,13 +644,18 @@ public partial class ProgramManagementControl : UserControl
             return false;
         }
         if (_loading) return false;
-        bool[] enabledBeforeLoad = SetContextGridsEnabled(false);
+        bool?[] enabledBeforeLoad = SetContextGridsEnabled(false);
         _loading = true;
         bool selectFirst = false;
+        SequencesGrid.ItemsSource = null;
+        StepsGrid.ItemsSource = null;
+        ClearDetails();
         try
         {
             var table = await _repository.GetSequencesAsync(CurrentContext);
             await BindTableAsync(SequencesGrid, table);
+            if (FindProgramTreeNode(CurrentContext.RecordValue) is ProgramTreeNode programNode)
+                PopulateProgramTreeNode(programNode, SequencesGrid.Items.OfType<DataRowView>());
             StepsGrid.ItemsSource = null;
             ClearDetails();
             if (table.Rows.Count > 0)
@@ -273,46 +685,65 @@ public partial class ProgramManagementControl : UserControl
         }
         if (selectFirst)
         {
-            _approveNextSequenceSelection = contextChangeApproved;
-            SequencesGrid.SelectedIndex = FindRecordIndex(SequencesGrid, selectRecord);
-            _approveNextSequenceSelection = false;
+            _loading = true;
+            try { SequencesGrid.SelectedIndex = FindRecordIndex(SequencesGrid, selectRecord); }
+            finally { _loading = false; }
+            if (SequencesGrid.SelectedItem is DataRowView selectedSequence)
+                await SelectSequenceAsync(selectedSequence, null, contextChangeApproved);
         }
         return true;
     }
 
     private async void SequencesGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_loading || _revertingSelection || CurrentContext == null || SequencesGrid.SelectedItem is not DataRowView row) return;
-        var previousSelection = e.RemovedItems.OfType<DataRowView>().FirstOrDefault();
-        bool preapproved = _approveNextSequenceSelection;
-        _approveNextSequenceSelection = false;
+        UpdateCommandState();
+        if (_loading || _revertingSelection || _syncingTreeSelection || CurrentContext == null || SequencesGrid.SelectedItem is not DataRowView row) return;
+        await SelectSequenceAsync(row, e.RemovedItems.OfType<DataRowView>().FirstOrDefault(), false);
+    }
+
+    private async Task SelectSequenceAsync(DataRowView row, DataRowView previousSelection, bool preapproved)
+    {
+        if (!ReferenceEquals(SequencesGrid.SelectedItem, row))
+        {
+            _syncingTreeSelection = true;
+            try { SequencesGrid.SelectedItem = row; }
+            finally { _syncingTreeSelection = false; }
+        }
         if (_contextChangePending && !preapproved)
         {
             RestoreSelection(SequencesGrid, previousSelection);
+            SyncTreeToContext();
             return;
         }
         object sequenceRecord = GetValue(row.Row, "Record") ?? GetValue(row.Row, "Seq_Record");
-        if (Equals(CurrentContext.SeqRecordValue, sequenceRecord)) return;
-        if (!CommitGridEdits() || HasPendingEdits())
+        if (Equals(CurrentContext.SeqRecordValue, sequenceRecord))
+        {
+            SyncTreeToContext();
+            return;
+        }
+        if (!CommitGridEdits())
         {
             RestoreSelection(SequencesGrid, previousSelection);
             SetStatus("Есть несохранённые изменения или ошибки ввода. Сохраните их перед переключением последовательности.");
+            SyncTreeToContext();
             return;
         }
         bool ownsChangeLock = !_contextChangePending;
         if (ownsChangeLock) _contextChangePending = true;
-        bool[] enabledBeforeChange = SetContextGridsEnabled(false);
+        bool?[] enabledBeforeChange = SetContextGridsEnabled(false);
         try
         {
-            if (!preapproved && !await CanChangeContextAsync())
+            if (!preapproved && !await CanChangeContextAsync(allowDiscard: true))
             {
                 RestoreSelection(SequencesGrid, previousSelection);
+                SyncTreeToContext();
                 return;
             }
             CurrentContext.SeqRecordValue = sequenceRecord;
             PublishContext();
             ContextText.Text = CurrentContext.ContextText + "  ·  Seq=" + Convert.ToString(CurrentContext.SeqRecordValue, CultureInfo.InvariantCulture);
             await LoadSequenceChildrenAsync();
+            SyncTreeToContext();
         }
         finally
         {
@@ -330,7 +761,7 @@ public partial class ProgramManagementControl : UserControl
             return false;
         }
         if (_loading) return false;
-        bool[] enabledBeforeLoad = SetContextGridsEnabled(false);
+        bool?[] enabledBeforeLoad = SetContextGridsEnabled(false);
         StepsGrid.ItemsSource = null;
         ClearDetails();
         _loading = true;
@@ -343,6 +774,7 @@ public partial class ProgramManagementControl : UserControl
             await BindTableAsync(TransitionsGrid, transitions);
             await BindTableAsync(ProgramParamsGrid, programParams);
             StepParamsGrid.ItemsSource = null;
+            RefreshSequenceTreeFromGrids();
             SetStatus($"Загружено шагов: {steps.Rows.Count}; переходов: {transitions.Rows.Count}; параметров программы: {programParams.Rows.Count}." + FormatJournalWarning(postCommitWarning));
         }
         catch (Exception ex)
@@ -361,21 +793,98 @@ public partial class ProgramManagementControl : UserControl
         return true;
     }
 
-    private async void LoadStepParamsButton_Click(object sender, RoutedEventArgs e)
+    private async void StepsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_loading || _contextChangePending) return;
-        if (CurrentContext?.SeqRecordValue == null) { SetStatus("Сначала выберите программу и последовательность."); return; }
-        if (!CanDiscardPendingEdits()) return;
-        if (!int.TryParse(StepNumberInput.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out int stepNumber) || stepNumber <= 0)
-        { SetStatus("Введите положительный номер шага."); return; }
+        UpdateCommandState();
+        if (_loading || _revertingSelection || _contextChangePending || CurrentContext?.SeqRecordValue == null) return;
+        if (StepsGrid.SelectedItem is not DataRowView selectedStep)
+        {
+            if (!CanChangeSelection(StepsGrid, e)) return;
+            StepParamsGrid.ItemsSource = null;
+            UpdateCommandState();
+            return;
+        }
+        if (!CanChangeSelection(StepsGrid, e)) return;
+
+        int? sequenceStepNumber = FindSequenceStepNumber(selectedStep, out bool ambiguous);
+        if (sequenceStepNumber == null)
+        {
+            StepParamsGrid.ItemsSource = null;
+            SetStatus(ambiguous
+                ? "Шаг встречается в последовательности несколько раз. Выберите нужное вхождение во вкладке «Переходы»."
+                : "Для выбранного шага не найден номер в текущей последовательности.");
+            return;
+        }
+        var selectedTransition = TransitionsGrid.Items.OfType<DataRowView>()
+            .FirstOrDefault(row => TryGetSequenceStepNumber(row) == sequenceStepNumber);
+        if (selectedTransition != null)
+        {
+            _revertingSelection = true;
+            try { TransitionsGrid.SelectedItem = selectedTransition; }
+            finally { _revertingSelection = false; }
+            SyncTreeToContext();
+        }
+        await LoadStepParametersAsync(sequenceStepNumber.Value);
+    }
+
+    private async void TransitionsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        UpdateCommandState();
+        if (_loading || _revertingSelection || _contextChangePending || TransitionsGrid.SelectedItem is not DataRowView row
+            || !row.Row.Table.Columns.Contains("SeqStep_Number")) return;
+        if (!CanChangeSelection(TransitionsGrid, e)) return;
+        if (!int.TryParse(Convert.ToString(row["SeqStep_Number"], CultureInfo.InvariantCulture),
+                NumberStyles.Integer, CultureInfo.InvariantCulture, out int stepNumber) || stepNumber <= 0) return;
+        var matchingStep = StepsGrid.Items.OfType<DataRowView>().FirstOrDefault(step => SameTransitionStep(row, step));
+        if (matchingStep != null && !ReferenceEquals(StepsGrid.SelectedItem, matchingStep))
+        {
+            _revertingSelection = true;
+            try { StepsGrid.SelectedItem = matchingStep; }
+            finally { _revertingSelection = false; }
+        }
+        SyncTreeToContext();
+        await LoadStepParametersAsync(stepNumber);
+    }
+
+    private void DetailGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        => UpdateCommandState();
+
+    private void EntityGrid_RowEditEnding(object sender, DataGridRowEditEndingEventArgs e)
+        => Dispatcher.BeginInvoke(new Action(() => { UpdateCommandState(); RefreshTreeLabels(); }));
+
+    private int? FindSequenceStepNumber(DataRowView selectedStep, out bool ambiguous)
+    {
+        ambiguous = false;
+        if (!selectedStep.Row.Table.Columns.Contains("PLC_Class_Number")
+            || !selectedStep.Row.Table.Columns.Contains("Record")) return null;
+
+        var candidates = TransitionsGrid.Items.OfType<DataRowView>()
+            .Where(row => SameTransitionStep(row, selectedStep));
+        var selectedTransition = TransitionsGrid.SelectedItem as DataRowView;
+        if (selectedTransition != null && candidates.Contains(selectedTransition))
+            return TryGetSequenceStepNumber(selectedTransition);
+
+        var matches = candidates.ToList();
+        ambiguous = matches.Count > 1;
+        var transition = matches.Count == 1 ? matches[0] : null;
+        return transition == null ? null : TryGetSequenceStepNumber(transition);
+    }
+
+    private static int? TryGetSequenceStepNumber(DataRowView transition) =>
+        int.TryParse(Convert.ToString(GetValue(transition.Row, "SeqStep_Number"), CultureInfo.InvariantCulture),
+            NumberStyles.Integer, CultureInfo.InvariantCulture, out int number) ? number : null;
+
+    private async Task LoadStepParametersAsync(int stepNumber)
+    {
+        if (_loading || _contextChangePending || CurrentContext?.SeqRecordValue == null || !CanDiscardPendingEdits()) return;
         var targetContext = CopyContext(CurrentContext);
         _contextChangePending = true;
-        bool[] enabledBeforeLoad = SetContextGridsEnabled(false);
+        bool?[] enabledBeforeLoad = SetContextGridsEnabled(false);
         try
         {
             var table = await _repository.GetParametersAsync(targetContext, stepNumber);
             await BindTableAsync(StepParamsGrid, table);
-            SetStatus($"Загружено параметров выбранного шага: {table.Rows.Count}.");
+            SetStatus($"Шаг {stepNumber}: загружено параметров {table.Rows.Count}.");
         }
         catch (Exception ex) { SetStatus("Не удалось загрузить параметры шага: " + ex.Message); }
         finally
@@ -385,13 +894,16 @@ public partial class ProgramManagementControl : UserControl
         }
     }
 
-    private void TransitionsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (_loading || _contextChangePending || TransitionsGrid.SelectedItem is not DataRowView row || !row.Row.Table.Columns.Contains("SeqStep_Number")) return;
-        var value = row["SeqStep_Number"];
-        if (value == DBNull.Value) return;
-        StepNumberInput.Text = Convert.ToString(value, CultureInfo.InvariantCulture);
-    }
+    private static bool SameValue(object left, object right) =>
+        left != null && right != null && string.Equals(
+            Convert.ToString(left, CultureInfo.InvariantCulture),
+            Convert.ToString(right, CultureInfo.InvariantCulture), StringComparison.Ordinal);
+
+    private static bool SameTransitionStep(DataRowView transition, DataRowView step) =>
+        transition.Row.Table.Columns.Contains("PLC_Class_Step_Number")
+        && transition.Row.Table.Columns.Contains("Step_Record")
+        && SameValue(GetValue(transition.Row, "PLC_Class_Step_Number"), GetValue(step.Row, "PLC_Class_Number"))
+        && SameValue(GetValue(transition.Row, "Step_Record"), GetValue(step.Row, "Record"));
 
     private async void AddProgramButton_Click(object sender, RoutedEventArgs e)
     {
@@ -399,7 +911,7 @@ public partial class ProgramManagementControl : UserControl
         if (!UserAuthorizationService.Require(Permission.AddData) || !TryParseContextInputs(out var plc, out var classNumber)) return;
         if (!CanDiscardPendingEdits()) return;
         _contextChangePending = true;
-        bool[] enabledBeforeOperation = SetContextGridsEnabled(false);
+        bool?[] enabledBeforeOperation = SetContextGridsEnabled(false);
         try
         {
             var values = await PromptInsertValuesAsync(ProgramManagementRepository.ProgramTable,
@@ -432,7 +944,7 @@ public partial class ProgramManagementControl : UserControl
         if (!CanDiscardPendingEdits()) return;
         var targetContext = CopyContext(CurrentContext);
         _contextChangePending = true;
-        bool[] enabledBeforeOperation = SetContextGridsEnabled(false);
+        bool?[] enabledBeforeOperation = SetContextGridsEnabled(false);
         try
         {
             var values = await PromptInsertValuesAsync(ProgramManagementRepository.SequenceTable,
@@ -468,7 +980,7 @@ public partial class ProgramManagementControl : UserControl
         if (!CanDiscardPendingEdits()) return;
         var targetContext = CopyContext(CurrentContext);
         _contextChangePending = true;
-        bool[] enabledBeforeOperation = SetContextGridsEnabled(false);
+        bool?[] enabledBeforeOperation = SetContextGridsEnabled(false);
         try
         {
             var choices = await _repository.GetStepChoicesAsync(targetContext.PlcValue);
@@ -516,7 +1028,7 @@ public partial class ProgramManagementControl : UserControl
         var deletedProgram = ProgramsGrid.SelectedItem as DataRowView;
         var deletedProgramValues = deletedProgram == null ? null : ToValues(deletedProgram.Row, DataRowVersion.Current);
         bool ownsChangeLock = false;
-        bool[] enabledBeforeOperation = null;
+        bool?[] enabledBeforeOperation = null;
         try
         {
             _contextChangePending = true;
@@ -555,7 +1067,7 @@ public partial class ProgramManagementControl : UserControl
         if (!await CanChangeContextAsync()) return;
         var deletedSequenceValues = ToValues(row.Row, DataRowVersion.Current);
         bool ownsChangeLock = false;
-        bool[] enabledBeforeOperation = null;
+        bool?[] enabledBeforeOperation = null;
         try
         {
             _contextChangePending = true;
@@ -592,7 +1104,7 @@ public partial class ProgramManagementControl : UserControl
                 "Удаление шага", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         var deletedStepValues = ToValues(row.Row, DataRowVersion.Current);
         _contextChangePending = true;
-        bool[] enabledBeforeOperation = SetContextGridsEnabled(false);
+        bool?[] enabledBeforeOperation = SetContextGridsEnabled(false);
         try
         {
             await _repository.DeleteStepFromSequenceAsync(targetContext, stepNumber);
@@ -736,7 +1248,7 @@ public partial class ProgramManagementControl : UserControl
             if (grid.Items[index] is DataRowView row && row.Row.Table.Columns.Contains("Record") &&
                 Equals(row["Record"], record)) return index;
         }
-        return 0;
+        return -1;
     }
 
     private static DataRowView FindRow(DataGrid grid, string columnName, object value)
@@ -818,12 +1330,21 @@ public partial class ProgramManagementControl : UserControl
         return false;
     }
 
-    private async Task<bool> CanChangeContextAsync()
+    private async Task<bool> CanChangeContextAsync(bool allowDiscard = false)
     {
-        if (!CanDiscardPendingEdits()) return false;
+        if (!allowDiscard && !CanDiscardPendingEdits()) return false;
+        if (allowDiscard && !CommitGridEdits())
+        { SetStatus("Проверьте введённые значения перед переключением."); return false; }
+        bool discardPending = allowDiscard && HasPendingEdits();
+        if (discardPending && MessageBox.Show("Переключить контекст и отменить несохранённые изменения в открытых таблицах?",
+                "Несохранённые изменения", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+        {
+            SetStatus("Переключение отменено. Несохранённые изменения остаются открытыми.");
+            return false;
+        }
         bool ownsChangeLock = !_contextChangePending;
         if (ownsChangeLock) _contextChangePending = true;
-        bool[] enabledBeforeGuard = SetContextGridsEnabled(false);
+        bool?[] enabledBeforeGuard = SetContextGridsEnabled(false);
         try
         {
             if (BeforeContextChangeAsync != null && !await BeforeContextChangeAsync())
@@ -831,6 +1352,7 @@ public partial class ProgramManagementControl : UserControl
                 SetStatus("Переключение отменено. Несохранённые изменения остаются открытыми.");
                 return false;
             }
+            if (discardPending) RejectGridChanges();
         }
         catch (Exception ex)
         {
@@ -843,6 +1365,12 @@ public partial class ProgramManagementControl : UserControl
             if (ownsChangeLock) _contextChangePending = false;
         }
         return true;
+    }
+
+    private void RejectGridChanges()
+    {
+        foreach (var grid in new[] { ProgramsGrid, SequencesGrid, StepsGrid, TransitionsGrid, ProgramParamsGrid, StepParamsGrid })
+            if (grid.ItemsSource is DataView view) view.Table.RejectChanges();
     }
 
     private bool CanChangeSelection(DataGrid grid, SelectionChangedEventArgs e)
@@ -888,23 +1416,38 @@ public partial class ProgramManagementControl : UserControl
         return committed;
     }
 
-    private bool[] SetContextGridsEnabled(bool enabled)
+    private bool?[] SetContextGridsEnabled(bool enabled)
     {
         var grids = new[] { ProgramsGrid, SequencesGrid, StepsGrid, TransitionsGrid, ProgramParamsGrid, StepParamsGrid };
-        var previous = grids.Select(grid => grid.IsEnabled).Concat(new[] { PlcInput.IsEnabled, ClassInput.IsEnabled }).ToArray();
+        var previous = grids.Select(grid => GetLocalIsEnabled(grid))
+            .Concat(new[] { GetLocalIsEnabled(PlcInput), GetLocalIsEnabled(ClassInput) }).ToArray();
         foreach (var grid in grids) grid.IsEnabled = enabled;
         PlcInput.IsEnabled = ClassInput.IsEnabled = enabled;
+        Dispatcher.BeginInvoke(new Action(UpdateCommandState));
         return previous;
     }
 
-    private void RestoreContextGridsEnabled(bool[] previous)
+    private static bool? GetLocalIsEnabled(UIElement element)
+    {
+        object value = element.ReadLocalValue(UIElement.IsEnabledProperty);
+        return ReferenceEquals(value, DependencyProperty.UnsetValue) ? null : value is bool enabled ? enabled : null;
+    }
+
+    private void RestoreContextGridsEnabled(bool?[] previous)
     {
         if (previous == null) return;
         var grids = new[] { ProgramsGrid, SequencesGrid, StepsGrid, TransitionsGrid, ProgramParamsGrid, StepParamsGrid };
         for (int index = 0; index < grids.Length && index < previous.Length; index++)
-            grids[index].IsEnabled = previous[index];
-        if (previous.Length > grids.Length) PlcInput.IsEnabled = previous[grids.Length];
-        if (previous.Length > grids.Length + 1) ClassInput.IsEnabled = previous[grids.Length + 1];
+            RestoreLocalIsEnabled(grids[index], previous[index]);
+        if (previous.Length > grids.Length) RestoreLocalIsEnabled(PlcInput, previous[grids.Length]);
+        if (previous.Length > grids.Length + 1) RestoreLocalIsEnabled(ClassInput, previous[grids.Length + 1]);
+        Dispatcher.BeginInvoke(new Action(UpdateCommandState));
+    }
+
+    private static void RestoreLocalIsEnabled(UIElement element, bool? value)
+    {
+        if (value.HasValue) element.IsEnabled = value.Value;
+        else element.ClearValue(UIElement.IsEnabledProperty);
     }
 
     private bool HasPendingEdits()
@@ -935,11 +1478,12 @@ public partial class ProgramManagementControl : UserControl
         var original = ToValues(row, DataRowVersion.Original);
         var updated = ToValues(row, DataRowVersion.Current);
         _contextChangePending = true;
-        bool[] enabledBeforeSave = SetContextGridsEnabled(false);
+        bool?[] enabledBeforeSave = SetContextGridsEnabled(false);
         try
         {
             await _repository.SaveRowAsync(tableName, original, updated);
             row.AcceptChanges();
+            RefreshTreeLabels();
             string journalWarning = RaiseJournal(tableName, ChangeJournalOperationKind.Update, original, updated,
                 IdentityFor(tableName, updated), "Изменена запись Program/Step");
             SetStatus("Изменения сохранены. Строка проверена на отсутствие параллельной правки." + FormatJournalWarning(journalWarning));
@@ -1030,5 +1574,9 @@ public partial class ProgramManagementControl : UserControl
     }
 
     private void PublishContext() => ContextChanged?.Invoke(CurrentContext);
-    private void SetStatus(string message) => StatusText.Text = message;
+    private void SetStatus(string message)
+    {
+        StatusText.Text = message;
+        UpdateCommandState();
+    }
 }

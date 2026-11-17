@@ -88,7 +88,9 @@ public partial class ProjectModeView
                 };
                 combo.SelectionChanged += (_, _) =>
                 {
-                    if (ReferenceEquals(_selectedRow, row)) BtnSave.IsEnabled = UserAuthorizationService.Has(Permission.ManageObjects);
+                    if (!ReferenceEquals(_selectedRow, row)) return;
+                    BtnSave.IsEnabled = UserAuthorizationService.Has(Permission.ManageObjects);
+                    UpdateConfigurationTypePreview(row);
                 };
                 value = combo;
             }
@@ -118,6 +120,8 @@ public partial class ProjectModeView
                     if ((_configurationKind is ConfigurationKind.Plc or ConfigurationKind.Area)
                         && ReferenceEquals(_selectedRow, row))
                         BtnSave.IsEnabled = UserAuthorizationService.Has(Permission.ManageObjects);
+                    if (_configurationKind == ConfigurationKind.Plc && ReferenceEquals(_selectedRow, row))
+                        UpdateConfigurationTypePreview(row);
                 };
                 value = box;
             }
@@ -156,6 +160,8 @@ public partial class ProjectModeView
         ObjectEditor.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         Grid.SetRow(card, 0);
         ObjectEditor.Children.Add(card);
+        if (_configurationKind == ConfigurationKind.Plc)
+            UpdateConfigurationTypePreview(row);
         UpdateLookupWarningsButton();
     }
 
@@ -223,6 +229,9 @@ public partial class ProjectModeView
         // Keep this line for the object's class only to avoid duplicated metadata.
         TxtObjectMeta.Text = $"Класс: {_selectedClass.Name}";
         TxtPreviewGlyph.Text = _selectedClass.Name.Length > 3 ? _selectedClass.Name[..3].ToUpperInvariant() : _selectedClass.Name.ToUpperInvariant();
+        TxtPreviewGlyph.Visibility = Visibility.Visible;
+        ImgObjectTypePreview.Source = null;
+        ImgObjectTypePreview.Visibility = Visibility.Collapsed;
         var classDescription = _selectedClass.Description?.Trim() ?? string.Empty;
         var objectDescription = new[] { "DescriptionL1", "Description", "Description_L1", "Comment", "Notes" }
             .Where(name => _selectedRow.Table.Columns.Contains(name))
@@ -348,7 +357,7 @@ public partial class ProjectModeView
                 string currentLookupValue = GetText(field.Name);
                 bool isGeneratedArea = field.Name.Equals("Area", StringComparison.OrdinalIgnoreCase);
                 bool isReadOnlyClassNumber = new[] { "PLC_Class_Number", "PLCClassNumber", "PLCClasssNumber" }.Contains(field.Name, StringComparer.OrdinalIgnoreCase);
-                if (knownLookupField && !string.IsNullOrWhiteSpace(currentLookupValue)
+                if (knownLookupField && !isReadOnlyClassNumber && !string.IsNullOrWhiteSpace(currentLookupValue)
                     && !options.Any(option => option.Key.Equals(currentLookupValue, StringComparison.OrdinalIgnoreCase)))
                 {
                     var lookupName = field.Name.Equals("Type", StringComparison.OrdinalIgnoreCase) && _selectedClass.Name.Equals("PLC", StringComparison.OrdinalIgnoreCase)
@@ -411,6 +420,15 @@ public partial class ProjectModeView
                     combo.SetResourceReference(Control.BackgroundProperty, "BrushPanel");
                     combo.SetResourceReference(Control.ForegroundProperty, "BrushText");
                     combo.SetResourceReference(Control.BorderBrushProperty, "BrushBorder");
+                    if (field.Name.Equals("Type", StringComparison.OrdinalIgnoreCase)
+                        || !string.IsNullOrWhiteSpace(field.LookupTable)
+                        || !string.IsNullOrWhiteSpace(field.LookupKeyField))
+                    {
+                        combo.SelectionChanged += (_, _) =>
+                        {
+                            if (IsCurrentRender()) UpdateObjectTypePreviewFromEditors();
+                        };
+                    }
                     editor = combo;
                 }
                 else
@@ -429,6 +447,16 @@ public partial class ProjectModeView
                     box.SetResourceReference(Control.ForegroundProperty, "BrushText");
                     box.SetResourceReference(Control.BorderBrushProperty, "BrushBorder");
                     editor = box;
+                }
+                if (editor is TextBox typeBox
+                    && (field.Name.Contains("Type", StringComparison.OrdinalIgnoreCase)
+                        || !string.IsNullOrWhiteSpace(field.LookupTable)
+                        || !string.IsNullOrWhiteSpace(field.LookupKeyField)))
+                {
+                    typeBox.TextChanged += (_, _) =>
+                    {
+                        if (IsCurrentRender()) UpdateObjectTypePreviewFromEditors();
+                    };
                 }
                 Grid.SetColumn(editor, 1);
                 rowPanel.Children.Add(editor);
@@ -456,6 +484,7 @@ public partial class ProjectModeView
         }
 
         if (!IsCurrentRender()) return;
+        UpdateObjectTypePreviewFromEditors();
         UpdateLookupWarningsButton();
         TxtStatus.Text = $"{(offline ? "Offline · " : string.Empty)}{_selectedClass.Name} · показаны все {actualFields.Count} полей · {(offline ? "значения взяты из локального снимка" : "связанные поля — выпадающие списки")}";
     }
@@ -898,7 +927,11 @@ public partial class ProjectModeView
             TxtStatus.Text = "Объект сохранён · связанные поля проверены по справочникам";
             ShowActionFeedback($"Изменения объекта «{PickName(_selectedRow, _selectedClass)}» сохранены");
         }
-        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Сохранение объекта", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex)
+        {
+            ShowActionFeedback($"Ошибка: {ex.Message}", isError: true);
+            Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Сохранение объекта", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private async Task RenderLookupObjectDetailsAsyncTask()

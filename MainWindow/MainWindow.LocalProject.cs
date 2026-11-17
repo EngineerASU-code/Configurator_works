@@ -1040,7 +1040,6 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
             _rightPanel.BtnDuplicate.IsEnabled = active && _rightPanel.DataTableGrid.SelectedItem is DataRowView && UserAuthorizationService.Has(Permission.Mode1Add);
             _rightPanel.BtnDelete.IsEnabled = active && _rightPanel.DataTableGrid.SelectedItems.Count > 0 && UserAuthorizationService.Has(Permission.Mode1Delete);
             _rightPanel.BtnFilter.IsEnabled = false;
-            _rightPanel.UndoButton.IsEnabled = false;
             _rightPanel.BtnFirst.IsEnabled = _rightPanel.BtnPrev.IsEnabled = _rightPanel.BtnNext.IsEnabled = _rightPanel.BtnLast.IsEnabled = false;
         }
 

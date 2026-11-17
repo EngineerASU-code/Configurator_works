@@ -33,6 +33,123 @@ public sealed class ProgramSupportRepository
         return LoadAsync(definition, scope);
     }
 
+    public async Task ValidateMatrixDeviceReferencesAsync(DataTable groups, DataTable positionTypes, DataTable assignments,
+        IReadOnlyList<MatrixDeviceClassOption> classes)
+    {
+        var groupNumbers = groups.Rows.Cast<DataRow>()
+            .Where(row => row.RowState != DataRowState.Deleted)
+            .Select(row => Convert.ToInt32(row["DeviceList"])).ToHashSet();
+        foreach (DataRow row in assignments.Rows)
+        {
+            if (row.RowState == DataRowState.Deleted) continue;
+            int groupNumber = Convert.ToInt32(row["DeviceList"]);
+            if (!groupNumbers.Contains(groupNumber))
+                throw new InvalidOperationException($"Назначение объекта ссылается на отсутствующую группу устройств {groupNumber}.");
+        }
+
+        var classesByNumber = classes.Where(item => !string.IsNullOrWhiteSpace(item.TableName))
+            .GroupBy(item => item.Number).ToDictionary(group => group.Key, group => group.First());
+        var classByPosition = new Dictionary<int, int>();
+        foreach (DataRow row in positionTypes.Rows)
+        {
+            if (row.RowState == DataRowState.Deleted) continue;
+            int position = Convert.ToInt32(row["Position"]);
+            if (row["Device_Global_Class"] == DBNull.Value) continue;
+            int classNumber = Convert.ToInt32(row["Device_Global_Class"]);
+            if (!classByPosition.TryAdd(position, classNumber) && classByPosition[position] != classNumber)
+                throw new InvalidOperationException($"Для позиции {position} указано несколько классов устройств.");
+        }
+
+        await using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
+        await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection);
+        var checkedTables = new Dictionary<string, TableMetadata>(StringComparer.OrdinalIgnoreCase);
+        var checkedReferences = new HashSet<(string Table, int Plc, int Record)>();
+        foreach (DataRow row in assignments.Rows)
+        {
+            if (row.RowState == DataRowState.Deleted) continue;
+            int position = Convert.ToInt32(row["Position"]);
+            if (!classByPosition.TryGetValue(position, out int expectedClass))
+                throw new InvalidOperationException($"Для позиции {position} не настроен тип устройства.");
+            if (row["Device_PLC"] == DBNull.Value || row["Device_PLC_Class_Number"] == DBNull.Value || row["Device_Record"] == DBNull.Value)
+                throw new InvalidOperationException($"Ссылка объекта в позиции {position} заполнена не полностью.");
+            int deviceClass = Convert.ToInt32(row["Device_PLC_Class_Number"]);
+            int devicePlc = Convert.ToInt32(row["Device_PLC"]);
+            int deviceRecord = Convert.ToInt32(row["Device_Record"]);
+            if (deviceClass != expectedClass)
+                throw new InvalidOperationException($"Объект в позиции {position} не соответствует выбранному классу устройств.");
+            if (!classesByNumber.TryGetValue(expectedClass, out var classOption))
+                throw new InvalidOperationException($"Класс устройств {expectedClass} недоступен в текущем проекте или не имеет основной таблицы.");
+            if (!checkedTables.TryGetValue(classOption.TableName, out var metadata))
+            {
+                var definition = new ProgramSupportTableDefinition("device-reference", classOption.Name, classOption.TableName,
+                    Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>());
+                metadata = await GetMetadataAsync(connection, null, definition);
+                if (!metadata.Columns.ContainsKey("PLC") || !metadata.Columns.ContainsKey("Record"))
+                    throw new InvalidOperationException($"Нельзя проверить ссылку класса «{classOption.Name}»: в {classOption.TableName} отсутствует PLC или Record.");
+                checkedTables[classOption.TableName] = metadata;
+            }
+            if (!checkedReferences.Add((classOption.TableName, devicePlc, deviceRecord))) continue;
+            using var exists = new SqlCommand($"SELECT TOP (1) 1 FROM {QuoteTable(classOption.TableName)} WHERE [PLC]=@plc AND [Record]=@record;", connection);
+            exists.Parameters.AddWithValue("@plc", devicePlc);
+            exists.Parameters.AddWithValue("@record", deviceRecord);
+            if (await exists.ExecuteScalarAsync() == null)
+                throw new InvalidOperationException($"Объект PLC={devicePlc}, класс={deviceClass}, Record={deviceRecord} не найден в текущем проекте.");
+        }
+    }
+
+    public async Task<IReadOnlyList<MatrixDevicePlcOption>> LoadMatrixDevicePlcsAsync(MatrixDeviceClassOption deviceClass)
+    {
+        await using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
+        await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection);
+        var metadata = await GetDeviceTableMetadataAsync(connection, deviceClass);
+        if (!metadata.Columns.ContainsKey("PLC") || !metadata.Columns.ContainsKey("Record"))
+            throw new InvalidOperationException($"Нельзя выбрать объект класса «{deviceClass.Name}»: в {deviceClass.TableName} отсутствует PLC или Record.");
+        using var command = new SqlCommand($"SELECT DISTINCT [PLC] FROM {QuoteTable(deviceClass.TableName)} WHERE [PLC] IS NOT NULL ORDER BY [PLC];", connection);
+        using var reader = await command.ExecuteReaderAsync();
+        var result = new List<MatrixDevicePlcOption>();
+        while (await reader.ReadAsync())
+        {
+            int number = Convert.ToInt32(reader.GetValue(0), System.Globalization.CultureInfo.InvariantCulture);
+            result.Add(new MatrixDevicePlcOption(number, number.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        }
+        return result;
+    }
+
+    public async Task<IReadOnlyList<MatrixDeviceObjectOption>> LoadMatrixDeviceObjectsAsync(MatrixDeviceClassOption deviceClass, int plc)
+    {
+        await using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
+        await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection);
+        var metadata = await GetDeviceTableMetadataAsync(connection, deviceClass);
+        if (!metadata.Columns.ContainsKey("PLC") || !metadata.Columns.ContainsKey("Record"))
+            throw new InvalidOperationException($"Нельзя выбрать объект класса «{deviceClass.Name}»: в {deviceClass.TableName} отсутствует PLC или Record.");
+        string? displayColumn = new[] { "Name_L2", "NameL2", "Name_L1", "NameL1", "Name" }
+            .FirstOrDefault(name => metadata.Columns.ContainsKey(name));
+        string displaySql = displayColumn == null
+            ? "CONVERT(nvarchar(32), [Record])"
+            : $"CONVERT(nvarchar(256), {Quote(displayColumn)})";
+        using var command = new SqlCommand($"SELECT [PLC], [Record], {displaySql} AS [DisplayName] FROM {QuoteTable(deviceClass.TableName)} WHERE [PLC]=@plc ORDER BY [Record];", connection);
+        command.Parameters.AddWithValue("@plc", plc);
+        using var reader = await command.ExecuteReaderAsync();
+        var result = new List<MatrixDeviceObjectOption>();
+        while (await reader.ReadAsync())
+        {
+            int record = Convert.ToInt32(reader.GetValue(1), System.Globalization.CultureInfo.InvariantCulture);
+            string name = reader.IsDBNull(2) ? "" : Convert.ToString(reader.GetValue(2), System.Globalization.CultureInfo.CurrentCulture) ?? "";
+            result.Add(new MatrixDeviceObjectOption(plc, deviceClass.Number, record,
+                string.IsNullOrWhiteSpace(name) || name == record.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    ? record.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    : $"{record} · {name}"));
+        }
+        return result;
+    }
+
+    private static Task<TableMetadata> GetDeviceTableMetadataAsync(SqlConnection connection, MatrixDeviceClassOption deviceClass)
+    {
+        var definition = new ProgramSupportTableDefinition("device-reference", deviceClass.Name, deviceClass.TableName,
+            Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>());
+        return GetMetadataAsync(connection, null, definition);
+    }
+
     public async Task SaveAsync(ProgramSupportTableData tableData, IReadOnlyDictionary<string, object> scope)
     {
         var definition = tableData?.Definition ?? throw new ArgumentNullException(nameof(tableData));
@@ -117,7 +234,8 @@ public sealed class ProgramSupportRepository
 
     private static MatrixListRow ToMatrixListRow(DataRow row) => new(
         new MatrixListKey(Convert.ToInt32(row["Record"]), Convert.ToInt32(row["PLC"]), Convert.ToInt32(row["PLC_Class_Number"])),
-        Convert.ToString(row["Name_L1"]) ?? "", Convert.ToString(row["Name_L2"]) ?? "", Convert.ToInt32(row["DB_Number"]));
+        Convert.ToString(row["Name_L1"]) ?? "", Convert.ToString(row["Name_L2"]) ?? "",
+        row["DB_Number"] == DBNull.Value ? null : Convert.ToInt32(row["DB_Number"]));
 
     private static string? NullableText(object value) => value == null || value == DBNull.Value ? null : Convert.ToString(value);
 
@@ -255,14 +373,64 @@ public sealed class ProgramSupportRepository
             case "dbo.Prog_Recipe": childTable = "dbo.Prog_Recipes"; childField = "Recipe_Record"; targetField = "Record"; break;
             case "dbo.Prog_Queue": childTable = "dbo.Prog_QueueSelections"; childField = "Queue_Record"; targetField = "Record"; break;
         }
-        if (childTable == null || childField == null || targetField == null) return 0;
-        string scopePredicate = definition.ScopeColumns.Select((name, i) => $"{Quote(name)}=@s{i}").Aggregate((a, b) => a + " AND " + b);
-        string sql = $"SELECT COUNT_BIG(1) FROM {QuoteTable(childTable)} WHERE {scopePredicate} AND {Quote(childField)}=@target;";
-        using var command = new SqlCommand(sql, connection, transaction);
-        for (int i = 0; i < definition.ScopeColumns.Count; i++)
-            command.Parameters.AddWithValue("@s" + i, row[definition.ScopeColumns[i], DataRowVersion.Original]);
-        command.Parameters.AddWithValue("@target", row[targetField, DataRowVersion.Original]);
-        return Convert.ToInt32(await command.ExecuteScalarAsync());
+        int count = 0;
+        if (childTable != null && childField != null && targetField != null)
+        {
+            string scopePredicate = definition.ScopeColumns.Select((name, i) => $"{Quote(name)}=@s{i}").Aggregate((a, b) => a + " AND " + b);
+            string sql = $"SELECT COUNT_BIG(1) FROM {QuoteTable(childTable)} WHERE {scopePredicate} AND {Quote(childField)}=@target;";
+            using var command = new SqlCommand(sql, connection, transaction);
+            for (int i = 0; i < definition.ScopeColumns.Count; i++)
+                command.Parameters.AddWithValue("@s" + i, row[definition.ScopeColumns[i], DataRowVersion.Original]);
+            command.Parameters.AddWithValue("@target", row[targetField, DataRowVersion.Original]);
+            count += Convert.ToInt32(await command.ExecuteScalarAsync());
+        }
+        return count + await CountMatrixDependentsAsync(connection, transaction, definition, row);
+    }
+
+    private static async Task<int> CountMatrixDependentsAsync(SqlConnection connection, SqlTransaction transaction,
+        ProgramSupportTableDefinition definition, DataRow row)
+    {
+        var checks = definition.TableName switch
+        {
+            "dbo.Matrix_List" => new (string Table, string[] Columns, string[] Values)[]
+            {
+                ("dbo.Matrix_CommandList", new[] { "PLC", "PLC_Class_Number", "Record" }, new[] { "PLC", "PLC_Class_Number", "Record" }),
+                ("dbo.Matrix_Commands", new[] { "PLC", "PLC_Class_Number", "Record" }, new[] { "PLC", "PLC_Class_Number", "Record" }),
+                ("dbo.Matrix_DeviceList", new[] { "PLC", "PLC_Class_Number", "Record" }, new[] { "PLC", "PLC_Class_Number", "Record" }),
+                ("dbo.Matrix_DeviceListType", new[] { "PLC", "PLC_Class_Number", "Record" }, new[] { "PLC", "PLC_Class_Number", "Record" }),
+                ("dbo.Matrix_Devices", new[] { "PLC", "PLC_Class_Number", "Record" }, new[] { "PLC", "PLC_Class_Number", "Record" }),
+                ("dbo.Prog_Queue", new[] { "PLC", "PLC_Class_Matrix_Number", "Matrix_Record" }, new[] { "PLC", "PLC_Class_Number", "Record" }),
+                ("dbo.Prog_QueueSelections", new[] { "PLC", "PLC_Class_Matrix_Number", "Matrix_Record" }, new[] { "PLC", "PLC_Class_Number", "Record" })
+            },
+            "dbo.Matrix_CommandList" => new (string Table, string[] Columns, string[] Values)[]
+            {
+                ("dbo.Matrix_Commands", new[] { "PLC", "PLC_Class_Number", "Record", "CmdNumber" }, new[] { "PLC", "PLC_Class_Number", "Record", "CmdNumber" })
+            },
+            "dbo.Matrix_DeviceList" => new (string Table, string[] Columns, string[] Values)[]
+            {
+                ("dbo.Matrix_Devices", new[] { "PLC", "PLC_Class_Number", "Record", "DeviceList" }, new[] { "PLC", "PLC_Class_Number", "Record", "DeviceList" }),
+                ("dbo.Prog_QueueSelections", new[] { "PLC", "PLC_Class_Matrix_Number", "Matrix_Record", "Matrix_DeviceList" }, new[] { "PLC", "PLC_Class_Number", "Record", "DeviceList" })
+            },
+            "dbo.Matrix_DeviceListType" => new (string Table, string[] Columns, string[] Values)[]
+            {
+                ("dbo.Matrix_Devices", new[] { "PLC", "PLC_Class_Number", "Record", "Position" }, new[] { "PLC", "PLC_Class_Number", "Record", "Position" })
+            },
+            _ => Array.Empty<(string Table, string[] Columns, string[] Values)>()
+        };
+
+        int count = 0;
+        foreach (var check in checks)
+        {
+            using var exists = new SqlCommand("SELECT CASE WHEN OBJECT_ID(@table) IS NULL THEN 0 ELSE 1 END;", connection, transaction);
+            exists.Parameters.AddWithValue("@table", check.Table);
+            if (Convert.ToInt32(await exists.ExecuteScalarAsync()) == 0) continue;
+            string predicate = string.Join(" AND ", check.Columns.Select((column, index) => $"{Quote(column)}=@m{index}"));
+            using var command = new SqlCommand($"SELECT COUNT_BIG(1) FROM {QuoteTable(check.Table)} WHERE {predicate};", connection, transaction);
+            for (int i = 0; i < check.Columns.Length; i++)
+                command.Parameters.AddWithValue("@m" + i, row[check.Values[i], DataRowVersion.Original]);
+            count = checked(count + Convert.ToInt32(await command.ExecuteScalarAsync()));
+        }
+        return count;
     }
 
     private static async Task EnsureNoForeignKeyDependentsAsync(SqlConnection connection, SqlTransaction transaction,
@@ -345,7 +513,7 @@ ORDER BY fk.object_id, fkc.constraint_column_id;";
     {
         const string columnSql = @"
 SELECT c.name, t.name AS TypeName, c.is_nullable, c.is_identity, c.is_computed,
-       CASE WHEN dc.object_id IS NULL THEN 0 ELSE 1 END AS HasDefault
+       CONVERT(bit, CASE WHEN dc.object_id IS NULL THEN 0 ELSE 1 END) AS HasDefault
 FROM sys.columns c
 JOIN sys.types t ON c.user_type_id=t.user_type_id
 LEFT JOIN sys.default_constraints dc ON dc.object_id=c.default_object_id
@@ -421,7 +589,8 @@ ORDER BY i.index_id, ic.key_ordinal;";
 
     private static string QuoteTable(string tableName)
     {
-        var parts = tableName.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var parts = tableName.Replace("[", "", StringComparison.Ordinal).Replace("]", "", StringComparison.Ordinal)
+            .Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (parts.Length != 2) throw new InvalidOperationException("Разрешены только таблицы схемы dbo.");
         return Quote(parts[0]) + "." + Quote(parts[1]);
     }

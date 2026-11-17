@@ -45,7 +45,25 @@ public sealed record ProgMatrixRow(
 
 public sealed record MatrixListKey(int Record, int PLC, int PLC_Class_Number);
 
-public sealed record MatrixListRow(MatrixListKey Key, string Name_L1, string Name_L2, int DB_Number);
+public sealed record MatrixListRow(MatrixListKey Key, string Name_L1, string Name_L2, int? DB_Number);
+
+public sealed record MatrixDeviceClassOption(int Number, string Name, string TableName);
+
+public sealed record MatrixDevicePlcOption(int Number, string Caption);
+
+public sealed record MatrixDeviceObjectOption(int Plc, int ClassNumber, int Record, string Caption);
+
+public sealed record MatrixAwlCommand(int Number, object? DelayOn, object? DelayOff, object? Condition);
+
+public sealed record MatrixAwlDeviceGroup(int Number, IReadOnlyDictionary<int, long> DevicesByPosition);
+
+public sealed record MatrixAwlSnapshot(
+    int Record,
+    int DbNumber,
+    IReadOnlyList<int> Positions,
+    IReadOnlyList<MatrixAwlCommand> Commands,
+    IReadOnlyList<(int Position, int CommandNumber, string? Code)> CommandCells,
+    IReadOnlyList<MatrixAwlDeviceGroup> DeviceGroups);
 
 public static class ProgramSupportCatalog
 {
@@ -79,27 +97,26 @@ public static class ProgramSupportCatalog
 
     public static IReadOnlyList<ProgramSupportTableDefinition> MatrixTables { get; } = new[]
     {
-        new ProgramSupportTableDefinition("program-matrix", "Prog_Matrix · конфигурация класса", "dbo.Prog_Matrix",
+        new ProgramSupportTableDefinition("program-matrix", "Конфигурация класса · Prog_Matrix", "dbo.Prog_Matrix",
             new[] { "Record", "PLC", "PLC_Class_Number" }, MatrixScope,
             new[] { "Type", "Name_L1", "Name_L2", "DescriptionL1", "DescriptionL2" }, Array.Empty<string>(), AllowInsert: true),
-        new ProgramSupportTableDefinition("matrix-list", "Matrix_List · матрицы", "dbo.Matrix_List",
+        new ProgramSupportTableDefinition("matrix-list", "Матрицы · Matrix_List", "dbo.Matrix_List",
             new[] { "Record", "PLC", "PLC_Class_Number" }, MatrixScope,
             new[] { "Name_L1", "Name_L2", "DB_Number" }, Array.Empty<string>(), AllowInsert: true),
-        new ProgramSupportTableDefinition("matrix-command-list", "Matrix_CommandList", "dbo.Matrix_CommandList",
+        new ProgramSupportTableDefinition("matrix-command-list", "Команды · Matrix_CommandList", "dbo.Matrix_CommandList",
             new[] { "Record", "PLC", "PLC_Class_Number", "CmdNumber" }, MatrixRecordScope,
             new[] { "Name_L1", "Name_L2", "DelayON", "DelayOFF", "Condition" }, Array.Empty<string>(), AllowInsert: true),
-        new ProgramSupportTableDefinition("matrix-commands", "Matrix_Commands", "dbo.Matrix_Commands",
+        new ProgramSupportTableDefinition("matrix-commands", "Карта команд · Position × CmdNumber", "dbo.Matrix_Commands",
             new[] { "Record", "PLC", "PLC_Class_Number", "Position", "CmdNumber" }, MatrixRecordScope,
             new[] { "Cmd" }, Array.Empty<string>(), AllowInsert: true),
-        new ProgramSupportTableDefinition("matrix-device-list", "Matrix_DeviceList", "dbo.Matrix_DeviceList",
+        new ProgramSupportTableDefinition("matrix-device-list", "Группы списков устройств", "dbo.Matrix_DeviceList",
             new[] { "Record", "PLC", "PLC_Class_Number", "DeviceList" }, MatrixRecordScope,
             new[] { "Name_L1", "Name_L2" }, Array.Empty<string>(), AllowInsert: true),
-        new ProgramSupportTableDefinition("matrix-device-list-type", "Matrix_DeviceListType", "dbo.Matrix_DeviceListType",
+        new ProgramSupportTableDefinition("matrix-device-list-type", "Позиции и типы устройств", "dbo.Matrix_DeviceListType",
             new[] { "Record", "PLC", "PLC_Class_Number", "Position" }, MatrixRecordScope,
-            new[] { "Name_L1", "Name_L2" }, new[] { "Device_Global_Class" }, AllowInsert: false),
-        new ProgramSupportTableDefinition("matrix-devices", "Matrix_Devices", "dbo.Matrix_Devices",
+            new[] { "Name_L1", "Name_L2", "Device_Global_Class" }, Array.Empty<string>(), AllowInsert: true),
+        new ProgramSupportTableDefinition("matrix-devices", "Назначения объектов", "dbo.Matrix_Devices",
             new[] { "Record", "PLC", "PLC_Class_Number", "DeviceList", "Position" }, MatrixRecordScope,
-            Array.Empty<string>(), new[] { "Device_PLC", "Device_PLC_Class_Number", "Device_Record" }, true, false, false,
-            "Изменение полиморфной ссылки устройства требует отдельной проверки класса и объекта.")
+            new[] { "Device_PLC", "Device_PLC_Class_Number", "Device_Record" }, Array.Empty<string>(), AllowInsert: true)
     };
 }

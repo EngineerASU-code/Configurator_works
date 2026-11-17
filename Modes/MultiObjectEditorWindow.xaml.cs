@@ -2,8 +2,10 @@
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Interop;
 using System.Threading.Tasks;
 
 namespace Configurator;
@@ -47,10 +49,87 @@ public partial class MultiObjectEditorWindow : Window
         _submit = submit ?? throw new ArgumentNullException(nameof(submit));
         PlcOptions = (plcOptions ?? Array.Empty<(string, string)>())
             .Where(x => !string.IsNullOrWhiteSpace(x.Key))
-            .Select(x => new BatchObjectPlcOption { Key = x.Key, Title = x.Title }).ToList();
+            .Select(x => new BatchObjectPlcOption { Key = x.Key, Title = string.IsNullOrWhiteSpace(x.Title) ? x.Key : x.Title }).ToList();
         RowsGrid.ItemsSource = _rows;
+        _rows.CollectionChanged += (_, _) => ResizeForRows();
+        Loaded += (_, _) => ResizeForRows();
         AddRow();
+        ResizeForRows();
     }
+
+    private void ResizeForRows()
+    {
+        var workArea = GetOwnerWorkArea();
+        double maxHeight = Math.Max(1, workArea.Height - 40);
+        double maxWidth = Math.Max(1, workArea.Width - 40);
+        Width = Math.Min(760, maxWidth);
+        MinWidth = Math.Min(600, Width);
+        MinHeight = Math.Min(220, maxHeight);
+        MaxWidth = maxWidth;
+        MaxHeight = maxHeight;
+
+        double desiredGridHeight = 34 + 36 * _rows.Count;
+        Height = Math.Min(maxHeight, 185 + desiredGridHeight);
+
+        if (IsLoaded && Owner != null)
+        {
+            Left = Math.Clamp(Owner.Left + (Owner.ActualWidth - Width) / 2, workArea.Left, workArea.Right - Width);
+            Top = Math.Clamp(Owner.Top + (Owner.ActualHeight - Height) / 2, workArea.Top, workArea.Bottom - Height);
+        }
+    }
+
+    private Rect GetOwnerWorkArea()
+    {
+        if (Owner == null) return SystemParameters.WorkArea;
+
+        var ownerHandle = new WindowInteropHelper(Owner).Handle;
+        var monitor = MonitorFromWindow(ownerHandle, 2);
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        if (monitor == IntPtr.Zero || !GetMonitorInfo(monitor, ref info) || !GetWindowRect(ownerHandle, out var ownerRect))
+            return SystemParameters.WorkArea;
+
+        uint dpi = 96;
+        try { dpi = GetDpiForWindow(ownerHandle); }
+        catch (EntryPointNotFoundException) { }
+        double scale = Math.Max(1, dpi) / 96d;
+        return new Rect(
+            Owner.Left + (info.Work.Left - ownerRect.Left) / scale,
+            Owner.Top + (info.Work.Top - ownerRect.Top) / scale,
+            (info.Work.Right - info.Work.Left) / scale,
+            (info.Work.Bottom - info.Work.Top) / scale);
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MonitorInfo
+    {
+        public int Size;
+        public NativeRect Monitor;
+        public NativeRect Work;
+        public uint Flags;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr window, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(IntPtr window);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowRect(IntPtr window, out NativeRect rect);
 
     private string FindFreeRecord(string plcKey)
     {

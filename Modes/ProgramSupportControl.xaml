@@ -8,7 +8,13 @@
         <Grid Grid.Row="0" Margin="0,0,0,8">
             <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="300"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
             <TextBlock Text="Раздел" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="{DynamicResource BrushTextSecondary}"/>
-            <ComboBox x:Name="SectionBox" Grid.Column="1" Height="38" Padding="8,2" DisplayMemberPath="Caption" SelectedValuePath="Id" SelectionChanged="SectionBox_SelectionChanged"/>
+            <ComboBox x:Name="SectionBox" Grid.Column="1" Height="38" Padding="8,2" SelectedValuePath="Id" SelectionChanged="SectionBox_SelectionChanged">
+                <ComboBox.ItemTemplate>
+                    <DataTemplate>
+                        <TextBlock Text="{Binding Caption}" />
+                    </DataTemplate>
+                </ComboBox.ItemTemplate>
+            </ComboBox>
             <TextBlock x:Name="ContextText" Grid.Column="2" Margin="16,0,0,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource BrushTextSecondary}"/>
         </Grid>
         <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">

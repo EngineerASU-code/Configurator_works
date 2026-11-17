@@ -27,4 +27,7 @@
   <ItemGroup>
     <None Update="App.xaml"><Generator>MSBuild:Compile</Generator></None>
   </ItemGroup>
+  <ItemGroup>
+    <Resource Include="Images\ObjectPreviews\*.png" />
+  </ItemGroup>
 </Project>

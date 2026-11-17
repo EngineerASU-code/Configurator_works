@@ -114,7 +114,7 @@ public partial class ProjectModeView
         ApplyObjectFilters();
     }
 
-    private async Task RefreshConfigurationLookupsAsync()
+    private async Task RefreshConfigurationLookupsAsync(string preferredConfigurationKey = null)
     {
         _onlineLookupOptionsService = null;
         _onlineLookupDatabaseKey = string.Empty;
@@ -123,7 +123,7 @@ public partial class ProjectModeView
         _offlineTablesCache = null;
         _offlineSource?.InvalidateIndex();
 
-        await LoadConfigurationValuesAsync(_configurationKind);
+        await LoadConfigurationValuesAsync(_configurationKind, preferredConfigurationKey);
         await PopulateGlobalFilterListsAsync();
         RebuildObjectFilters();
     }
@@ -190,6 +190,8 @@ public partial class ProjectModeView
 
     private void ApplyObjectFilters()
     {
+        if (_configurationKind != ConfigurationKind.Class) return;
+
         var plcKey = GetSelectedFilterKey(CmbPlcFilter);
         var areaKey = GetSelectedFilterKey(CmbAreaFilter);
         var result = BuildObjectNames(_objects, _selectedClass).Where(item =>

@@ -573,9 +573,11 @@ public partial class ProjectModeView : UserControl
            (current.Name.Equals("Program", StringComparison.OrdinalIgnoreCase) ||
             current.Name.Equals("Matrix", StringComparison.OrdinalIgnoreCase));
 
-    private async Task LoadConfigurationValuesAsync(ConfigurationKind kind)
+    private async Task LoadConfigurationValuesAsync(ConfigurationKind kind, string preferredConfigurationKey = null)
     {
-        string selectedConfigurationKey = _configurationKind == kind ? GetConfigurationKeyValue() : string.Empty;
+        string selectedConfigurationKey = !string.IsNullOrWhiteSpace(preferredConfigurationKey)
+            ? preferredConfigurationKey
+            : _configurationKind == kind ? GetConfigurationKeyValue() : string.Empty;
         if (_offlineProject != null)
         {
             _configurationKind = kind;
@@ -1107,6 +1109,9 @@ public partial class ProjectModeView : UserControl
                     TxtObjectMeta.Text = _configurationKind == ConfigurationKind.Plc ? "PLC" : "Area";
                     TxtObjectContext.Text = $"Значение: {GetConfigurationKeyValue()}";
                     TxtPreviewGlyph.Text = _configurationKind == ConfigurationKind.Plc ? "PLC" : "AREA";
+                    TxtPreviewGlyph.Visibility = Visibility.Visible;
+                    ImgObjectTypePreview.Source = null;
+                    ImgObjectTypePreview.Visibility = Visibility.Collapsed;
                     TxtPreviewClass.Text = _configurationKind == ConfigurationKind.Plc ? "Конфигурация · PLC" : "Конфигурация · Area";
                     BuildObjectEditor();
                     TxtStatus.Text = $"Выбрано значение: {configItem.Name}";
@@ -1149,10 +1154,10 @@ public partial class ProjectModeView : UserControl
         RenderLookupObjectDetailsAsync();
     }
 
-    private void ShowActionFeedback(string message)
+    private void ShowActionFeedback(string message, bool isError = false)
     {
         if (ActionFeedbackText != null) ActionFeedbackText.Text = message;
-        if (ActionFeedbackIcon != null) ActionFeedbackIcon.Visibility = Visibility.Visible;
+        if (ActionFeedbackIcon != null) ActionFeedbackIcon.Visibility = isError ? Visibility.Collapsed : Visibility.Visible;
     }
 
     private string GetText(string field) => _selectedRow != null && _selectedRow.Table.Columns.Contains(field) && _selectedRow[field] != DBNull.Value ? Convert.ToString(_selectedRow[field]) ?? "" : "";
@@ -1331,6 +1336,7 @@ public partial class ProjectModeView : UserControl
         }
         catch (Exception ex)
         {
+            ShowActionFeedback($"Ошибка: {ex.Message}", isError: true);
             Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Сохранение объекта", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
@@ -1390,6 +1396,7 @@ public partial class ProjectModeView : UserControl
             if (updates.Count == 0)
             {
                 TxtStatus.Text = "Изменений нет";
+                ShowActionFeedback(TxtStatus.Text);
                 BtnSave.IsEnabled = false;
                 return;
             }
@@ -1398,11 +1405,14 @@ public partial class ProjectModeView : UserControl
             await RequireCrudSource().UpdateRecordAsync(tableName, keyColumns, keyValues, updates);
             foreach (var pair in updates) row[pair.Key] = pair.Value ?? DBNull.Value;
             await RefreshConfigurationLookupsAsync();
+            if (_configurationKind == ConfigurationKind.Plc && _selectedRow != null)
+                await RenderConfigurationObjectDetailsAsync(_selectedRow, ++_objectDetailsGeneration);
             TxtStatus.Text = $"Справочник {_configurationKind} сохранён";
             ShowActionFeedback($"Изменения «{GetConfigurationKeyValue()}» сохранены");
         }
         catch (Exception ex)
         {
+            ShowActionFeedback($"Ошибка: {ex.Message}", isError: true);
             Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Сохранение справочника", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
@@ -1542,7 +1552,11 @@ public partial class ProjectModeView : UserControl
             TxtStatus.Text = "Объект продублирован";
             ShowActionFeedback(description);
         }
-        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Дублирование", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex)
+        {
+            ShowActionFeedback($"Ошибка: {ex.Message}", isError: true);
+            Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Дублирование", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private async void DeleteObject_Click(object sender, RoutedEventArgs e)
@@ -1665,8 +1679,13 @@ public partial class ProjectModeView : UserControl
             }
             await LoadObjectsAsync();
             TxtStatus.Text = $"Удалено объектов: {selected.Count} · строк: {affected}";
+            ShowActionFeedback(TxtStatus.Text);
         }
-        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Удаление", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex)
+        {
+            ShowActionFeedback($"Ошибка: {ex.Message}", isError: true);
+            Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Удаление", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private string GetConfigurationKeyValue()
@@ -1692,10 +1711,21 @@ public partial class ProjectModeView : UserControl
                 dialog.ShowDialog();
                 if (!dialog.Confirmed || dialog.Values == null || dialog.Values.Count == 0) return;
                 await RequireCrudSource().CreateRecordAsync(_configurationTableName, dialog.Values);
-                await RefreshConfigurationLookupsAsync();
+                string insertedKey = dialog.Values
+                    .Where(pair => pair.Key.Equals(_configurationKeyColumn, StringComparison.OrdinalIgnoreCase))
+                    .Select(pair => pair.Value == null || pair.Value == DBNull.Value ? null : Convert.ToString(pair.Value))
+                    .FirstOrDefault();
+                await RefreshConfigurationLookupsAsync(insertedKey);
                 TxtStatus.Text = "Значение справочника добавлено в локальный проект";
+                ShowActionFeedback(string.IsNullOrWhiteSpace(insertedKey)
+                    ? "Значение справочника добавлено"
+                    : $"Добавлено значение {_configurationKind}: {insertedKey}");
             }
-            catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Добавление локального справочника", MessageBoxButton.OK, MessageBoxImage.Error); }
+            catch (Exception ex)
+            {
+                ShowActionFeedback($"Ошибка: {ex.Message}", isError: true);
+                Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Добавление локального справочника", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
             return;
         }
         if (_connection == null || string.IsNullOrWhiteSpace(_selectedDatabase)) return;
@@ -1730,9 +1760,20 @@ public partial class ProjectModeView : UserControl
             dialog.ShowDialog();
             if (!dialog.Confirmed || dialog.Values == null || dialog.Values.Count == 0) return;
             await RequireCrudSource().CreateRecordAsync(_configurationTableName, dialog.Values);
-            await RefreshConfigurationLookupsAsync();
+            string insertedKey = dialog.Values
+                .Where(pair => pair.Key.Equals(_configurationKeyColumn, StringComparison.OrdinalIgnoreCase))
+                .Select(pair => pair.Value == null || pair.Value == DBNull.Value ? null : Convert.ToString(pair.Value))
+                .FirstOrDefault();
+            await RefreshConfigurationLookupsAsync(insertedKey);
+            ShowActionFeedback(string.IsNullOrWhiteSpace(insertedKey)
+                ? "Значение справочника добавлено"
+                : $"Добавлено значение {_configurationKind}: {insertedKey}");
         }
-        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Добавление конфигурации", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex)
+        {
+            ShowActionFeedback($"Ошибка: {ex.Message}", isError: true);
+            Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Добавление конфигурации", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private async void DeleteConfigurationValue_Click(object sender, RoutedEventArgs e)
@@ -1767,6 +1808,7 @@ public partial class ProjectModeView : UserControl
             {
                 deleteTimer.Stop();
                 SessionTestLog.Trace("CRUD", $"operation=DeleteConfigurationValue; phase=complete; result=error; source=offline; table='{_configurationTableName}'; projectId='{_offlineProject?.Manifest.ProjectId}'; elapsedMs={deleteTimer.ElapsedMilliseconds}; exception={ex}");
+                ShowActionFeedback($"Ошибка: {ex.Message}", isError: true);
                 Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Offline · удаление", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
             return;
@@ -1825,7 +1867,11 @@ public partial class ProjectModeView : UserControl
             TxtStatus.Text = description;
             ShowActionFeedback(description);
         }
-        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Удаление конфигурации", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex)
+        {
+            ShowActionFeedback($"Ошибка: {ex.Message}", isError: true);
+            Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Удаление конфигурации", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private async void NewObject_Click(object sender, RoutedEventArgs e)
@@ -1879,8 +1925,13 @@ public partial class ProjectModeView : UserControl
                 await LoadObjectsAsync();
                 RebuildObjectFilters();
                 TxtStatus.Text = "Объект добавлен в локальный проект";
+                ShowActionFeedback(TxtStatus.Text);
             }
-            catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Новый локальный объект", MessageBoxButton.OK, MessageBoxImage.Error); }
+            catch (Exception ex)
+            {
+                ShowActionFeedback($"Ошибка: {ex.Message}", isError: true);
+                Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Новый локальный объект", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
             return;
         }
         if (_selectedClass?.PrimaryStorage == null || _connection == null || string.IsNullOrWhiteSpace(_selectedDatabase)) return;
@@ -1926,8 +1977,13 @@ public partial class ProjectModeView : UserControl
             await RequireCrudSource().CreateRecordAsync(tableName, dialog.Values);
             RecordCreatedMode3Object(tableName, dialog.Values, new HashSet<string>(StringComparer.Ordinal), "Создан объект", mutationGeneration);
             await LoadObjectsAsync();
+            ShowActionFeedback("Объект добавлен");
         }
-        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Новый объект", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex)
+        {
+            ShowActionFeedback($"Ошибка: {ex.Message}", isError: true);
+            Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Новый объект", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private async void NewObjectsBatch_Click(object sender, RoutedEventArgs e)
@@ -2048,6 +2104,7 @@ public partial class ProjectModeView : UserControl
                         RebuildObjectFilters();
                         ApplyObjectFilters();
                         TxtStatus.Text = $"Создано объектов: {rows.Count} · локальный проект";
+                        ShowActionFeedback(TxtStatus.Text);
                         return null;
                     }
 
@@ -2061,13 +2118,19 @@ public partial class ProjectModeView : UserControl
                         if (!string.IsNullOrWhiteSpace(plcColumn))
                         {
                             if (!int.TryParse(item.PlcKey, out var plcId))
+                            {
+                                ShowActionFeedback($"Ошибка: PLC «{item.PlcKey}» не является допустимым ключом.", isError: true);
                                 return $"PLC «{item.PlcKey}» не является допустимым ключом. Добавлено до ошибки: {inserted}.";
+                            }
                             values[plcColumn] = plcId;
                         }
                         if (!string.IsNullOrWhiteSpace(recordColumn))
                         {
                             if (!int.TryParse(item.Record, out var recordValue))
+                            {
+                                ShowActionFeedback($"Ошибка: Record «{item.Record}» должен быть целым числом.", isError: true);
                                 return $"Record «{item.Record}» должен быть целым числом. Добавлено до ошибки: {inserted}.";
+                            }
                             values[recordColumn] = recordValue;
                         }
                         if (!string.IsNullOrWhiteSpace(classNumberColumn)) values[classNumberColumn] = _selectedClass.ClassNumber;
@@ -2075,11 +2138,13 @@ public partial class ProjectModeView : UserControl
                         catch (Exception ex)
                         {
                             await LoadObjectsAsync();
+                            ShowActionFeedback($"Ошибка: {ex.Message}", isError: true);
                             return $"Сохранение прервано после {inserted} из {rows.Count} объектов. Уже добавленные записи не отменены слоем данных. Ошибка: {ex.Message}";
                         }
                     }
                     await LoadObjectsAsync();
                     TxtStatus.Text = $"Создано объектов: {inserted}";
+                        ShowActionFeedback(TxtStatus.Text);
                     return null;
                 })
             { Owner = Window.GetWindow(this) };
@@ -2088,6 +2153,7 @@ public partial class ProjectModeView : UserControl
         }
         catch (Exception ex)
         {
+            ShowActionFeedback($"Ошибка: {ex.Message}", isError: true);
             Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Массовое добавление объектов", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
@@ -2261,6 +2327,9 @@ public partial class ProjectModeView : UserControl
         TxtObjectMeta.Text = "";
         TxtObjectContext.Text = "";
         TxtPreviewGlyph.Text = "OBJ";
+        TxtPreviewGlyph.Visibility = Visibility.Visible;
+        ImgObjectTypePreview.Source = null;
+        ImgObjectTypePreview.Visibility = Visibility.Collapsed;
         TxtPreviewClass.Text = "";
         BtnDelete.IsEnabled = false;
         BtnDuplicate.IsEnabled = false;

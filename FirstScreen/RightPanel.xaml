@@ -60,7 +60,7 @@
                       Background="{DynamicResource BrushPanel}"
                       Foreground="{DynamicResource BrushText}"
                       BorderThickness="0"
-                      GridLinesVisibility="All"
+                      GridLinesVisibility="Horizontal"
                       HorizontalGridLinesBrush="{DynamicResource BrushGridLine}"
                       VerticalGridLinesBrush="{DynamicResource BrushGridLine}"
                       HeadersVisibility="Column"
@@ -73,6 +73,13 @@
                       EnableRowVirtualization="True"
                       EnableColumnVirtualization="True"
                       ScrollViewer.CanContentScroll="True">
+                <DataGrid.ColumnHeaderStyle>
+                    <Style TargetType="DataGridColumnHeader"
+                           BasedOn="{StaticResource {x:Type DataGridColumnHeader}}">
+                        <Setter Property="BorderBrush" Value="{DynamicResource BrushGridLine}"/>
+                        <Setter Property="BorderThickness" Value="0,0,1,1"/>
+                    </Style>
+                </DataGrid.ColumnHeaderStyle>
                 <DataGrid.CellStyle>
                     <Style TargetType="DataGridCell">
                         <Setter Property="Padding" Value="10,5"/>
@@ -105,11 +112,10 @@
             </Grid.ColumnDefinitions>
 
             <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
-                <Button x:Name="BtnAdd" Content="＋ Добавить" Style="{StaticResource BtnPrimary}" MinWidth="130" Margin="0,0,8,0"/>
-                <Button x:Name="BtnUpdate" Content="Изменить" Style="{StaticResource BtnSecondary}" MinWidth="108" Margin="0,0,8,0"/>
-                <Button x:Name="BtnDuplicate" Content="Дублировать" Style="{StaticResource BtnSecondary}" MinWidth="132" Margin="0,0,8,0"/>
-                <Button x:Name="BtnDelete" Content="Удалить" Style="{StaticResource BtnSecondary}" MinWidth="96"/>
-                <Button x:Name="BtnUndo" Content="↶" Style="{StaticResource BtnCompact}" Width="38" Margin="8,0,8,0" ToolTip="Ctrl+Z · отменить последнее действие"/>
+                <Button x:Name="BtnAdd" Content="＋ Добавить" Style="{StaticResource BtnSecondary}" Width="124" Margin="0,0,8,0"/>
+                <Button x:Name="BtnUpdate" Content="Изменить" Style="{StaticResource BtnSecondary}" Width="124" Margin="0,0,8,0"/>
+                <Button x:Name="BtnDuplicate" Content="Дублировать" Style="{StaticResource BtnSecondary}" Width="124" Margin="0,0,8,0"/>
+                <Button x:Name="BtnDelete" Content="Удалить" Style="{StaticResource BtnSecondary}" Width="124" Margin="0,0,8,0"/>
             </WrapPanel>
 
             <StackPanel Grid.Column="1" Orientation="Horizontal">

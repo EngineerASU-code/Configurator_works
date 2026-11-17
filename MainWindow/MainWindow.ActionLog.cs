@@ -68,8 +68,6 @@ public partial class MainWindow
         if (LastActionText != null)
             LastActionText.Text = _actionLog.LastDescription;
 
-        if (_rightPanel?.UndoButton != null)
-            _rightPanel.UndoButton.IsEnabled = _changeJournal.LoadRecent(500).Any(x => x.CanRestore) || _actionLog.CanUndo;
     }
 
     private ActionLogWindow _actionLogWindow;
@@ -232,9 +230,6 @@ public partial class MainWindow
         // Intentionally empty. The journal records only operations that change
         // project/database objects, never button presses or navigation noise.
     }
-
-    private async void BtnUndo_Click(object sender, RoutedEventArgs e)
-        => await UndoLastActionAsync();
 
     private async void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
