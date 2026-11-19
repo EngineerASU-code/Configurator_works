@@ -255,7 +255,7 @@ public partial class ProgramManagementControl : UserControl
     private void RebuildProgramTree()
     {
         ProgramTreeView.Items.Clear();
-        foreach (var row in ProgramsGrid.Items.OfType<DataRowView>())
+        foreach (var row in ProgramsGrid.Items.OfType<DataRowView>().Where(row => HasPositiveRecord(row.Row)))
         {
             var node = new ProgramTreeNode { Kind = ProgramTreeNodeKind.Program, ProgramRow = row };
             node.Item = CreateTreeItem(node, FormatProgramTreeLabel(row.Row));
@@ -270,7 +270,7 @@ public partial class ProgramManagementControl : UserControl
     private void PopulateProgramTreeNode(ProgramTreeNode node, IEnumerable<DataRowView> rows)
     {
         node.Item.Items.Clear();
-        foreach (var row in rows)
+        foreach (var row in rows.Where(row => HasPositiveRecord(row.Row)))
         {
             var child = new ProgramTreeNode
             {
@@ -286,6 +286,9 @@ public partial class ProgramManagementControl : UserControl
         if (node.Item.Items.Count == 0) AddEmptyTreeNode(node.Item, "Последовательностей нет");
         node.ChildrenLoaded = true;
     }
+
+    private static bool HasPositiveRecord(DataRow row)
+        => long.TryParse(Convert.ToString(GetValue(row, "Record"), CultureInfo.InvariantCulture), out long record) && record > 0;
 
     private void PopulateSequenceTreeNode(ProgramTreeNode node, IEnumerable<DataRowView> transitions, IEnumerable<DataRowView> steps)
     {
@@ -986,9 +989,10 @@ public partial class ProgramManagementControl : UserControl
             var choices = await _repository.GetStepChoicesAsync(targetContext.PlcValue);
             var selectedStep = ChooseStep(choices);
             if (selectedStep == null) return;
+            var defaults = await _repository.GetStepTextDefaultsAsync(selectedStep.Row);
             var extraFields = await PromptInsertValuesAsync(ProgramManagementRepository.TransitionTable,
                 new[] { "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Seq_Record", "SeqStep_Number", "PLC_Class_Step_Number", "Step_Record" },
-                "Параметры перехода нового шага");
+                "Параметры перехода нового шага", defaults);
             if (extraFields == null) return;
             int number = await _repository.AddStepToSequenceAsync(targetContext,
                 selectedStep["PLC_Class_Number"], selectedStep["Record"], extraFields);
@@ -1122,7 +1126,7 @@ public partial class ProgramManagementControl : UserControl
     }
 
     private async Task<Dictionary<string, object>> PromptInsertValuesAsync(string tableName,
-        IEnumerable<string> generatedColumns, string title)
+        IEnumerable<string> generatedColumns, string title, IReadOnlyDictionary<string, object> defaults = null)
     {
         var fields = await _repository.GetInsertColumnsAsync(tableName, generatedColumns);
         var panel = new StackPanel { Margin = new Thickness(14) };
@@ -1136,6 +1140,8 @@ public partial class ProgramManagementControl : UserControl
                 Margin = new Thickness(0, 5, 0, 2)
             });
             var editor = new TextBox { MinWidth = 360, Margin = new Thickness(0, 0, 0, 3) };
+            if (defaults != null && defaults.TryGetValue(column.Name, out var defaultValue))
+                editor.Text = Convert.ToString(defaultValue, CultureInfo.InvariantCulture);
             panel.Children.Add(editor);
             editors.Add((column, editor));
         }
@@ -1144,6 +1150,7 @@ public partial class ProgramManagementControl : UserControl
 
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 12, 0, 0) };
         var ok = new Button { Content = "Создать", IsDefault = true, MinWidth = 90, Margin = new Thickness(4) };
+        ok.SetResourceReference(StyleProperty, "BtnPrimary");
         var cancel = new Button { Content = "Отмена", IsCancel = true, MinWidth = 90, Margin = new Thickness(4) };
         buttons.Children.Add(cancel);
         buttons.Children.Add(ok);
@@ -1162,7 +1169,8 @@ public partial class ProgramManagementControl : UserControl
         ok.Click += (_, _) => window.DialogResult = true;
         if (window.ShowDialog() != true) return null;
 
-        var values = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+        var values = defaults == null ? new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, object>(defaults, StringComparer.OrdinalIgnoreCase);
         foreach (var (column, editor) in editors)
         {
             string text = editor.Text?.Trim() ?? string.Empty;
@@ -1170,6 +1178,7 @@ public partial class ProgramManagementControl : UserControl
             if (text.Length == 0)
             {
                 if (required) throw new InvalidOperationException($"Заполните обязательное поле {column.Name}.");
+                values.Remove(column.Name);
                 continue;
             }
             values[column.Name] = ParseSqlValue(column, text);

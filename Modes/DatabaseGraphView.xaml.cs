@@ -55,6 +55,7 @@ public partial class DatabaseGraphView : UserControl
         GraphCanvas.MouseLeftButtonUp += GraphCanvas_MouseLeftButtonUp;
         GraphCanvas.PreviewMouseWheel += GraphCanvas_PreviewMouseWheel;
         if (RulesList != null) RulesList.MouseDoubleClick += RulesList_MouseDoubleClick;
+        if (LogicalRulesList != null) LogicalRulesList.MouseDoubleClick += RulesList_MouseDoubleClick;
         GraphCanvas.PreviewMouseRightButtonDown += GraphCanvas_PreviewMouseRightButtonDown;
         GraphCanvas.PreviewMouseRightButtonUp += GraphCanvas_PreviewMouseRightButtonUp;
     }
@@ -75,6 +76,7 @@ public partial class DatabaseGraphView : UserControl
         _graphLayoutRoot = null;
         GraphTableList.ItemsSource = null;
         RulesList.ItemsSource = null;
+        if (LogicalRulesList != null) LogicalRulesList.ItemsSource = null;
         GraphCanvas.Children.Clear();
         if (TxtGraphStatus != null) TxtGraphStatus.Text = "Проект не выбран";
     }
@@ -106,26 +108,27 @@ public partial class DatabaseGraphView : UserControl
 
     private void RefreshRulesList()
     {
-        if (RulesList == null) return;
-        RulesList.ItemsSource = null;
-        var view = new System.Windows.Data.ListCollectionView(_relations
-            .OrderBy(r => r.Kind.Equals("FK", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
-            .ThenBy(r => r.Source, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(r => r.Target, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(r => r.SourceColumnDisplay, StringComparer.OrdinalIgnoreCase).ToList());
-        view.GroupDescriptions.Add(new System.Windows.Data.PropertyGroupDescription(nameof(GraphRelation.GroupDisplay)));
-        RulesList.ItemsSource = view;
+        if (RulesList == null || LogicalRulesList == null) return;
+        _selectedGraphRelation = null;
+        UpdateGraphRelationButtons();
+        RulesList.ItemsSource = _relations.Where(r => r.Kind.Equals("FK", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(r => r.Source, StringComparer.OrdinalIgnoreCase).ThenBy(r => r.Target, StringComparer.OrdinalIgnoreCase).ToList();
+        LogicalRulesList.ItemsSource = _relations.Where(r => !r.Kind.Equals("FK", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(r => r.Source, StringComparer.OrdinalIgnoreCase).ThenBy(r => r.Target, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     private void RulesList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        _selectedGraphRelation = RulesList?.SelectedItem as GraphRelation;
+        if (sender is not System.Windows.Controls.ListView list || list.SelectedItem is not GraphRelation relation) return;
+        var other = ReferenceEquals(list, RulesList) ? LogicalRulesList : RulesList;
+        if (other != null) other.SelectedItem = null;
+        _selectedGraphRelation = relation;
         UpdateGraphRelationButtons();
     }
 
     private void RulesList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
-        if (RulesList?.SelectedItem is not GraphRelation relation) return;
+        if (sender is not System.Windows.Controls.ListView list || list.SelectedItem is not GraphRelation relation) return;
         SetOverviewMode(true);
         var focusTable = _tables.FirstOrDefault(t => t.FullName.Equals(relation.Target, StringComparison.OrdinalIgnoreCase))
                          ?? _tables.FirstOrDefault(t => t.FullName.Equals(relation.Source, StringComparison.OrdinalIgnoreCase));
@@ -589,18 +592,7 @@ ORDER BY SourceTable, ForeignKeyName, fkc.constraint_column_id;", connection))
                 if (outgoing && !incoming) return showOutgoing;
                 return showIncoming || showOutgoing;
             }).ToList();
-        const int maxOverviewRelations = 12;
         var visibleRelations = allVisibleRelations;
-        if (ShowAllGraphRelations?.IsChecked != true && allVisibleRelations.Count > maxOverviewRelations)
-        {
-            visibleRelations = allVisibleRelations
-                .OrderByDescending(r => r.Kind.Equals("FK", StringComparison.OrdinalIgnoreCase))
-                .ThenByDescending(r => IsCoreGraphTable(r.Source) || IsCoreGraphTable(r.Target))
-                .ThenBy(r => r.Source, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(r => r.Target, StringComparer.OrdinalIgnoreCase)
-                .Take(maxOverviewRelations)
-                .ToList();
-        }
         var visibleNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { selected.FullName };
         foreach (var relation in visibleRelations)
         {

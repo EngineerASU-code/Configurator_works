@@ -94,6 +94,21 @@ public sealed class MatrixAwlExporterTests
     }
 
     [Fact]
+    public void Generate_PreservesSingleCommandAndItsCells()
+    {
+        string awl = MatrixAwlExporter.Generate(new MatrixAwlSnapshot(
+            23, 3023, new[] { 1, 2 },
+            new[] { new MatrixAwlCommand(1, 0, 0, 0) },
+            new (int Position, int CommandNumber, string? Code)[] { (1, 1, "A"), (2, 1, "D") },
+            Array.Empty<MatrixAwlDeviceGroup>()));
+
+        Assert.Contains("Cmd_count : INT  := 1;\r\n", awl);
+        Assert.Contains("CMD : ARRAY  [1 .. 1, 1 .. 2 ] OF BYTE ;\r\n", awl);
+        Assert.Contains("CMD[1, 1] := B#16#1;\r\n", awl);
+        Assert.Contains("CMD[1, 2] := B#16#2;\r\n", awl);
+    }
+
+    [Fact]
     public void Generate_RejectsInvalidCommandBeforeReturningFileContent()
     {
         var snapshot = new MatrixAwlSnapshot(1, 1, new[] { 1 },

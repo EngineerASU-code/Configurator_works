@@ -223,6 +223,16 @@ namespace Configurator
                 }
             }
 
+            public async Task<bool> ScopedRecordExistsAsync(string tableName, string recordColumn, string scopeColumn, object record, object scope, CancellationToken ct = default)
+            {
+                using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
+                await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection, ct);
+                using var command = new SqlCommand($"SELECT CASE WHEN EXISTS (SELECT 1 FROM {QuoteTableName(tableName)} WHERE {QuoteIdentifier(recordColumn)} = @record AND {QuoteIdentifier(scopeColumn)} = @scope) THEN 1 ELSE 0 END", connection);
+                command.Parameters.AddWithValue("@record", record);
+                command.Parameters.AddWithValue("@scope", scope);
+                return Convert.ToInt32(await command.ExecuteScalarAsync(ct)) == 1;
+            }
+
             public async Task<int> GetNextScopedRecordValueAsync(string tableName, string recordColumn, string scopeColumn, object scopeValue, CancellationToken ct = default)
             {
                 using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);

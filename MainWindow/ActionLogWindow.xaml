@@ -21,7 +21,7 @@
                         <Border Padding="12" HorizontalAlignment="Stretch" Background="{DynamicResource BrushBase}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="7">
                             <Grid>
                                 <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="170"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/><ColumnDefinition Width="124"/></Grid.ColumnDefinitions>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                 <StackPanel Grid.Row="0" Grid.Column="0">
                                     <TextBlock Text="{Binding TimestampUtc, Mode=OneWay, StringFormat={}{0:dd.MM.yyyy HH:mm:ss}}" Foreground="{DynamicResource BrushTextSecondary}" FontSize="12"/>
                                     <TextBlock Foreground="{DynamicResource BrushTextSecondary}" FontSize="11" TextTrimming="CharacterEllipsis">
@@ -40,7 +40,7 @@
                                     <TextBlock Text="{Binding EntityIdentity, Mode=OneWay, StringFormat=Элемент: {0}}" Foreground="{DynamicResource BrushTextSecondary}" FontSize="11" TextWrapping="Wrap"/>
                                     <TextBlock Text="{Binding Details, Mode=OneWay}" Foreground="{DynamicResource BrushTextSecondary}" FontSize="10" TextWrapping="Wrap" Margin="0,3,0,0"/>
                                 </StackPanel>
-                                <Button Grid.Column="4" Grid.Row="0" Content="Отменить действие" Width="124" MinWidth="124" Height="34" Style="{StaticResource BtnSecondary}" IsEnabled="{Binding CanRestore, Mode=OneWay}" Tag="{Binding}" Click="Restore_Click" VerticalAlignment="Top" Margin="8,0,0,0"/>
+                                <Button Grid.Column="4" Grid.Row="0" Content="Отменить действие" Width="150" Height="34" Style="{StaticResource BtnSecondary}" IsEnabled="{Binding CanRestore, Mode=OneWay}" Tag="{Binding}" Click="Restore_Click" VerticalAlignment="Top" Margin="8,0,0,0"/>
                                 <ItemsControl Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="5" ItemsSource="{Binding Changes}" Margin="0,8,0,0">
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>

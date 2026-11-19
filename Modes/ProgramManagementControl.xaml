@@ -34,9 +34,9 @@
                     <TextBlock DockPanel.Dock="Top" Text="Раскройте программу и выберите ветку для настройки."
                                TextWrapping="Wrap" Margin="6,4,6,8" Foreground="Gray" />
                     <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
-                        <Button x:Name="AddProgramButton" Content="＋ Программа" Margin="2" Padding="8,4" Click="AddProgramButton_Click" />
-                        <Button x:Name="AddSequenceButton" Content="＋ Последовательность" Margin="2" Padding="8,4" Click="AddSequenceButton_Click" />
-                        <Button x:Name="AddStepButton" Content="＋ Шаг" ToolTip="Добавить существующий шаг в выбранную последовательность." Margin="2" Padding="8,4" Click="AddStepButton_Click" />
+                        <Button x:Name="AddProgramButton" Content="＋ Программа" Style="{StaticResource BtnPrimary}" Margin="2" Padding="8,4" Click="AddProgramButton_Click" />
+                        <Button x:Name="AddSequenceButton" Content="＋ Последовательность" Style="{StaticResource BtnPrimary}" Margin="2" Padding="8,4" Click="AddSequenceButton_Click" />
+                        <Button x:Name="AddStepButton" Content="＋ Шаг" ToolTip="Добавить существующий шаг в выбранную последовательность." Style="{StaticResource BtnPrimary}" Margin="2" Padding="8,4" Click="AddStepButton_Click" />
                         <Button x:Name="DeleteProgramButton" Content="Удалить программу" Margin="2" Padding="8,4" Click="DeleteProgramButton_Click" />
                         <Button x:Name="DeleteSequenceButton" Content="Удалить последовательность" Margin="2" Padding="8,4" Click="DeleteSequenceButton_Click" />
                         <Button x:Name="DeleteStepButton" Content="Удалить вхождение" ToolTip="Удалить выбранный шаг из последовательности." Margin="2" Padding="8,4" Click="DeleteStepButton_Click" />
@@ -56,7 +56,7 @@
                         </Grid.RowDefinitions>
                         <GroupBox Grid.Row="0" Header="Поля программы" Margin="0,0,0,5">
                             <DockPanel>
-                                <Button x:Name="SaveProgramsButton" DockPanel.Dock="Bottom" Content="Сохранить программу"
+                                <Button x:Name="SaveProgramsButton" Style="{StaticResource BtnSaveObject}" DockPanel.Dock="Bottom" Content="Сохранить программу"
                                         Tag="programs" HorizontalAlignment="Right" Margin="4" Padding="12,4" Click="SaveEntityButton_Click" />
                                 <DataGrid x:Name="ProgramsGrid" Tag="programs" AutoGenerateColumns="True"
                                           CanUserAddRows="False" CanUserDeleteRows="False" SelectionMode="Single"
@@ -66,7 +66,7 @@
                         </GroupBox>
                         <GroupBox Grid.Row="1" Header="Параметры программы" Margin="0,5,0,0">
                             <DockPanel>
-                                <Button x:Name="SaveProgramParamsButton" DockPanel.Dock="Bottom" Content="Сохранить параметр"
+                                <Button x:Name="SaveProgramParamsButton" Style="{StaticResource BtnSaveObject}" DockPanel.Dock="Bottom" Content="Сохранить параметр"
                                         Tag="programParams" HorizontalAlignment="Right" Margin="4" Padding="12,4" Click="SaveEntityButton_Click" />
                                 <DataGrid x:Name="ProgramParamsGrid" Tag="programParams" AutoGenerateColumns="True"
                                           CanUserAddRows="False" CanUserDeleteRows="False" SelectionMode="Single"
@@ -84,7 +84,7 @@
                         </Grid.RowDefinitions>
                         <GroupBox Grid.Row="0" Header="Поля последовательности" Margin="0,0,0,5">
                             <DockPanel>
-                                <Button x:Name="SaveSequencesButton" DockPanel.Dock="Bottom" Content="Сохранить последовательность"
+                                <Button x:Name="SaveSequencesButton" Style="{StaticResource BtnSaveObject}" DockPanel.Dock="Bottom" Content="Сохранить последовательность"
                                         Tag="sequences" HorizontalAlignment="Right" Margin="4" Padding="12,4" Click="SaveEntityButton_Click" />
                                 <DataGrid x:Name="SequencesGrid" Tag="sequences" AutoGenerateColumns="True"
                                           CanUserAddRows="False" CanUserDeleteRows="False" SelectionMode="Single"
@@ -94,7 +94,7 @@
                         </GroupBox>
                         <GroupBox Grid.Row="1" Header="Вхождения шагов и переходы" Margin="0,5,0,0">
                             <DockPanel>
-                                <Button x:Name="SaveTransitionsButton" DockPanel.Dock="Bottom" Content="Сохранить переход"
+                                <Button x:Name="SaveTransitionsButton" Style="{StaticResource BtnSaveObject}" DockPanel.Dock="Bottom" Content="Сохранить переход"
                                         Tag="transitions" HorizontalAlignment="Right" Margin="4" Padding="12,4" Click="SaveEntityButton_Click" />
                                 <DataGrid x:Name="TransitionsGrid" Tag="transitions" AutoGenerateColumns="True"
                                           CanUserAddRows="False" CanUserDeleteRows="False" SelectionMode="Single"
@@ -112,7 +112,7 @@
                         </Grid.RowDefinitions>
                         <GroupBox Grid.Row="0" Header="Поля справочника шага" Margin="0,0,0,5">
                             <DockPanel>
-                                <Button x:Name="SaveStepsButton" DockPanel.Dock="Bottom" Content="Сохранить шаг"
+                                <Button x:Name="SaveStepsButton" Style="{StaticResource BtnSaveObject}" DockPanel.Dock="Bottom" Content="Сохранить шаг"
                                         Tag="steps" HorizontalAlignment="Right" Margin="4" Padding="12,4" Click="SaveEntityButton_Click" />
                                 <DataGrid x:Name="StepsGrid" Tag="steps" AutoGenerateColumns="True"
                                           CanUserAddRows="False" CanUserDeleteRows="False" SelectionMode="Single"
@@ -122,7 +122,7 @@
                         </GroupBox>
                         <GroupBox Grid.Row="1" Header="Параметры выбранного вхождения" Margin="0,5,0,0">
                             <DockPanel>
-                                <Button x:Name="SaveStepParamsButton" DockPanel.Dock="Bottom" Content="Сохранить параметр"
+                                <Button x:Name="SaveStepParamsButton" Style="{StaticResource BtnSaveObject}" DockPanel.Dock="Bottom" Content="Сохранить параметр"
                                         Tag="stepParams" HorizontalAlignment="Right" Margin="4" Padding="12,4" Click="SaveEntityButton_Click" />
                                 <DataGrid x:Name="StepParamsGrid" Tag="stepParams" AutoGenerateColumns="True"
                                           CanUserAddRows="False" CanUserDeleteRows="False" SelectionMode="Single"

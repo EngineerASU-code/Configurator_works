@@ -14,12 +14,15 @@ public sealed class LookupOptionsService
     private readonly Dictionary<string, IReadOnlyList<LookupOption>> _cache = new(StringComparer.OrdinalIgnoreCase);
     private DataTable _tableListCache;
     private readonly Dictionary<string, List<ColumnInfo>> _columnCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _classNameCache = new(StringComparer.OrdinalIgnoreCase);
 
     public LookupOptionsService(DatabaseService db) => _db = db ?? throw new ArgumentNullException(nameof(db));
 
     public async Task<IReadOnlyList<LookupOption>> TryGetAsync(string className, string tableName, string fieldName, CancellationToken ct = default, string explicitLookupTable = null, string explicitLookupKeyField = null, string explicitLookupDisplayField = null)
     {
         if (string.IsNullOrWhiteSpace(fieldName)) return Array.Empty<LookupOption>();
+        if (string.IsNullOrWhiteSpace(className))
+            className = await ResolveClassNameAsync(tableName, ct);
 
         string lookupTable = string.IsNullOrWhiteSpace(explicitLookupTable) ? null : explicitLookupTable.Trim();
         string preferredKey = string.IsNullOrWhiteSpace(explicitLookupKeyField) ? null : explicitLookupKeyField.Trim();
@@ -295,6 +298,61 @@ public sealed class LookupOptionsService
         if (string.IsNullOrWhiteSpace(fullName)) return string.Empty;
         int dot = fullName.LastIndexOf('.');
         return dot >= 0 ? fullName[(dot + 1)..] : fullName;
+    }
+
+    private async Task<string> ResolveClassNameAsync(string tableName, CancellationToken ct)
+    {
+        var cacheKey = tableName ?? string.Empty;
+        if (_classNameCache.TryGetValue(cacheKey, out var cached)) return cached;
+        var definition = SystemLookupCatalog.Find(tableName, "Type");
+        if (definition != null)
+        {
+            _classNameCache[cacheKey] = definition.ClassName;
+            return definition.ClassName;
+        }
+
+        const string classesTable = "dbo.Classes";
+        _tableListCache ??= await _db.GetTableListAsync(ct);
+        bool classesExist = _tableListCache.Rows.Cast<DataRow>().Any(row =>
+            $"{Convert.ToString(row["TABLE_SCHEMA"])}.{Convert.ToString(row["TABLE_NAME"])}".Equals(classesTable, StringComparison.OrdinalIgnoreCase));
+        if (classesExist)
+        {
+            var columns = await _db.GetTableColumnsAsync(classesTable, ct);
+            var databaseNameColumn = columns.FirstOrDefault(column => column.Name.Equals("DBName", StringComparison.OrdinalIgnoreCase))?.Name;
+            var classNameColumn = columns.FirstOrDefault(column => column.Name.Equals("Name", StringComparison.OrdinalIgnoreCase))?.Name
+                ?? columns.FirstOrDefault(column => column.Name.Equals("ClassName", StringComparison.OrdinalIgnoreCase))?.Name;
+            if (databaseNameColumn != null && classNameColumn != null)
+            {
+                for (var page = 1; page <= 20; page++)
+                {
+                    var rows = await _db.GetTableDataPageAsync(classesTable, page, 500, new[] { databaseNameColumn }, null, ct);
+                    foreach (DataRow row in rows.Rows)
+                    {
+                        var databaseName = Convert.ToString(row[databaseNameColumn]);
+                        if (SameTableName(databaseName, tableName))
+                        {
+                            var resolved = Convert.ToString(row[classNameColumn]);
+                            if (!string.IsNullOrWhiteSpace(resolved))
+                            {
+                                _classNameCache[cacheKey] = resolved;
+                                return resolved;
+                            }
+                        }
+                    }
+                    if (rows.Rows.Count < 500) break;
+                }
+            }
+        }
+
+        var fallback = ShortName(tableName);
+        _classNameCache[cacheKey] = fallback;
+        return fallback;
+    }
+
+    private static bool SameTableName(string left, string right)
+    {
+        static string Normalize(string value) => string.Join('.', (value ?? string.Empty).Split('.', StringSplitOptions.RemoveEmptyEntries).Select(part => part.Trim().Trim('[', ']')));
+        return Normalize(left).Equals(Normalize(right), StringComparison.OrdinalIgnoreCase);
     }
 
     private static string BuildDisplay(DataRow row, IReadOnlyList<string> names, string key, string hint, bool combineAreaNames)

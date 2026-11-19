@@ -45,117 +45,6 @@ public partial class MainWindow
     private bool _offlineAutoSaveInProgress;
     private readonly SemaphoreSlim _offlineSaveGate = new(1, 1);
 
-    private async Task<bool> EnsureBuiltInAccountForWorkspaceChangeAsync()
-    {
-        if (!UserAuthorizationService.IsProjectUser()) return true;
-
-        Configurator.Infrastructure.ModernDialog.Show(this,
-            "Учётная запись локального проекта действует только в этом проекте. Для смены проекта или перехода в Online войдите под встроенной учётной записью.",
-            "Смена рабочего проекта", MessageBoxButton.OK, MessageBoxImage.Information);
-        var login = new LoginWindow { Owner = this };
-        bool authenticated;
-        _loginDialogOpen = true;
-        try { authenticated = login.ShowDialog() == true; }
-        finally { _loginDialogOpen = false; }
-
-        if (!authenticated || UserAuthorizationService.IsProjectUser())
-        {
-            Configurator.Infrastructure.ModernDialog.Show(this,
-                "Переключение отменено. Войдите под встроенной учётной записью, чтобы продолжить.",
-                "Требуется встроенная учётная запись", MessageBoxButton.OK, MessageBoxImage.Information);
-            return false;
-        }
-        return true;
-    }
-
-    private void UpdateProjectAccountsMenuState()
-    {
-        if (MenuProjectAccounts is null) return;
-        bool activeOfflineProject = _isOfflineWorkspace && _openedLocalProject is not null;
-        MenuProjectAccounts.Visibility = activeOfflineProject ? Visibility.Visible : Visibility.Collapsed;
-        MenuProjectAccounts.IsEnabled = activeOfflineProject && UserAuthorizationService.IsSuperAdmin;
-        MenuProjectAccounts.ToolTip = MenuProjectAccounts.IsEnabled
-            ? "Управлять учётными записями только в этом локальном проекте"
-            : "Доступно встроенному Администратору в активном Offline-проекте";
-    }
-
-    private void UpdateBuiltInEngineerMenuState()
-    {
-        if (MenuBuiltInEngineer is null) return;
-        bool isAdministrator = UserAuthorizationService.IsSuperAdmin;
-        MenuBuiltInEngineer.Visibility = isAdministrator ? Visibility.Visible : Visibility.Collapsed;
-        MenuBuiltInEngineer.IsEnabled = isAdministrator;
-    }
-
-    private void MenuBuiltInEngineer_Click(object sender, RoutedEventArgs e)
-    {
-        if (!UserAuthorizationService.IsSuperAdmin)
-        {
-            UserAuthorizationService.Require(Permission.ManageUsers);
-            return;
-        }
-        var window = new BuiltInEngineerWindow { Owner = this };
-        if (window.ShowDialog() == true)
-            Configurator.Infrastructure.ModernDialog.Show(this,
-                "Встроенная учётная запись Инженер-ПНР включена и готова к входу.",
-                "Учётная запись обновлена", MessageBoxButton.OK, MessageBoxImage.Information);
-    }
-
-    private async void MenuProjectAccounts_Click(object sender, RoutedEventArgs e)
-    {
-        if (!_isOfflineWorkspace || _openedLocalProject is null || string.IsNullOrWhiteSpace(_openedLocalProjectPath)) return;
-        if (!UserAuthorizationService.IsSuperAdmin)
-        {
-            UserAuthorizationService.Require(Permission.ManageUsers);
-            return;
-        }
-
-        bool resumeAutoSave = _offlineAutoSaveTimer.IsEnabled;
-        _offlineAutoSaveTimer.Stop();
-        try
-        {
-            while (_offlineAutoSaveInProgress) await Task.Delay(25);
-            await SaveOfflineProjectAsync();
-            var window = new ProjectUserAccountsWindow(_openedLocalProject, SaveProjectAccountChangesAsync, RefreshProjectAccounts)
-            {
-                Owner = this
-            };
-            window.ShowDialog();
-        }
-        catch (Exception ex)
-        {
-            Configurator.Infrastructure.ModernDialog.Show(this,
-                "Не удалось открыть или сохранить учётные записи проекта.\n\n" + ex.Message,
-                "Учётные записи проекта", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-        finally
-        {
-            if (resumeAutoSave && _isOfflineWorkspace && !_offlineAutoSaveTimer.IsEnabled)
-                _offlineAutoSaveTimer.Start();
-        }
-    }
-
-    private async Task SaveProjectAccountChangesAsync(ConfiguratorProject project)
-    {
-        if (!_isOfflineWorkspace || !ReferenceEquals(project, _openedLocalProject) || string.IsNullOrWhiteSpace(_openedLocalProjectPath))
-            throw new InvalidOperationException("Аккаунты можно сохранять только в активный Offline-проект.");
-        CommitOfflineGridToProject();
-        await _projectPackageService.SaveAsync(_openedLocalProjectPath, project, requireExisting: true,
-            reservedFile: GetReservedProjectFile(_openedLocalProjectPath));
-        _offlineProjectDirty = false;
-        _offlineGridDirty = false;
-        StatusText.Text = "Учётные записи проекта сохранены";
-    }
-
-    private void RefreshProjectAccounts()
-    {
-        if (_openedLocalProject is null) return;
-        UserAuthorizationService.SetProjectUsers(_openedLocalProject.Manifest.ProjectId,
-            UserAuthorizationService.GetApprovedProjectUsers(_openedLocalProject.Manifest.ProjectId, _openedLocalProject.Users));
-        UpdateProjectAccountsMenuState();
-    }
-
-
     private async void ChooseOfflineProject_Click(object sender, RoutedEventArgs e)
     {
         // Do not change workspace state before the user has picked a file. Cancel is a no-op:
@@ -179,7 +68,6 @@ public partial class MainWindow
     {
         if (!_isOfflineWorkspace || _openedLocalProject == null || string.IsNullOrWhiteSpace(_openedLocalProjectPath))
             return;
-        if (!await EnsureBuiltInAccountForWorkspaceChangeAsync()) return;
 
         _offlineAutoSaveTimer.Stop();
         while (_offlineAutoSaveInProgress)
@@ -224,7 +112,6 @@ public partial class MainWindow
 
         _openedLocalProject = null;
         _openedLocalProjectPath = null;
-        UserAuthorizationService.SetProjectUsers(null, null);
         _isOfflineWorkspace = false;
         _workspaceModeChosen = false;
         _offlineSelectionRequired = true;
@@ -464,36 +351,12 @@ public partial class MainWindow
         try
         {
             string selectedPath = Path.GetFullPath(selectedFile);
-            bool switchingProject = _openedLocalProjectPath is not null &&
-                !string.Equals(selectedPath, _openedLocalProjectPath, StringComparison.OrdinalIgnoreCase);
-            if (switchingProject && !await EnsureBuiltInAccountForWorkspaceChangeAsync()) return false;
-
             if (!_offlineProjects.TryGetValue(selectedPath, out var project))
             {
                 project = await _projectPackageService.OpenAsync(selectedPath);
                 candidateLock = new FileStream(selectedPath, FileMode.Open, FileAccess.ReadWrite,
                     FileShare.Read, 81920, FileOptions.Asynchronous);
                 candidateLoaded = true;
-            }
-
-            var pendingUsers = UserAuthorizationService.GetUnapprovedProjectUsers(project.Manifest.ProjectId, project.Users).ToList();
-            bool approveUsers = false;
-            if (pendingUsers.Count > 0)
-            {
-                if (!UserAuthorizationService.IsSuperAdmin)
-                {
-                    Configurator.Infrastructure.ModernDialog.Show(this,
-                        "В локальном проекте есть новые учётные записи. Открыть его может только Администратор, чтобы подтвердить их добавление.",
-                        "Требуется Администратор", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return false;
-                }
-
-                string names = string.Join("\n", pendingUsers.Select(user => $"• {user.DisplayName} ({user.UserName})"));
-                var approval = Configurator.Infrastructure.ModernDialog.Show(this,
-                    $"В проекте есть новые учётные записи. После подтверждения они станут доступны для входа в этот проект на этом компьютере. Логины и защищённые хеши останутся в файле .cfgproj.\n\n{names}\n\nРазрешить вход этим пользователям?",
-                    "Подтверждение доступа к проекту", MessageBoxButton.YesNo, MessageBoxImage.Question);
-                if (approval != MessageBoxResult.Yes) return false;
-                approveUsers = true;
             }
 
             // Stop the autosave timer before changing the active file. An already-running
@@ -507,11 +370,6 @@ public partial class MainWindow
                 await SaveOfflineProjectAsync();
             Mouse.OverrideCursor = System.Windows.Input.Cursors.Wait;
             StatusText.Text = "Открытие локального проекта...";
-            if (approveUsers)
-            {
-                UserAuthorizationService.ApproveProjectUsers(project.Manifest.ProjectId, pendingUsers);
-            }
-
             if (candidateLoaded)
             {
                 _offlineProjectLocks[selectedPath] = candidateLock!;
@@ -530,8 +388,6 @@ public partial class MainWindow
 
             _openedLocalProject = project;
             _openedLocalProjectPath = selectedPath;
-            UserAuthorizationService.SetProjectUsers(project.Manifest.ProjectId,
-                UserAuthorizationService.GetApprovedProjectUsers(project.Manifest.ProjectId, project.Users));
             _offlineProjectDirty = false;
             _offlineGridDirty = false;
             _offlineCurrentRecordIndex.Clear();
@@ -980,8 +836,15 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
             if (_offlineCurrentDataTable is null || _offlineCurrentTableName is null || _openedLocalProject is null) return;
             var classNumber = ResolveSystemClassNumber(_offlineCurrentTableName);
             var classNumberColumn = classNumber.HasValue ? ResolveClassNumberColumn(_offlineCurrentColumns) : null;
-            var window = new AddRowWindow(_offlineCurrentTableName, _offlineCurrentColumns, 0, "", null, null,
-                classNumber, classNumberColumn, new Dictionary<string, List<LookupOption>>()) { Owner = this };
+            var recordColumn = _offlineCurrentColumns.FirstOrDefault(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase))?.Name ?? "";
+            var lookupOptions = OfflineLookupOptionsService.Build(_openedLocalProject, _offlineCurrentTableName, _offlineCurrentColumns);
+            var window = new AddRowWindow(_offlineCurrentTableName, _offlineCurrentColumns, 0, recordColumn, null, null,
+                classNumber, classNumberColumn, lookupOptions,
+                recordExistsProvider: (plc, record, ct) => Task.FromResult(
+                    _offlineCurrentDataTable.Columns.Contains("PLC") && _offlineCurrentDataTable.Columns.Contains("Record") &&
+                    _offlineCurrentDataTable.AsEnumerable().Any(row =>
+                        OfflineKeyEquals(Convert.ToString(row["PLC"], CultureInfo.InvariantCulture), plc) &&
+                        OfflineKeyEquals(Convert.ToString(row["Record"], CultureInfo.InvariantCulture), record)))) { Owner = this };
             window.ShowDialog();
             if (!window.Confirmed || window.Values is null || window.Values.Count == 0) return;
             var row = _offlineCurrentDataTable.NewRow();
@@ -996,6 +859,13 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
             StatusText.Text = "Строка добавлена в локальный проект. Изменения будут автоматически сохранены в открытый файл .cfgproj.";
         }
 
+        private static bool OfflineKeyEquals(string? left, string? right)
+        {
+            if (decimal.TryParse(left, NumberStyles.Number, CultureInfo.InvariantCulture, out var first) &&
+                decimal.TryParse(right, NumberStyles.Number, CultureInfo.InvariantCulture, out var second)) return first == second;
+            return string.Equals(left?.Trim(), right?.Trim(), StringComparison.OrdinalIgnoreCase);
+        }
+
         private void EditOfflineRow()
         {
             if (!UserAuthorizationService.Require(Permission.Mode1Edit)) return;
@@ -1003,7 +873,11 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
             var oldValues = selected.Row.Table.Columns.Cast<DataColumn>().ToDictionary(c => c.ColumnName, c => selected[c.ColumnName] == DBNull.Value ? "" : Convert.ToString(selected[c.ColumnName], CultureInfo.InvariantCulture) ?? "", StringComparer.OrdinalIgnoreCase);
             var schema = _openedLocalProject?.TableSchemas.FirstOrDefault(x => x.TableName.Equals(_offlineCurrentTableName, StringComparison.OrdinalIgnoreCase));
             var keyColumn = schema?.KeyColumns.FirstOrDefault() ?? "";
-            var window = new EditRowWindow(_offlineCurrentTableName, _offlineCurrentColumns, oldValues, keyColumn, null, null, new Dictionary<string, List<LookupOption>>()) { Owner = this };
+            var lookupOptions = OfflineLookupOptionsService.Build(_openedLocalProject, _offlineCurrentTableName, _offlineCurrentColumns);
+            var classNumber = ResolveSystemClassNumber(_offlineCurrentTableName);
+            var classNumberColumn = classNumber.HasValue ? ResolveClassNumberColumn(_offlineCurrentColumns) : null;
+            var window = new EditRowWindow(_offlineCurrentTableName, _offlineCurrentColumns, oldValues, keyColumn,
+                classNumberColumn, classNumber, lookupOptions) { Owner = this };
             window.ShowDialog();
             if (!window.Confirmed || window.Values is null) return;
             foreach (var pair in window.Values)
@@ -1123,7 +997,6 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
 
         private async Task SwitchToOnlineWorkspaceAsync()
         {
-            if (!await EnsureBuiltInAccountForWorkspaceChangeAsync()) return;
             if (UserAuthorizationService.CurrentUser == null)
             {
                 if (_loginDialogOpen) return;
@@ -1163,7 +1036,6 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
             _workspaceModeChosen = true;
             _isOfflineWorkspace = false;
             _projectDataSource.Set(null);
-            UserAuthorizationService.SetProjectUsers(null, null);
             _offlineSelectionRequired = false;
             int modeToRestore = _currentMode is >= 1 and <= 3 ? _currentMode : 1;
             _currentMode = modeToRestore;

@@ -42,7 +42,7 @@
                     MinWidth="92" Margin="0,0,8,0" Click="BtnClear_Click"/>
             <Button Content="Отмена" Style="{StaticResource BtnSecondary}"
                     MinWidth="82" Margin="0,0,8,0" Click="BtnCancel_Click"/>
-            <Button Content="Применить" Style="{StaticResource BtnPrimary}"
+            <Button Content="Применить" Style="{StaticResource BtnSecondary}"
                     MinWidth="100" Click="BtnApply_Click"/>
         </StackPanel>
     </Grid>

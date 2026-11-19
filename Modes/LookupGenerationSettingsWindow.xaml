@@ -26,7 +26,7 @@
         <Grid Grid.Row="2" Margin="0,10,0,0">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
             <StackPanel Orientation="Horizontal">
-                <Button Content="＋ Правило" Width="105" Margin="0,0,7,0" Click="Add_Click" Style="{StaticResource BtnSecondary}"/>
+                <Button Content="＋ Правило" Width="105" Margin="0,0,7,0" Click="Add_Click" Style="{StaticResource BtnPrimary}"/>
                 <Button Content="Удалить" Width="90" Margin="0,0,7,0" Click="Delete_Click" Style="{StaticResource BtnSecondary}"/>
                 <Button Content="Импорт JSON…" Width="120" Margin="0,0,7,0" Click="Import_Click" Style="{StaticResource BtnSecondary}"/>
                 <Button Content="Экспорт JSON…" Width="120" Click="Export_Click" Style="{StaticResource BtnSecondary}"/>

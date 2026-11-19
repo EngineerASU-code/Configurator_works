@@ -122,7 +122,8 @@ namespace Configurator
             {
                 if (_loadGeneration != generation || ct.IsCancellationRequested) return;
                 _rightPanel.TableTitle.Text = vm.CurrentTable;
-                Configurator.Infrastructure.ModernDialog.Show("Ошибка загрузки данных: " + ex.Message,
+                System.Diagnostics.Debug.WriteLine(ex);
+                Configurator.Infrastructure.ModernDialog.Show("Не удалось загрузить данные. Проверьте подключение и повторите попытку.",
                     "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
@@ -158,7 +159,7 @@ namespace Configurator
                 if (_loadGeneration == generation && !ct.IsCancellationRequested)
                 {
                     System.Diagnostics.Debug.WriteLine($"[CountUpdate] {ex.Message}");
-                    if (StatusText != null) StatusText.Text = "Строки загружены, но не удалось обновить количество страниц: " + ex.Message;
+                    if (StatusText != null) StatusText.Text = "Не удалось пересчитать страницы. Обновите таблицу.";
                     UpdatePagination();
                 }
             }
@@ -193,7 +194,8 @@ namespace Configurator
             catch (Exception ex)
             {
                 if (_loadGeneration != generation || ct.IsCancellationRequested) return;
-                Configurator.Infrastructure.ModernDialog.Show("Ошибка обновления таблицы: " + ex.Message,
+                System.Diagnostics.Debug.WriteLine(ex);
+                Configurator.Infrastructure.ModernDialog.Show("Не удалось обновить таблицу. Проверьте подключение и повторите попытку.",
                     "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
@@ -302,6 +304,23 @@ namespace Configurator
         private void DataTableGrid_MouseLeftButtonUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
         {
             QueueSelectionStateUpdate();
+        }
+
+        private void DataTableGrid_PreviewMouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            if (sender is DataGrid grid && e.OriginalSource is DependencyObject source
+                && source is not DataGridCell && FindVisualParent<DataGridCell>(source) == null
+                && ItemsControl.ContainerFromElement(grid, source) is DataGridRow { Item: DataRowView item })
+                grid.SelectedItem = item;
+        }
+
+        private void DataTableGrid_MouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            if (sender is not DataGrid grid || e.OriginalSource is not DependencyObject source) return;
+            if (ItemsControl.ContainerFromElement(grid, source) is not DataGridRow row || row.Item is not DataRowView) return;
+            grid.SelectedItem = row.Item;
+            UpdateSelectionState();
+            if (_rightPanel.BtnUpdate.IsEnabled) BtnUpdate_Click(_rightPanel.BtnUpdate, new RoutedEventArgs());
         }
 
         private void QueueSelectionStateUpdate()
@@ -419,7 +438,7 @@ namespace Configurator
             if (!hasPlc && hasRecord && !_activeVm.Columns.First(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase)).IsIdentity && !_activeVm.Columns.First(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase)).IsReadOnly)
             {
                 try { nextRecord = await _activeVm.GetNextRecordValueAsync(); }
-                catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show("Не удалось получить значение Record: " + ex.Message); return; }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); Configurator.Infrastructure.ModernDialog.Show("Не удалось получить значение Record. Проверьте подключение к базе."); return; }
             }
 
             var addLookupOptions = await LoadLookupOptionsForTableAsync(_activeVm.CurrentTable);
@@ -470,7 +489,11 @@ namespace Configurator
             }
             catch (Exception ex)
             {
-                Configurator.Infrastructure.ModernDialog.Show("Ошибка добавления: " + ex.Message);
+                System.Diagnostics.Debug.WriteLine(ex);
+                if (ex is SqlException sqlEx && (sqlEx.Number == 2601 || sqlEx.Number == 2627))
+                    Configurator.Infrastructure.ModernDialog.Show("Запись с таким Record уже существует. Выберите другое значение.", "Конфликт ключа", MessageBoxButton.OK, MessageBoxImage.Warning);
+                else
+                    Configurator.Infrastructure.ModernDialog.Show("Не удалось добавить запись. Проверьте введённые значения и повторите попытку.");
             }
         }
 
@@ -550,7 +573,10 @@ namespace Configurator
                 if (ex is SqlException sqlEx && (sqlEx.Number == 2601 || sqlEx.Number == 2627))
                     Configurator.Infrastructure.ModernDialog.Show("Нарушено ограничение уникальности. Такой Record или составная комбинация PLC + Class + Record уже существует. Выберите другое значение Record.", "Конфликт ключа", MessageBoxButton.OK, MessageBoxImage.Warning);
                 else
-                    Configurator.Infrastructure.ModernDialog.Show("Ошибка изменения: " + ex.Message);
+                {
+                    System.Diagnostics.Debug.WriteLine(ex);
+                    Configurator.Infrastructure.ModernDialog.Show("Не удалось изменить запись. Проверьте введённые значения и повторите попытку.");
+                }
             }
         }
 
@@ -610,7 +636,8 @@ namespace Configurator
             }
             catch (Exception ex)
             {
-                Configurator.Infrastructure.ModernDialog.Show("Ошибка дублирования: " + ex.Message);
+                System.Diagnostics.Debug.WriteLine(ex);
+                Configurator.Infrastructure.ModernDialog.Show("Не удалось дублировать запись. Проверьте исходную строку и подключение к базе.");
             }
         }
 

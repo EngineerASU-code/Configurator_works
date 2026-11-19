@@ -15,8 +15,8 @@ public sealed class ObjectTypePreviewCatalogTests
         Assert.Equal(expected, Resolve("PLC", ("Type", type)));
 
     [Theory]
-    [InlineData("1 · Discret", "MS_Type", "1 · КВ", "valve-discret.png")]
-    [InlineData("Discret", "MS_Type", "КВ", "valve-discret.png")]
+    [InlineData("1 · Discret", "MS_Type", "1 · КВ", "valve-kv-gea.png")]
+    [InlineData("Discret", "MS_Type", "КВ", "valve-kv-gea.png")]
     [InlineData("Discret [1]", "", "", "valve-discret.png")]
     [InlineData("2 · AS-i", "", "", "valve-asi.png")]
     public void Resolve_ValveTypeAndModel(string type, string modelField, string model, string expected)
@@ -28,11 +28,23 @@ public sealed class ObjectTypePreviewCatalogTests
 
     [Theory]
     [InlineData("Motor", "1 · Discret IO", "motor-discret-io.png")]
-    [InlineData("DI", "1 · NO", "di-no.png")]
     [InlineData("AI", "1 · Default", "ai-default.png")]
     [InlineData("AO", "1 · SIEMENS peripherie", "ao-siemens-peripherie.png")]
     public void Resolve_DocumentedTypeToSpecificPreview(string className, string type, string expected) =>
         Assert.Equal(expected, Resolve(className, ("Type", type)));
+
+    [Theory]
+    [InlineData("Motor", "Discret IO", "PU", "motor-pu.png")]
+    [InlineData("Motor", "Discret IO", "2 · Mix [2]", "motor-mix.png")]
+    [InlineData("Valve", "AS-i", "RV", "valve-rv-gea.png")]
+    [InlineData("DI", "NO", "FS · Flow switch", "di-fs.png")]
+    [InlineData("DI", "LSH", "", "di-lsh.png")]
+    [InlineData("DI", "LSH", "LSL", "di-lsl.png")]
+    [InlineData("DI", "Концевик на ёмкости", "", "di-limit.png")]
+    [InlineData("DI", "Импульс расходомера", "", "di-pulse.png")]
+    public void Resolve_PhysicalDeviceFromTypeAndSubtype(string name, string type, string subtype, string expected) =>
+        Assert.Equal(expected, ObjectTypePreviewCatalog.Resolve(name,
+            new Dictionary<string, string> { ["Type"] = type, ["MS_Type"] = subtype }));
 
     [Fact]
     public void Resolve_UnknownTypesUseClassFallbackOrNoPlcImage()
@@ -40,7 +52,7 @@ public sealed class ObjectTypePreviewCatalogTests
         Assert.Equal("valve.png", Resolve("Valve", ("Type", "unknown valve")));
         Assert.Equal("dsv.png", Resolve("DSV", ("Type", "unknown DSV")));
         Assert.Equal("motor.png", Resolve("Motor", ("Type", "unknown motor")));
-        Assert.Equal("di.png", Resolve("DI", ("Type", "unknown DI")));
+        Assert.Null(Resolve("DI", ("Type", "unknown DI")));
         Assert.Equal("do.png", Resolve("DO", ("Type", "unknown DO")));
         Assert.Equal("ai.png", Resolve("AI", ("Type", "unknown AI")));
         Assert.Equal("ao.png", Resolve("AO", ("Type", "unknown AO")));

@@ -5,8 +5,11 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Interop;
 using System.Threading.Tasks;
+using System.Windows.Input;
+using System.Windows.Threading;
 
 namespace Configurator;
 
@@ -62,14 +65,17 @@ public partial class MultiObjectEditorWindow : Window
         var workArea = GetOwnerWorkArea();
         double maxHeight = Math.Max(1, workArea.Height - 40);
         double maxWidth = Math.Max(1, workArea.Width - 40);
-        Width = Math.Min(760, maxWidth);
+        Width = Math.Min(820, maxWidth);
         MinWidth = Math.Min(600, Width);
-        MinHeight = Math.Min(220, maxHeight);
+        MinHeight = Math.Min(320, maxHeight);
         MaxWidth = maxWidth;
         MaxHeight = maxHeight;
 
-        double desiredGridHeight = 34 + 36 * _rows.Count;
-        Height = Math.Min(maxHeight, 185 + desiredGridHeight);
+        // Keep four row slots visible from the first open. Grow with added rows,
+        // then let the DataGrid scroll instead of pushing the footer off screen.
+        double visibleRows = Math.Max(4, Math.Min(8, _rows.Count));
+        double desiredHeight = 196 + 40 * visibleRows;
+        Height = Math.Min(maxHeight, Math.Max(Height, desiredHeight));
 
         if (IsLoaded && Owner != null)
         {
@@ -147,20 +153,97 @@ public partial class MultiObjectEditorWindow : Window
     {
         var plc = PlcOptions.FirstOrDefault();
         _rows.Add(new BatchObjectRow { PlcKey = plc?.Key ?? "", Record = FindFreeRecord(plc?.Key ?? "") });
+        SetValidation(string.Empty);
         RowsGrid.SelectedIndex = _rows.Count - 1;
         RowsGrid.ScrollIntoView(RowsGrid.SelectedItem);
+        ResizeForRows();
     }
 
-    private void AddRow_Click(object sender, RoutedEventArgs e) => AddRow();
+    private void AddRow_Click(object sender, RoutedEventArgs e)
+    {
+        AddRow();
+        Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() =>
+        {
+            if (_rows.Count == 0) return;
+            var nameColumn = RowsGrid.Columns.FirstOrDefault(column => string.Equals(column.Header?.ToString(), "Name", StringComparison.Ordinal));
+            if (nameColumn == null) return;
+            RowsGrid.CurrentCell = new DataGridCellInfo(_rows[^1], nameColumn);
+            RowsGrid.BeginEdit();
+        }));
+    }
 
     private void RemoveRow_Click(object sender, RoutedEventArgs e)
     {
         if ((sender as Button)?.Tag is BatchObjectRow row) _rows.Remove(row);
         if (_rows.Count == 0) AddRow();
+        SetValidation(string.Empty);
+        ResizeForRows();
+    }
+
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        bool editingText = RowsGrid.IsKeyboardFocusWithin
+            && (Keyboard.FocusedElement is TextBoxBase or ComboBox or ComboBoxItem);
+        if (e.Key == Key.Escape)
+        {
+            var openCombo = FindVisualChildren<ComboBox>(RowsGrid).FirstOrDefault(combo => combo.IsDropDownOpen);
+            if (openCombo != null)
+            {
+                openCombo.IsDropDownOpen = false;
+                e.Handled = true;
+                return;
+            }
+            if (RowsGrid.IsKeyboardFocusWithin
+                && (RowsGrid.CancelEdit(DataGridEditingUnit.Cell) || RowsGrid.CancelEdit(DataGridEditingUnit.Row)))
+            {
+                e.Handled = true;
+                return;
+            }
+            DialogResult = false;
+            e.Handled = true;
+            return;
+        }
+
+        bool control = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
+        if (control && e.Key == Key.Enter)
+        {
+            Accept_Click(BtnAccept, new RoutedEventArgs());
+            e.Handled = true;
+        }
+        else if (!editingText && e.Key == Key.Insert)
+        {
+            AddRow_Click(BtnAddRow, new RoutedEventArgs());
+            e.Handled = true;
+        }
+        else if (!editingText && e.Key == Key.Delete && RowsGrid.SelectedItem is BatchObjectRow row)
+        {
+            _rows.Remove(row);
+            if (_rows.Count == 0) AddRow();
+            SetValidation(string.Empty);
+            ResizeForRows();
+            e.Handled = true;
+        }
+    }
+
+    private static IEnumerable<T> FindVisualChildren<T>(DependencyObject parent) where T : DependencyObject
+    {
+        for (int i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(parent); i++)
+        {
+            var child = System.Windows.Media.VisualTreeHelper.GetChild(parent, i);
+            if (child is T match) yield return match;
+            foreach (var descendant in FindVisualChildren<T>(child)) yield return descendant;
+        }
+    }
+
+    private void SetValidation(string message)
+    {
+        ValidationText.Text = message ?? string.Empty;
+        ValidationPanel.Visibility = string.IsNullOrWhiteSpace(message) ? Visibility.Collapsed : Visibility.Visible;
     }
 
     private async void Accept_Click(object sender, RoutedEventArgs e)
     {
+        SetValidation(string.Empty);
         RowsGrid.CommitEdit(DataGridEditingUnit.Cell, true);
         RowsGrid.CommitEdit(DataGridEditingUnit.Row, true);
         var errors = Configurator.Core.Workspace.BatchObjectPolicy.ValidateRows(
@@ -170,17 +253,17 @@ public partial class MultiObjectEditorWindow : Window
             _hasRecord,
             _requirePlc,
             PlcOptions.Select(p => p.Key));
-        if (errors.Count > 0) { ValidationText.Text = string.Join(Environment.NewLine, errors); return; }
+        if (errors.Count > 0) { SetValidation(string.Join(Environment.NewLine, errors)); return; }
         foreach (var row in _rows) row.Name = row.Name.Trim();
         try
         {
             var error = await _submit(_rows.ToList());
-            if (!string.IsNullOrWhiteSpace(error)) { ValidationText.Text = error; return; }
+            if (!string.IsNullOrWhiteSpace(error)) { SetValidation(error); return; }
             DialogResult = true;
         }
         catch (Exception ex)
         {
-            ValidationText.Text = "Не удалось добавить объекты: " + ex.Message;
+            SetValidation("Не удалось добавить объекты: " + ex.Message);
         }
     }
 

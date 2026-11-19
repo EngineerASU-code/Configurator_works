@@ -107,8 +107,6 @@ namespace Configurator
         private void UpdateWorkspaceModeUi()
         {
             if (OnlineModeButton == null || OfflineModeButton == null) return;
-            UpdateProjectAccountsMenuState();
-            UpdateBuiltInEngineerMenuState();
 
             // Offline can always be requested from Online; a project must be selected before its editor is unlocked.
             OfflineModeButton.IsEnabled = true;
@@ -181,6 +179,21 @@ namespace Configurator
         {
             var sourceLabel = "";
             e.Column.Header = sourceLabel + e.PropertyName;
+
+            if (e.Column is DataGridTextColumn textColumn)
+            {
+                var textStyle = new Style(typeof(TextBlock));
+                textStyle.Setters.Add(new Setter(FrameworkElement.MarginProperty, new Thickness(10, 0, 10, 0)));
+                textStyle.Setters.Add(new Setter(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center));
+                textColumn.ElementStyle = textStyle;
+            }
+            else if (e.Column is DataGridCheckBoxColumn checkBoxColumn)
+            {
+                var checkBoxStyle = new Style(typeof(CheckBox));
+                checkBoxStyle.Setters.Add(new Setter(FrameworkElement.MarginProperty, new Thickness(10, 0, 10, 0)));
+                checkBoxStyle.Setters.Add(new Setter(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Left));
+                checkBoxColumn.ElementStyle = checkBoxStyle;
+            }
         }
 
         private async Task InitializeAsync()
@@ -384,6 +397,8 @@ namespace Configurator
             _rightPanel.BtnLast.Click += BtnLast_Click;
             _rightPanel.DataTableGrid.SelectionChanged += DataTableGrid_SelectionChanged;
             _rightPanel.DataTableGrid.MouseLeftButtonUp += DataTableGrid_MouseLeftButtonUp;
+            _rightPanel.DataTableGrid.PreviewMouseLeftButtonDown += DataTableGrid_PreviewMouseLeftButtonDown;
+            _rightPanel.DataTableGrid.MouseDoubleClick += DataTableGrid_MouseDoubleClick;
             _rightPanel.DataTableGrid.CurrentCellChanged += (s, e) => QueueSelectionStateUpdate();
             SetFieldsPanelExpanded(false, false);
             if (_leftPanel.ServerTree != null)
@@ -469,8 +484,6 @@ namespace Configurator
             bool canJournalRestore = UserAuthorizationService.Has(Permission.RestoreJournal);
             if (_rightPanel != null) { bool tableMode = _currentMode == 1 && UserAuthorizationService.Has(Permission.Mode1View); bool hasTable = _isOfflineWorkspace ? _offlineCurrentDataTable != null : _activeVm != null; _rightPanel.BtnAdd.IsEnabled = tableMode && canAdd && hasTable; _rightPanel.BtnUpdate.IsEnabled = tableMode && canEdit && hasTable && _rightPanel.DataTableGrid?.SelectedItem != null; _rightPanel.BtnDuplicate.IsEnabled = tableMode && canAdd && hasTable && _rightPanel.DataTableGrid?.SelectedItem != null; _rightPanel.BtnDelete.IsEnabled = tableMode && canDelete && hasTable && _rightPanel.DataTableGrid?.SelectedItems.Count > 0; }
             if (MenuRemoveDb != null) MenuRemoveDb.IsEnabled = canDb && _leftPanel?.ServerTree?.SelectedItem != null;
-            UpdateProjectAccountsMenuState();
-            UpdateBuiltInEngineerMenuState();
             UpdateCurrentProjectText();
             if (CurrentUserText != null)
             {

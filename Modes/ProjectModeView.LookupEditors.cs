@@ -232,19 +232,6 @@ public partial class ProjectModeView
         TxtPreviewGlyph.Visibility = Visibility.Visible;
         ImgObjectTypePreview.Source = null;
         ImgObjectTypePreview.Visibility = Visibility.Collapsed;
-        var classDescription = _selectedClass.Description?.Trim() ?? string.Empty;
-        var objectDescription = new[] { "DescriptionL1", "Description", "Description_L1", "Comment", "Notes" }
-            .Where(name => _selectedRow.Table.Columns.Contains(name))
-            .Select(name => Convert.ToString(_selectedRow[name])?.Trim())
-            .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
-        var previewDescription = !string.IsNullOrWhiteSpace(objectDescription) ? objectDescription : classDescription;
-        TxtPreviewClass.Text = string.IsNullOrWhiteSpace(previewDescription)
-            ? _selectedClass.Name
-            : $"{_selectedClass.Name} · {previewDescription}";
-        TxtPreviewClass.ToolTip = string.IsNullOrWhiteSpace(objectDescription)
-            ? classDescription
-            : $"Объект: {objectDescription}\nКласс: {classDescription}";
-
         var actualFields = _selectedRow.Table.Columns.Cast<DataColumn>()
             .Select(c => _selectedClass.Fields.FirstOrDefault(f => f.Name.Equals(c.ColumnName, StringComparison.OrdinalIgnoreCase))
                          ?? new Core.Architecture.FieldDefinition { Name = c.ColumnName, DataType = c.DataType.Name, Group = "Прочее" })
@@ -345,7 +332,7 @@ public partial class ProjectModeView
                     WriteTypeLookupDiagnostic($"EDITOR_OPTIONS_ERROR class={_selectedClass?.Name} field={field.Name} offline={offline} error={ex}");
                 }
                 if (!IsCurrentRender()) return;
-                if (field.Name.Equals("Type", StringComparison.OrdinalIgnoreCase))
+                if (field.Name.Contains("Type", StringComparison.OrdinalIgnoreCase))
                 {
                     string currentValueForLog = GetText(field.Name);
                     WriteTypeLookupDiagnostic($"EDITOR_COMBO class={_selectedClass?.Name} sourceTable={_selectedClass?.PrimaryStorage?.TableName} offline={offline} currentKey='{currentValueForLog}' optionsCount={options.Count}");
@@ -367,7 +354,7 @@ public partial class ProjectModeView
                         ? $"{field.Name}={currentLookupValue}: список «{lookupName}» отсутствует, пуст или недоступен."
                         : $"{field.Name}={currentLookupValue}: значения нет в списке «{lookupName}».");
                 }
-                if (field.Name.Equals("Type", StringComparison.OrdinalIgnoreCase))
+                if (field.Name.Contains("Type", StringComparison.OrdinalIgnoreCase))
                     WriteTypeLookupDiagnostic($"COMBO_PREPARED class='{_selectedClass?.Name}' currentKey='{currentLookupValue}' sourceOptions={options.Count} finalOptionsBeforeCurrent={comboOptions.Count}");
                 // Area is generated/derived by the database. Show its current value as
                 // read-only text; do not offer a lookup combo that could attempt an invalid write.
@@ -420,7 +407,7 @@ public partial class ProjectModeView
                     combo.SetResourceReference(Control.BackgroundProperty, "BrushPanel");
                     combo.SetResourceReference(Control.ForegroundProperty, "BrushText");
                     combo.SetResourceReference(Control.BorderBrushProperty, "BrushBorder");
-                    if (field.Name.Equals("Type", StringComparison.OrdinalIgnoreCase)
+                    if (field.Name.Contains("Type", StringComparison.OrdinalIgnoreCase)
                         || !string.IsNullOrWhiteSpace(field.LookupTable)
                         || !string.IsNullOrWhiteSpace(field.LookupKeyField))
                     {

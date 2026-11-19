@@ -24,8 +24,8 @@
             <ComboBox x:Name="SectionBox" Width="270" Height="38" Padding="8,2" DisplayMemberPath="Caption" SelectedValuePath="Id" SelectionChanged="SectionBox_SelectionChanged"/>
             <TextBlock x:Name="MatrixRecordLabel" Text="Матрица" VerticalAlignment="Center" Margin="14,0,8,0" Foreground="{DynamicResource BrushTextSecondary}" Visibility="Collapsed"/>
             <ComboBox x:Name="MatrixRecordBox" Width="270" Height="38" Padding="8,2" DisplayMemberPath="Caption" SelectedValuePath="Record" SelectionChanged="MatrixRecordBox_SelectionChanged" Visibility="Collapsed"/>
-            <TextBlock x:Name="DeviceGroupLabel" Text="Группа устройств" VerticalAlignment="Center" Margin="14,0,8,0" Foreground="{DynamicResource BrushTextSecondary}" Visibility="Collapsed"/>
-            <ComboBox x:Name="DeviceGroupBox" Width="220" Height="38" Padding="8,2" DisplayMemberPath="Caption" SelectedValuePath="Number" SelectionChanged="DeviceGroupBox_SelectionChanged" Visibility="Collapsed"/>
+            <TextBlock x:Name="DeviceGroupLabel" Text="Вариант устройств" VerticalAlignment="Center" Margin="14,0,8,0" Foreground="{DynamicResource BrushTextSecondary}" Visibility="Collapsed"/>
+            <ComboBox x:Name="DeviceGroupBox" Width="220" Height="38" Padding="8,2" DisplayMemberPath="Caption" SelectedValuePath="Number" SelectionChanged="DeviceGroupBox_SelectionChanged" Visibility="Collapsed" ToolTip="Вариант задаёт привязки устройств к позициям. Сетка команд общая для всех вариантов матрицы."/>
             <TextBlock x:Name="PositionLabel" Text="Позиция" VerticalAlignment="Center" Margin="14,0,8,0" Foreground="{DynamicResource BrushTextSecondary}" Visibility="Collapsed"/>
             <ComboBox x:Name="PositionBox" Width="185" Height="38" Padding="8,2" DisplayMemberPath="Caption" SelectedValuePath="Position" SelectionChanged="PositionBox_SelectionChanged" Visibility="Collapsed"/>
             <TextBlock x:Name="DevicePLCLabel" Text="PLC объекта" VerticalAlignment="Center" Margin="14,0,8,0" Foreground="{DynamicResource BrushTextSecondary}" Visibility="Collapsed"/>
@@ -37,7 +37,7 @@
         <WrapPanel Grid.Row="2" Margin="0,0,0,8">
             <Button x:Name="AddButton" Content="＋ Добавить" Width="120" Height="38" Style="{StaticResource BtnPrimary}" Click="Add_Click"/>
             <Button x:Name="DeleteButton" Content="Удалить строку" Width="140" Height="38" Margin="8,0,0,0" Style="{StaticResource BtnSecondary}" Click="Delete_Click"/>
-            <Button x:Name="SaveButton" Content="Сохранить" Width="120" Height="38" Margin="8,0,0,0" Style="{StaticResource BtnPrimary}" Click="Save_Click"/>
+            <Button x:Name="SaveButton" Content="Сохранить" Width="120" Height="38" Margin="8,0,0,0" Style="{StaticResource BtnSaveObject}" Click="Save_Click"/>
             <Button x:Name="RefreshButton" Content="Обновить" Width="110" Height="38" Margin="8,0,0,0" Style="{StaticResource BtnSecondary}" Click="Refresh_Click"/>
             <Button x:Name="ExportButton" Content="Экспорт AWL" Width="130" Height="38" Margin="8,0,0,0" Style="{StaticResource BtnSecondary}" Click="ExportAwl_Click"/>
         </WrapPanel>

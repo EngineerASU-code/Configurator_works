@@ -27,7 +27,8 @@ public partial class GraphRelationEditorWindow : Window
             RuleText.Text = existing.Rule ?? "";
             SourceColumnCombo.SelectedItem = (SourceColumnCombo.ItemsSource as IEnumerable<GraphColumnEditorItem>)?.FirstOrDefault(x => x.Name.Equals(existing.SourceColumn, StringComparison.OrdinalIgnoreCase));
             TargetColumnCombo.SelectedItem = (TargetColumnCombo.ItemsSource as IEnumerable<GraphColumnEditorItem>)?.FirstOrDefault(x => x.Name.Equals(existing.TargetColumn, StringComparison.OrdinalIgnoreCase));
-            if (FindName("SaveButton") is Button save) save.Content = "Сохранить";
+            SaveButton.Content = "Сохранить";
+            SaveButton.SetResourceReference(StyleProperty, "BtnSecondary");
         }
     }
 

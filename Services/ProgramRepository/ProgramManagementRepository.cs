@@ -75,6 +75,21 @@ public sealed class ProgramManagementRepository
             .ToList();
     }
 
+    public async Task<Dictionary<string, object>> GetStepTextDefaultsAsync(DataRow step, CancellationToken ct = default)
+    {
+        var columns = await _database.GetTableColumnsAsync(TransitionTable, ct);
+        var values = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+        foreach (var column in columns)
+        {
+            if (!column.IsIdentity && !column.IsReadOnly && step.Table.Columns.Contains(column.Name) &&
+                (column.Name.StartsWith("Name", StringComparison.OrdinalIgnoreCase) ||
+                 column.Name.StartsWith("Description", StringComparison.OrdinalIgnoreCase)) &&
+                step[column.Name] != DBNull.Value)
+                values[column.Name] = step[column.Name];
+        }
+        return values;
+    }
+
     public Task<int> AddProgramAsync(object plc, object programClass, IReadOnlyDictionary<string, object> values, CancellationToken ct = default)
     {
         var scope = Context(plc, programClass);

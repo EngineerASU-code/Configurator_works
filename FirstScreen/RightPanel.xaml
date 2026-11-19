@@ -78,6 +78,8 @@
                            BasedOn="{StaticResource {x:Type DataGridColumnHeader}}">
                         <Setter Property="BorderBrush" Value="{DynamicResource BrushGridLine}"/>
                         <Setter Property="BorderThickness" Value="0,0,1,1"/>
+                        <Setter Property="Padding" Value="10,5"/>
+                        <Setter Property="HorizontalContentAlignment" Value="Left"/>
                     </Style>
                 </DataGrid.ColumnHeaderStyle>
                 <DataGrid.CellStyle>
@@ -112,7 +114,7 @@
             </Grid.ColumnDefinitions>
 
             <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
-                <Button x:Name="BtnAdd" Content="＋ Добавить" Style="{StaticResource BtnSecondary}" Width="124" Margin="0,0,8,0"/>
+                <Button x:Name="BtnAdd" Content="＋ Добавить" Style="{StaticResource BtnPrimary}" Width="124" Margin="0,0,8,0"/>
                 <Button x:Name="BtnUpdate" Content="Изменить" Style="{StaticResource BtnSecondary}" Width="124" Margin="0,0,8,0"/>
                 <Button x:Name="BtnDuplicate" Content="Дублировать" Style="{StaticResource BtnSecondary}" Width="124" Margin="0,0,8,0"/>
                 <Button x:Name="BtnDelete" Content="Удалить" Style="{StaticResource BtnSecondary}" Width="124" Margin="0,0,8,0"/>

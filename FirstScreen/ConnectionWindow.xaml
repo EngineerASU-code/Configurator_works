@@ -36,8 +36,8 @@
         </ComboBox>
         <Grid Grid.Row="7">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="10"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-            <Button Grid.Column="0" x:Name="BtnConnect" Content="Проверить подключение" Style="{StaticResource BtnPrimary}" Click="BtnConnect_Click"/>
-            <Button Grid.Column="2" x:Name="BtnAdd" Content="Добавить базу" Style="{StaticResource BtnSecondary}" Click="BtnAdd_Click" IsEnabled="False" MinWidth="120"/>
+            <Button Grid.Column="0" x:Name="BtnConnect" Content="Проверить подключение" Style="{StaticResource BtnSecondary}" Click="BtnConnect_Click"/>
+            <Button Grid.Column="2" x:Name="BtnAdd" Content="Добавить базу" Style="{StaticResource BtnPrimary}" Click="BtnAdd_Click" IsEnabled="False" MinWidth="120"/>
         </Grid>
         <Border Grid.Row="8" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,1,0,0" Margin="0,18,0,0"/>
         <TextBlock x:Name="LblStatus" Grid.Row="9" Text="Готово" FontSize="11" Foreground="{DynamicResource BrushTextSecondary}" Margin="0,30,0,0" TextWrapping="Wrap"/>

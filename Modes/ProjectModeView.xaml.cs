@@ -1112,7 +1112,6 @@ public partial class ProjectModeView : UserControl
                     TxtPreviewGlyph.Visibility = Visibility.Visible;
                     ImgObjectTypePreview.Source = null;
                     ImgObjectTypePreview.Visibility = Visibility.Collapsed;
-                    TxtPreviewClass.Text = _configurationKind == ConfigurationKind.Plc ? "Конфигурация · PLC" : "Конфигурация · Area";
                     BuildObjectEditor();
                     TxtStatus.Text = $"Выбрано значение: {configItem.Name}";
                 }
@@ -1336,8 +1335,7 @@ public partial class ProjectModeView : UserControl
         }
         catch (Exception ex)
         {
-            ShowActionFeedback($"Ошибка: {ex.Message}", isError: true);
-            Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Сохранение объекта", MessageBoxButton.OK, MessageBoxImage.Error);
+            ShowSaveError(ex, "объект проекта", "Сохранение объекта", _selectedClass?.PrimaryStorage?.TableName);
         }
     }
 
@@ -1347,11 +1345,15 @@ public partial class ProjectModeView : UserControl
         try
         {
             var row = _selectedRow;
-            var keyColumns = _offlineProject != null
-                ? _offlineSource?.GetSchema(_configurationTableName)?.KeyColumns?.ToList() ?? new List<string>()
-                : await new DatabaseService(_connection.ToConnectionString(_selectedDatabase)).GetPrimaryKeyColumnsAsync(_configurationTableName);
+            var schema = _offlineProject != null
+                ? _offlineSource?.GetSchema(_configurationTableName)
+                : await (_onlineSource ?? throw new InvalidOperationException("Online-источник схемы не привязан к выбранному проекту."))
+                    .GetSchemaAsync(_configurationTableName);
+            var keyColumns = schema?.HasStableKey == true
+                ? schema.KeyColumns.ToList()
+                : new List<string>();
             if (keyColumns.Count == 0)
-                throw new InvalidOperationException("У справочника не найден устойчивый первичный ключ. Изменение отменено.");
+                throw new InvalidOperationException("У справочника не найден подтверждённый устойчивый ключ. Изменение отменено.");
 
             var keyValues = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
             foreach (var keyColumn in keyColumns)
@@ -1402,19 +1404,82 @@ public partial class ProjectModeView : UserControl
             }
 
             var tableName = _configurationTableName;
+            var selectedKey = GetConfigurationKeyValue();
             await RequireCrudSource().UpdateRecordAsync(tableName, keyColumns, keyValues, updates);
             foreach (var pair in updates) row[pair.Key] = pair.Value ?? DBNull.Value;
-            await RefreshConfigurationLookupsAsync();
-            if (_configurationKind == ConfigurationKind.Plc && _selectedRow != null)
-                await RenderConfigurationObjectDetailsAsync(_selectedRow, ++_objectDetailsGeneration);
+            try
+            {
+                await RefreshConfigurationLookupsAsync();
+                if (_configurationKind == ConfigurationKind.Plc && _selectedRow != null)
+                    await RenderConfigurationObjectDetailsAsync(_selectedRow, ++_objectDetailsGeneration);
+            }
+            catch (Exception refreshError)
+            {
+                SessionTestLog.Trace("ОШИБКА-РЕЖИМ3-ПЕРЕОТОБРАЖЕНИЕ", $"Configuration saved but refresh failed; kind={_configurationKind}; table='{tableName}'; key='{selectedKey}'; offline={_offlineProject != null}; exception={refreshError}");
+                TxtStatus.Text = $"Справочник {_configurationKind} сохранён; отображение не обновлено";
+                ShowActionFeedback($"Изменения «{selectedKey}» сохранены, но список не удалось обновить", isError: true);
+                return;
+            }
             TxtStatus.Text = $"Справочник {_configurationKind} сохранён";
-            ShowActionFeedback($"Изменения «{GetConfigurationKeyValue()}» сохранены");
+            ShowActionFeedback($"Изменения «{selectedKey}» сохранены");
         }
         catch (Exception ex)
         {
-            ShowActionFeedback($"Ошибка: {ex.Message}", isError: true);
-            Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Сохранение справочника", MessageBoxButton.OK, MessageBoxImage.Error);
+            ShowSaveError(ex, "справочник", "Сохранение справочника", _configurationTableName);
         }
+    }
+
+    private void ShowSaveError(Exception exception, string item, string dialogTitle, string tableName)
+    {
+        SessionTestLog.Trace("ОШИБКА-РЕЖИМ3-СОХРАНЕНИЕ", $"Save failed; item={item}; kind={_configurationKind}; table='{tableName}'; offline={_offlineProject != null}; exception={exception}");
+        var userMessage = GetSafeSaveErrorMessage(exception, item);
+        ShowActionFeedback($"Ошибка: {userMessage}", isError: true);
+        Configurator.Infrastructure.ModernDialog.Show(userMessage, dialogTitle, MessageBoxButton.OK, MessageBoxImage.Error);
+    }
+
+    private static string GetSafeSaveErrorMessage(Exception exception, string item)
+    {
+        var sqlException = FindSqlException(exception);
+        if (sqlException != null)
+        {
+            return sqlException.Number is 2601 or 2627
+                ? "Запись с таким значением уже существует. Измените его и повторите сохранение."
+                : $"Не удалось сохранить {item}. Проверьте подключение и повторите попытку. Подробности записаны в журнал диагностики.";
+        }
+
+        var validationMessage = FindExplicitSaveValidationMessage(exception);
+        return validationMessage
+            ?? $"Не удалось сохранить {item}. Проверьте данные и повторите попытку. Подробности записаны в журнал диагностики.";
+    }
+
+    private static string? FindExplicitSaveValidationMessage(Exception exception)
+    {
+        if (exception is not InvalidOperationException) return null;
+        var message = exception.Message;
+        if (message is "Не удалось определить ключ изменяемой записи."
+            or "В локальном снимке не удалось определить ключ записи."
+            or "У справочника не найден устойчивый первичный ключ. Изменение отменено."
+            or "У справочника не найден подтверждённый устойчивый ключ. Изменение отменено."
+            or "Запись не найдена — возможно, она была изменена или удалена другим пользователем."
+            or "Запись с таким ключом уже существует в локальном проекте."
+            or "Переданные ключевые столбцы не совпадают со стабильным ключом проверенной схемы.")
+            return message;
+        if (message.StartsWith("В выбранной строке отсутствует ключ «", StringComparison.Ordinal)
+            && message.EndsWith("». Изменение отменено.", StringComparison.Ordinal))
+            return message;
+        if (message.StartsWith("Поле «", StringComparison.Ordinal)
+            && (message.EndsWith("» обязательно для заполнения.", StringComparison.Ordinal)
+                || message.Contains("» требует значение типа ", StringComparison.Ordinal)))
+            return message;
+        return null;
+    }
+
+    private static Microsoft.Data.SqlClient.SqlException? FindSqlException(Exception exception)
+    {
+        for (var current = exception; current != null; current = current.InnerException)
+            if (current is Microsoft.Data.SqlClient.SqlException sqlException)
+                return sqlException;
+        return null;
     }
 
     private void ProjectModeView_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
@@ -2330,7 +2395,6 @@ public partial class ProjectModeView : UserControl
         TxtPreviewGlyph.Visibility = Visibility.Visible;
         ImgObjectTypePreview.Source = null;
         ImgObjectTypePreview.Visibility = Visibility.Collapsed;
-        TxtPreviewClass.Text = "";
         BtnDelete.IsEnabled = false;
         BtnDuplicate.IsEnabled = false;
         BtnSave.IsEnabled = false;

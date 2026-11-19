@@ -154,7 +154,7 @@ ORDER BY c.column_id";
                     Scale = reader.GetByte(7),
                     HasDefault = reader.GetInt32(8) != 0,
                     IsReadOnly = reader.GetBoolean(3) || reader.GetBoolean(4)
-                }, reader.GetInt32(9) == 1, reader.GetInt32(10)));
+                }, reader.GetInt32(9) == 1, Convert.ToInt32(reader.GetValue(10), CultureInfo.InvariantCulture)));
             }
         }
         if (columns.Count == 0) return null;

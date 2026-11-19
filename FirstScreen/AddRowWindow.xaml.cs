@@ -27,6 +27,9 @@ namespace Configurator
         private readonly string _classNumberColumn;
         private readonly Dictionary<string, List<LookupOption>> _lookupOptions;
         private readonly Func<string, CancellationToken, Task<int>> _scopedRecordProvider;
+        private readonly Func<string, string, CancellationToken, Task<bool>> _recordExistsProvider;
+        private readonly bool _editMode;
+        private CancellationTokenSource _recordCheckCts;
         private readonly Dictionary<string, ComboBox> _lookupInputs = new(StringComparer.OrdinalIgnoreCase);
 
         public Dictionary<string, object> Values { get; private set; }
@@ -44,13 +47,16 @@ namespace Configurator
             Dictionary<string, List<LookupOption>> lookupOptions = null,
             Dictionary<string, object> initialValues = null,
             bool editMode = false,
-            Func<string, CancellationToken, Task<int>> scopedRecordProvider = null)
+            Func<string, CancellationToken, Task<int>> scopedRecordProvider = null,
+            Func<string, string, CancellationToken, Task<bool>> recordExistsProvider = null)
         {
             InitializeComponent();
             _forcedClassNumber = forcedClassNumber;
             _classNumberColumn = classNumberColumn ?? "";
             _lookupOptions = lookupOptions ?? new Dictionary<string, List<LookupOption>>(StringComparer.OrdinalIgnoreCase);
             _scopedRecordProvider = scopedRecordProvider;
+            _recordExistsProvider = recordExistsProvider;
+            _editMode = editMode;
             _tableName = tableName ?? "";
             WindowTitle.Text = (editMode ? "Редактирование строки — " : "Новая строка — ") + _tableName;
             _columns = columns ?? new List<ColumnInfo>();
@@ -78,7 +84,7 @@ namespace Configurator
                 }
             }
             Loaded += AddRowWindow_Loaded;
-            Closed += (_, _) => _recordCts?.Cancel();
+            Closed += (_, _) => { _recordCts?.Cancel(); _recordCheckCts?.Cancel(); };
         }
 
         private void GenerateFields()
@@ -169,6 +175,7 @@ namespace Configurator
                     fieldPanel.Children.Add(label);
                     fieldPanel.Children.Add(input);
                     if (textBox != null) _fieldInputs[col.Name] = textBox;
+                    if (isRecord && textBox != null) textBox.TextChanged += (_, _) => CheckRecord();
                     if (isLookup && input is ComboBox lookupBox) lookupBox.SelectedIndex = options.FindIndex(x => x.Key == (isClassNumber ? _forcedClassNumber?.ToString(CultureInfo.InvariantCulture) : ""));
                     if (!string.IsNullOrWhiteSpace(_plcColumn) && col.Name.Equals(_plcColumn, StringComparison.OrdinalIgnoreCase))
                     {
@@ -220,6 +227,7 @@ namespace Configurator
 
         private void AddRowWindow_Loaded(object sender, RoutedEventArgs e)
         {
+            CheckRecord();
             if (string.IsNullOrWhiteSpace(_plcColumn)) return;
             if (_fieldInputs.TryGetValue(_plcColumn, out var plcBox))
                 _ = UpdateRecordFromPlcAsync(plcBox.Text, CancellationToken.None);
@@ -229,14 +237,46 @@ namespace Configurator
 
         private async void PlcTextBox_TextChanged(object sender, TextChangedEventArgs e)
         {
+            CheckRecord();
             if (_updatingAutoRecord || sender is not TextBox plcBox) return;
             await UpdateRecordFromPlcAsync(plcBox.Text, CancellationToken.None);
         }
 
         private async void PlcCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
+            CheckRecord();
             if (_updatingAutoRecord || sender is not ComboBox plcCombo) return;
-            await UpdateRecordFromPlcAsync(Convert.ToString(plcCombo.SelectedValue, CultureInfo.InvariantCulture), CancellationToken.None);
+            await UpdateRecordFromPlcAsync((plcCombo.SelectedItem as LookupOption)?.Key, CancellationToken.None);
+        }
+
+        private async void CheckRecord()
+        {
+            if (_editMode || !IsLoaded) return;
+            if (!_fieldInputs.TryGetValue(_recordColumn, out var recordBox)) return;
+            _recordCheckCts?.Cancel();
+            _recordCheckCts = new CancellationTokenSource();
+            var token = _recordCheckCts.Token;
+            recordBox.ClearValue(Control.BorderBrushProperty);
+            string record = recordBox.Text.Trim();
+            string plc = _fieldInputs.TryGetValue(_plcColumn, out var text) ? text.Text.Trim()
+                : _lookupInputs.TryGetValue(_plcColumn, out var combo) ? (combo.SelectedItem as LookupOption)?.Key : null;
+            if (string.IsNullOrWhiteSpace(record) || string.IsNullOrWhiteSpace(plc)) return;
+            try
+            {
+                await Task.Delay(250, token);
+                bool exists;
+                if (_recordExistsProvider != null) exists = await _recordExistsProvider(plc, record, token);
+                else if (!string.IsNullOrWhiteSpace(_connectionString))
+                {
+                    var recordColumn = _columns.First(c => c.Name.Equals(_recordColumn, StringComparison.OrdinalIgnoreCase));
+                    var plcColumn = _columns.First(c => c.Name.Equals(_plcColumn, StringComparison.OrdinalIgnoreCase));
+                    exists = await new DatabaseService(_connectionString).ScopedRecordExistsAsync(_tableName, _recordColumn, _plcColumn, ConvertValue(record, recordColumn), ConvertValue(plc, plcColumn), token);
+                }
+                else return;
+                if (!token.IsCancellationRequested && exists) recordBox.BorderBrush = System.Windows.Media.Brushes.Red;
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
         }
 
         private async Task UpdateRecordFromPlcAsync(string plcText, CancellationToken externalToken)

@@ -47,7 +47,7 @@ namespace Configurator
 
                 var fieldPanel = new StackPanel
                 {
-                    Margin = new Thickness(0, 0, 16, 12)
+                    Margin = new Thickness(0, 0, 12, 8)
                 };
 
                 bool isKey = col.Name.Equals(_keyColumn, StringComparison.OrdinalIgnoreCase);
@@ -64,10 +64,10 @@ namespace Configurator
                 var label = new TextBlock
                 {
                     Text = titleText,
-                    FontSize = 12,
+                    FontSize = 11,
                     FontWeight = FontWeights.SemiBold,
                     TextWrapping = TextWrapping.Wrap,
-                    Margin = new Thickness(0, 0, 0, 4)
+                    Margin = new Thickness(0, 0, 0, 3)
                 };
                 label.SetResourceReference(TextBlock.ForegroundProperty, "BrushText");
 
@@ -75,11 +75,13 @@ namespace Configurator
                 bool hasLookupOptions = hasLookupDefinition && options.Count > 0;
                 bool isLookup = !isClassNumber && (hasLookupDefinition || IsKnownLookupField(col.Name));
                 options ??= new List<LookupOption>();
-                if (isLookup && !hasLookupOptions && _currentValues != null && _currentValues.TryGetValue(col.Name, out string existingLookupValue) && !string.IsNullOrWhiteSpace(existingLookupValue))
+                if (isLookup && _currentValues != null && _currentValues.TryGetValue(col.Name, out string existingLookupValue) && !string.IsNullOrWhiteSpace(existingLookupValue)
+                    && !options.Any(option => string.Equals(option.Key, existingLookupValue, StringComparison.OrdinalIgnoreCase)))
                 {
-                    // Preserve the row's current value if its lookup table is temporarily
-                    // unavailable; the disabled combo cannot invent a new reference value.
-                    options.Add(new LookupOption { Key = existingLookupValue, Display = $"{existingLookupValue} · текущее значение, справочник недоступен" });
+                    // Keep the existing key selectable even when it is missing from a
+                    // populated lookup; otherwise saving another field would erase it.
+                    var description = hasLookupOptions ? "значение отсутствует в справочнике" : "справочник недоступен";
+                    options.Insert(0, new LookupOption { Key = existingLookupValue, Display = $"{existingLookupValue} · текущее значение, {description}" });
                 }
                 Control input;
                 TextBox textBox = null;

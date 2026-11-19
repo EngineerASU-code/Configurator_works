@@ -238,7 +238,7 @@ public partial class TemplateArchitectureView : UserControl
         BtnRestoreArchived.Visibility = Visibility.Collapsed;
         BtnDeleteClass.IsEnabled = false;
         BtnDeleteField.IsEnabled = false;
-        BtnDetachParent.IsEnabled = false;
+
         _connection = connection;
         _classRegistry = null;
         _selectedDatabase = selectedDatabase ?? "";
@@ -252,7 +252,7 @@ public partial class TemplateArchitectureView : UserControl
         {
             ClassList.ItemsSource = Array.Empty<ClassDefinition>();
             ClearEditor();
-            BtnAddField.IsEnabled = BtnDeleteField.IsEnabled = BtnSaveClass.IsEnabled = BtnDeleteClass.IsEnabled = BtnDetachParent.IsEnabled = false;
+            BtnAddField.IsEnabled = BtnDeleteField.IsEnabled = BtnSaveClass.IsEnabled = BtnDeleteClass.IsEnabled = false;
             AddClassButton.IsEnabled = false;
             TxtClassNumber.IsEnabled = false;
             ChkAvailable.IsEnabled = false;
@@ -276,7 +276,7 @@ public partial class TemplateArchitectureView : UserControl
             ClassList.ItemsSource = Array.Empty<ClassDefinition>();
             ClearEditor();
             GroupHost.Children.Clear();
-            BtnAddField.IsEnabled = BtnDeleteField.IsEnabled = BtnSaveClass.IsEnabled = BtnDeleteClass.IsEnabled = BtnDetachParent.IsEnabled = false;
+            BtnAddField.IsEnabled = BtnDeleteField.IsEnabled = BtnSaveClass.IsEnabled = BtnDeleteClass.IsEnabled = false;
             TxtStatus.Text = "Проект недоступен. Проверьте подключение к БД и выберите проект повторно.";
         }
     }
@@ -292,7 +292,7 @@ public partial class TemplateArchitectureView : UserControl
         {
             ClassList.ItemsSource = Array.Empty<ClassDefinition>();
             ClearEditor();
-            BtnAddField.IsEnabled = BtnDeleteField.IsEnabled = BtnSaveClass.IsEnabled = BtnDeleteClass.IsEnabled = BtnDetachParent.IsEnabled = false;
+            BtnAddField.IsEnabled = BtnDeleteField.IsEnabled = BtnSaveClass.IsEnabled = BtnDeleteClass.IsEnabled = false;
             AddClassButton.IsEnabled = false;
             TxtClassNumber.IsEnabled = false;
             ChkAvailable.IsEnabled = false;
@@ -323,7 +323,7 @@ public partial class TemplateArchitectureView : UserControl
             ClassList.ItemsSource = Array.Empty<ClassDefinition>();
             ClearEditor();
             GroupHost.Children.Clear();
-            BtnAddField.IsEnabled = BtnDeleteField.IsEnabled = BtnSaveClass.IsEnabled = BtnDeleteClass.IsEnabled = BtnDetachParent.IsEnabled = false;
+            BtnAddField.IsEnabled = BtnDeleteField.IsEnabled = BtnSaveClass.IsEnabled = BtnDeleteClass.IsEnabled = false;
             TxtStatus.Text = "Проект недоступен. Проверьте подключение к БД и выберите проект повторно.";
         }
     }
@@ -451,7 +451,7 @@ public partial class TemplateArchitectureView : UserControl
         {
             ClassList.ItemsSource = Array.Empty<ClassDefinition>();
             ClearEditor();
-            BtnAddField.IsEnabled = BtnDeleteField.IsEnabled = BtnSaveClass.IsEnabled = BtnDeleteClass.IsEnabled = BtnDetachParent.IsEnabled = false;
+            BtnAddField.IsEnabled = BtnDeleteField.IsEnabled = BtnSaveClass.IsEnabled = BtnDeleteClass.IsEnabled = false;
             AddClassButton.IsEnabled = false;
             TxtClassNumber.IsEnabled = false;
             ChkAvailable.IsEnabled = false;
@@ -547,7 +547,7 @@ public partial class TemplateArchitectureView : UserControl
         TxtClassNumber.IsReadOnly = !canEditArchitecture || selected.IsSystem;
         BtnDeleteClass.IsEnabled = canEditArchitecture && !selected.IsSystem && UserAuthorizationService.Has(Permission.ManageClasses);
         BtnDeleteField.IsEnabled = false;
-        BtnDetachParent.IsEnabled = canEditArchitecture && !selected.IsSystem && !string.IsNullOrWhiteSpace(selected.BaseClassId);
+
         BtnSaveClass.IsEnabled = canEditArchitecture && (UserAuthorizationService.Has(Permission.ManageClasses) || UserAuthorizationService.Has(Permission.Mode2Manage));
         ChkAvailable.IsEnabled = canEditArchitecture;
         bool complex = IsComplexClass(selected);
@@ -747,49 +747,6 @@ public partial class TemplateArchitectureView : UserControl
         RebuildGroups();
     }
 
-    private void DetachParent_Click(object sender, RoutedEventArgs e)
-    {
-        if (_selectedClass == null || _selectedClass.IsSystem || string.IsNullOrWhiteSpace(_selectedClass.BaseClassId)) return;
-
-        var effective = _architecture.GetEffectiveFields(_selectedClass)
-            .Select(CloneFieldForOwnClass)
-            .ToList();
-
-        var parent = _architecture.Find(_selectedClass.BaseClassId);
-        var answer = Configurator.Infrastructure.ModernDialog.Show(
-            $"У класса «{_selectedClass.Name}» есть родитель «{parent?.Name ?? "неизвестный класс"}».\n\n" +
-            "Унаследованные поля будут скопированы в этот класс как собственные, а связь с родителем будет удалена. " +
-            "После этого поля можно свободно изменять и удалять.\n\nПродолжить?",
-            "Сделать поля своими",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Question);
-        if (answer != MessageBoxResult.Yes) return;
-
-        _selectedClass.Fields = effective;
-        _selectedClass.BaseClassId = "";
-        BtnDetachParent.IsEnabled = false;
-        BtnDeleteField.IsEnabled = false;
-        RebuildGroups();
-        TxtClassMeta.Text = _selectedClass.IsSystem ? "Системный класс" : "Пользовательский класс · без родителя";
-        TxtStatus.Text = "Родитель удалён · поля теперь собственные. Нажмите «Сохранить».";
-    }
-
-    private static FieldDefinition CloneFieldForOwnClass(FieldDefinition source) => new()
-    {
-        Id = Guid.NewGuid().ToString("N"),
-        Name = source.Name,
-        DataType = source.DataType,
-        Size = source.Size,
-        Offset = source.Offset,
-        BitOffset = source.BitOffset,
-        BitLength = source.BitLength,
-        Nullable = source.Nullable,
-        DefaultValue = source.DefaultValue,
-        Description = source.Description,
-        Group = source.Group,
-        IsInherited = false
-    };
-
     private async void SaveClass_Click(object sender, RoutedEventArgs e)
     {
         if (_selectedClass == null || !EnsureEditable()) return;
@@ -848,7 +805,7 @@ public partial class TemplateArchitectureView : UserControl
             {
                 _architecture.Upsert(_selectedClass);
                 _architecture.Save();
-                BtnDetachParent.IsEnabled = !string.IsNullOrWhiteSpace(_selectedClass.BaseClassId) && !_selectedClass.IsSystem;
+
                 RefreshClassList();
                 TxtStatus.Text = "Описание класса сохранено в библиотеке шаблонов · SQL не изменён";
                 LogMode2Action($"Сохранены сведения класса · {_selectedClass.Name}", null,
@@ -877,7 +834,6 @@ public partial class TemplateArchitectureView : UserControl
             await SyncClassRegistryAsync(_selectedClass);
             SyncFieldLookupRelations(_selectedClass);
 
-            BtnDetachParent.IsEnabled = !string.IsNullOrWhiteSpace(_selectedClass.BaseClassId) && !_selectedClass.IsSystem;
             RefreshClassList();
             TxtStatus.Text = $"Класс сохранён · SQL-таблица {_selectedClass.PrimaryStorage.TableName} синхронизирована";
             LogMode2Action($"Сохранена структура шаблона · {_selectedClass.Name}", _selectedClass.PrimaryStorage.TableName,
