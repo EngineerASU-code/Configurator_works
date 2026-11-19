@@ -401,19 +401,19 @@ namespace Configurator
                 var db = new DatabaseService(_connection.ToConnectionString(_activeDbName));
                 var lookupService = new LookupOptionsService(db);
                 var columns = _activeVm?.Columns ?? new List<ColumnInfo>();
+                static string NormalizeTable(string name) => string.Join('.', (name ?? string.Empty)
+                    .Split('.', StringSplitOptions.RemoveEmptyEntries).Select(part => part.Trim().Trim('[', ']')));
+                var classDefinition = new Configurator.Infrastructure.Architecture.TemplateLibraryStore().Load()
+                    .FirstOrDefault(c => string.Equals(NormalizeTable(c.PrimaryStorage?.TableName), NormalizeTable(tableName), StringComparison.OrdinalIgnoreCase));
                 foreach (var column in columns)
                 {
                     var name = column.Name;
-                    if (!new[] { "Type", "PLC", "Area", "PLCClassNumber", "PLCClasssNumber", "Class", "Unit" }
-                        .Contains(name, StringComparer.OrdinalIgnoreCase)) continue;
-                    var options = await lookupService.TryGetAsync("", tableName, name);
+                    var field = classDefinition?.Fields?.FirstOrDefault(f => f.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+                    var options = await lookupService.TryGetAsync(classDefinition?.Name ?? "", tableName, name, default,
+                        field?.LookupTable, field?.LookupKeyField, field?.LookupDisplayField);
                     if (options.Count > 0)
                         result[name] = options.Select(x => new LookupOption { Key = x.Key, Display = x.Display }).ToList();
                 }
-                // Preserve the class-specific Type mapping for legacy system tables.
-                var definition = SystemLookupCatalog.All.FirstOrDefault(x => x.TargetTable.Equals(tableName ?? "", StringComparison.OrdinalIgnoreCase));
-                if (definition != null && await db.TableExistsAsync(definition.LookupTable))
-                    result[definition.TargetField] = await db.GetLookupOptionsAsync(definition.LookupTable);
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"[LookupOptions] {tableName}: {ex.Message}"); }
             return result;

@@ -33,7 +33,7 @@ public partial class AccessSetupWindow : Window
         }
         catch (Exception ex)
         {
-            ErrorText.Text = ex.Message;
+            ErrorText.Text = Configurator.Infrastructure.UserErrorMessage.Format(ex);
             if (UserAuthorizationService.HasAdministratorAccount) CurrentPasswordBox.Focus(); else NewPasswordBox.Focus();
         }
     }

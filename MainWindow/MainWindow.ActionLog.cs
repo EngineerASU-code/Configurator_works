@@ -260,7 +260,7 @@ public partial class MainWindow
         }
         catch (Exception ex)
         {
-            Configurator.Infrastructure.ModernDialog.Show($"Не удалось отменить действие: {ex.Message}", "Отмена действия", MessageBoxButton.OK, MessageBoxImage.Warning);
+            Configurator.Infrastructure.ModernDialog.Show($"Не удалось отменить действие: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", "Отмена действия", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
 

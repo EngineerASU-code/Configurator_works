@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Globalization;
@@ -247,7 +247,7 @@ public partial class ProgramManagementControl : UserControl
         {
             node.ChildrenLoaded = false;
             SetTreePlaceholder(node, "Не удалось загрузить. Раскройте повторно.");
-            SetStatus("Не удалось загрузить ветку дерева: " + ex.Message);
+            SetStatus("Не удалось загрузить ветку дерева: " + Configurator.Infrastructure.UserErrorMessage.Format(ex));
         }
         finally { node.IsLoading = false; }
     }
@@ -889,7 +889,7 @@ public partial class ProgramManagementControl : UserControl
             await BindTableAsync(StepParamsGrid, table);
             SetStatus($"Шаг {stepNumber}: загружено параметров {table.Rows.Count}.");
         }
-        catch (Exception ex) { SetStatus("Не удалось загрузить параметры шага: " + ex.Message); }
+        catch (Exception ex) { SetStatus("Не удалось загрузить параметры шага: " + Configurator.Infrastructure.UserErrorMessage.Format(ex)); }
         finally
         {
             RestoreContextGridsEnabled(enabledBeforeLoad);
@@ -931,7 +931,7 @@ public partial class ProgramManagementControl : UserControl
             bool refreshed = await LoadProgramsAsync(record, afterCommittedChange: true, postCommitWarning: journalWarning);
             if (refreshed) SetStatus($"Программа Record={record} создана." + FormatJournalWarning(journalWarning));
         }
-        catch (Exception ex) { SetStatus("Не удалось создать программу: " + ex.Message); }
+        catch (Exception ex) { SetStatus("Не удалось создать программу: " + Configurator.Infrastructure.UserErrorMessage.Format(ex)); }
         finally
         {
             RestoreContextGridsEnabled(enabledBeforeOperation);
@@ -967,7 +967,7 @@ public partial class ProgramManagementControl : UserControl
             bool refreshed = await LoadSequencesAsync(record, contextChangeApproved: true, afterCommittedChange: true, postCommitWarning: journalWarning);
             if (refreshed) SetStatus($"Последовательность Record={record} создана." + FormatJournalWarning(journalWarning));
         }
-        catch (Exception ex) { SetStatus("Не удалось создать последовательность: " + ex.Message); }
+        catch (Exception ex) { SetStatus("Не удалось создать последовательность: " + Configurator.Infrastructure.UserErrorMessage.Format(ex)); }
         finally
         {
             RestoreContextGridsEnabled(enabledBeforeOperation);
@@ -1012,7 +1012,7 @@ public partial class ProgramManagementControl : UserControl
             bool refreshed = await LoadSequenceChildrenAsync(afterCommittedChange: true, postCommitWarning: journalWarning);
             if (refreshed) SetStatus($"Шаг добавлен в последовательность под номером {number}." + FormatJournalWarning(journalWarning));
         }
-        catch (Exception ex) { SetStatus("Не удалось добавить шаг: " + ex.Message); }
+        catch (Exception ex) { SetStatus("Не удалось добавить шаг: " + Configurator.Infrastructure.UserErrorMessage.Format(ex)); }
         finally
         {
             RestoreContextGridsEnabled(enabledBeforeOperation);
@@ -1046,7 +1046,7 @@ public partial class ProgramManagementControl : UserControl
             bool refreshed = await LoadProgramsAsync(afterCommittedChange: true, postCommitWarning: journalWarning);
             if (refreshed) SetStatus("Программа удалена." + FormatJournalWarning(journalWarning));
         }
-        catch (Exception ex) { SetStatus("Программа не удалена: " + ex.Message); }
+        catch (Exception ex) { SetStatus("Программа не удалена: " + Configurator.Infrastructure.UserErrorMessage.Format(ex)); }
         finally
         {
             if (ownsChangeLock)
@@ -1083,7 +1083,7 @@ public partial class ProgramManagementControl : UserControl
             bool refreshed = await LoadSequencesAsync(contextChangeApproved: true, afterCommittedChange: true, postCommitWarning: journalWarning);
             if (refreshed) SetStatus($"Последовательность Record={sequenceRecord} удалена." + FormatJournalWarning(journalWarning));
         }
-        catch (Exception ex) { SetStatus("Последовательность не удалена: " + ex.Message); }
+        catch (Exception ex) { SetStatus("Последовательность не удалена: " + Configurator.Infrastructure.UserErrorMessage.Format(ex)); }
         finally
         {
             if (ownsChangeLock)
@@ -1117,7 +1117,7 @@ public partial class ProgramManagementControl : UserControl
             bool refreshed = await LoadSequenceChildrenAsync(afterCommittedChange: true, postCommitWarning: journalWarning);
             if (refreshed) SetStatus($"Шаг {stepNumber} удалён из последовательности." + FormatJournalWarning(journalWarning));
         }
-        catch (Exception ex) { SetStatus("Шаг не удалён: " + ex.Message); }
+        catch (Exception ex) { SetStatus("Шаг не удалён: " + Configurator.Infrastructure.UserErrorMessage.Format(ex)); }
         finally
         {
             RestoreContextGridsEnabled(enabledBeforeOperation);
@@ -1365,7 +1365,7 @@ public partial class ProgramManagementControl : UserControl
         }
         catch (Exception ex)
         {
-            SetStatus("Не удалось проверить несохранённые изменения: " + ex.Message);
+            SetStatus("Не удалось проверить несохранённые изменения: " + Configurator.Infrastructure.UserErrorMessage.Format(ex));
             return false;
         }
         finally
@@ -1497,7 +1497,7 @@ public partial class ProgramManagementControl : UserControl
                 IdentityFor(tableName, updated), "Изменена запись Program/Step");
             SetStatus("Изменения сохранены. Строка проверена на отсутствие параллельной правки." + FormatJournalWarning(journalWarning));
         }
-        catch (Exception ex) { SetStatus("Не удалось сохранить строку: " + ex.Message); }
+        catch (Exception ex) { SetStatus("Не удалось сохранить строку: " + Configurator.Infrastructure.UserErrorMessage.Format(ex)); }
         finally
         {
             RestoreContextGridsEnabled(enabledBeforeSave);

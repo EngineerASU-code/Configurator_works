@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
@@ -56,7 +56,7 @@ public partial class ProjectModeView
         }
         catch (Exception ex)
         {
-            TxtStatus.Text = $"Фильтры: {ex.Message}";
+            TxtStatus.Text = $"Фильтры: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}";
             InitializeEmptyFilterLists();
         }
     }
@@ -118,9 +118,6 @@ public partial class ProjectModeView
     {
         _onlineLookupOptionsService = null;
         _onlineLookupDatabaseKey = string.Empty;
-        _offlineLookupCache.Clear();
-        _offlineLookupTableCache.Clear();
-        _offlineTablesCache = null;
         _offlineSource?.InvalidateIndex();
 
         await LoadConfigurationValuesAsync(_configurationKind, preferredConfigurationKey);

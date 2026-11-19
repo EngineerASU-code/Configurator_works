@@ -19,8 +19,6 @@ public partial class ProjectModeView
             new RoutedEventHandler(ProjectModeView_LoadedDynamic));
         EventManager.RegisterClassHandler(typeof(ProjectModeView), ButtonBase.ClickEvent,
             new RoutedEventHandler(ProjectModeView_ButtonClickedDynamic), true);
-        EventManager.RegisterClassHandler(typeof(ProjectModeView), UIElement.PreviewMouseLeftButtonDownEvent,
-            new System.Windows.Input.MouseButtonEventHandler(ProjectModeView_PreviewMouseDownDynamic), true);
         return true;
     }
 
@@ -34,14 +32,6 @@ public partial class ProjectModeView
         var content = button.Content?.ToString() ?? "";
         if (content == "Выбрать проект" || content == "↻")
             ScheduleDynamicArchitecture(view);
-    }
-
-    private static void ProjectModeView_PreviewMouseDownDynamic(object sender, System.Windows.Input.MouseButtonEventArgs e)
-    {
-        var view = (ProjectModeView)sender;
-        if (FindAncestor<Button>(e.OriginalSource as DependencyObject)?.Name != "BtnSave") return;
-        e.Handled = true;
-        view.Dispatcher.BeginInvoke(new Action(() => view.SaveObjectWithLookupControlsAsync()), DispatcherPriority.Background);
     }
 
     private static void ScheduleDynamicArchitecture(ProjectModeView view)
@@ -74,7 +64,7 @@ public partial class ProjectModeView
         }
         catch (Exception ex)
         {
-            TxtStatus.Text = $"Архитектура БД не определена: {ex.Message}";
+            TxtStatus.Text = $"Архитектура БД не определена: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}";
         }
         finally
         {
@@ -84,14 +74,4 @@ public partial class ProjectModeView
         }
     }
 
-    private static T FindAncestor<T>(DependencyObject source) where T : DependencyObject
-    {
-        var current = source;
-        while (current != null)
-        {
-            if (current is T match) return match;
-            current = System.Windows.Media.VisualTreeHelper.GetParent(current);
-        }
-        return null;
-    }
 }

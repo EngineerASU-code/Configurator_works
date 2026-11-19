@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
@@ -340,7 +340,7 @@ public partial class TemplateArchitectureView : UserControl
                 if (ClassList.SelectedItem == null && _architecture.Classes.FirstOrDefault() is ClassDefinition first) ClassList.SelectedItem = first;
                 if (ClassList.SelectedItem is ClassDefinition localSelected) await RenderSelectedClassAsync(localSelected);
             }
-            catch (Exception ex) { TxtStatus.Text = "Не удалось загрузить локальную архитектуру: " + ex.Message; }
+            catch (Exception ex) { TxtStatus.Text = "Не удалось загрузить локальную архитектуру: " + Configurator.Infrastructure.UserErrorMessage.Format(ex); }
             return;
         }
         if (_connection == null || string.IsNullOrWhiteSpace(_selectedDatabase)) return;
@@ -373,7 +373,7 @@ public partial class TemplateArchitectureView : UserControl
         }
         catch (Exception ex)
         {
-            TxtStatus.Text = $"Не удалось загрузить структуру проекта: {ex.Message}";
+            TxtStatus.Text = $"Не удалось загрузить структуру проекта: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}";
         }
     }
 
@@ -626,7 +626,7 @@ public partial class TemplateArchitectureView : UserControl
         catch (Exception ex)
         {
             _availabilityGuard = true; ChkAvailable.IsChecked = true; _availabilityGuard = false;
-            Configurator.Infrastructure.ModernDialog.Show($"Не удалось отключить класс: {ex.Message}", "Отключение класса", MessageBoxButton.OK, MessageBoxImage.Error);
+            Configurator.Infrastructure.ModernDialog.Show($"Не удалось отключить класс: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", "Отключение класса", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -649,7 +649,7 @@ public partial class TemplateArchitectureView : UserControl
                     "Восстановление", MessageBoxButton.OK, MessageBoxImage.Warning);
             RefreshClassList();
         }
-        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show($"Не удалось восстановить объекты: {ex.Message}", "Восстановление", MessageBoxButton.OK, MessageBoxImage.Warning); }
+        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show($"Не удалось восстановить объекты: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", "Восстановление", MessageBoxButton.OK, MessageBoxImage.Warning); }
     }
 
     private bool GetProjectAvailability(ClassDefinition definition) => definition != null && (_projectAvailability.TryGetValue(definition.ClassNumber, out bool value) ? value : definition.Available);
@@ -852,7 +852,7 @@ public partial class TemplateArchitectureView : UserControl
         catch (Exception ex)
         {
             LogMode2Action($"Ошибка сохранения структуры шаблона · {_selectedClass?.Name}", _selectedClass?.PrimaryStorage?.TableName, ex.ToString());
-            Configurator.Infrastructure.ModernDialog.Show($"Не удалось сохранить класс и его SQL-структуру: {ex.Message}", "Шаблоны проекта", MessageBoxButton.OK, MessageBoxImage.Error);
+            Configurator.Infrastructure.ModernDialog.Show($"Не удалось сохранить класс и его SQL-структуру: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", "Шаблоны проекта", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -985,7 +985,7 @@ public partial class TemplateArchitectureView : UserControl
         }
         catch (Exception ex)
         {
-            Configurator.Infrastructure.ModernDialog.Show($"Удаление класса не завершено: {ex.Message}", "Удаление класса", MessageBoxButton.OK, MessageBoxImage.Error);
+            Configurator.Infrastructure.ModernDialog.Show($"Удаление класса не завершено: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", "Удаление класса", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -1021,7 +1021,7 @@ public partial class TemplateArchitectureView : UserControl
             _architecture.Upsert(dialog.Result); _architecture.Save(); RefreshClassList(); ClassList.SelectedItem = _architecture.Find(dialog.Result.Id);
             TxtStatus.Text = $"Создан класс {dialog.Result.Name} · № {dialog.Result.ClassNumber}";
         }
-        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show($"Не удалось зарегистрировать класс в dbo.Classes: {ex.Message}", "Новый класс", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show($"Не удалось зарегистрировать класс в dbo.Classes: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", "Новый класс", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
     private async Task SyncClassRegistryRemoveAsync(ClassDefinition definition)

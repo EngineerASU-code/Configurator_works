@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
@@ -183,7 +183,7 @@ public partial class MainWindow
         }
         catch (Exception ex)
         {
-            Configurator.Infrastructure.ModernDialog.Show("Ошибка удаления: " + ex.Message, "Удаление", MessageBoxButton.OK, MessageBoxImage.Error);
+            Configurator.Infrastructure.ModernDialog.Show("Ошибка удаления: " + Configurator.Infrastructure.UserErrorMessage.Format(ex), "Удаление", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 

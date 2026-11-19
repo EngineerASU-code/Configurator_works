@@ -91,7 +91,7 @@ public partial class TemplateArchitectureView
         }
         catch (Exception ex)
         {
-            TxtStatus.Text = $"Сложная структура не загружена: {ex.Message}";
+            TxtStatus.Text = $"Сложная структура не загружена: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}";
         }
     }
 

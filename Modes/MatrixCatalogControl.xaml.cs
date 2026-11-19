@@ -1,4 +1,4 @@
-#nullable enable
+﻿#nullable enable
 using System;
 using System.Data;
 using System.Linq;
@@ -184,7 +184,7 @@ public partial class MatrixCatalogControl : UserControl
             _suppressSelectionEvents = false;
             _tableData = null;
             RowsGrid.ItemsSource = null;
-            StatusText.Text = ex.Message;
+            StatusText.Text = Configurator.Infrastructure.UserErrorMessage.Format(ex);
             SetActions(false, false, false);
             return false;
         }
@@ -294,7 +294,7 @@ public partial class MatrixCatalogControl : UserControl
         if (_suppressSelectionEvents || _busy || (SectionBox.SelectedValue as string) != "matrix-devices") return;
         SetBusy(true);
         try { await LoadDeviceObjectOptionsAsync(); }
-        catch (Exception ex) { _deviceLookupStatus = ex.Message; StatusText.Text = ex.Message; }
+        catch (Exception ex) { _deviceLookupStatus = Configurator.Infrastructure.UserErrorMessage.Format(ex); StatusText.Text = Configurator.Infrastructure.UserErrorMessage.Format(ex); }
         finally { SetBusy(false); }
     }
 
@@ -304,7 +304,7 @@ public partial class MatrixCatalogControl : UserControl
         if (DevicePLCBox.SelectedValue is not int plc) return;
         SetBusy(true);
         try { await LoadDeviceObjectOptionsAsync(plc); }
-        catch (Exception ex) { _deviceLookupStatus = ex.Message; StatusText.Text = ex.Message; }
+        catch (Exception ex) { _deviceLookupStatus = Configurator.Infrastructure.UserErrorMessage.Format(ex); StatusText.Text = Configurator.Infrastructure.UserErrorMessage.Format(ex); }
         finally { SetBusy(false); }
     }
 
@@ -381,7 +381,7 @@ public partial class MatrixCatalogControl : UserControl
         }
         catch (Exception ex)
         {
-            StatusText.Text = $"Экспорт не выполнен. Файл не создан: {ex.Message}";
+            StatusText.Text = $"Экспорт не выполнен. Файл не создан: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}";
         }
         finally
         {
@@ -607,7 +607,7 @@ public partial class MatrixCatalogControl : UserControl
         catch (Exception ex)
         {
             if (!IsCurrent(contextVersion, loadVersion)) return false;
-            StatusText.Text = ex.Message;
+            StatusText.Text = Configurator.Infrastructure.UserErrorMessage.Format(ex);
             SetActionsFromCurrentTable();
             return false;
         }
@@ -1070,7 +1070,7 @@ public partial class MatrixCatalogControl : UserControl
         }
         catch (Exception ex)
         {
-            StatusText.Text = $"Изменения не сохранены. Транзакция отменена: {ex.Message}";
+            StatusText.Text = $"Изменения не сохранены. Транзакция отменена: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}";
             return false;
         }
     }
@@ -1177,7 +1177,7 @@ public partial class MatrixCatalogControl : UserControl
             StatusText.Text = "Заполните ключевые поля новой строки и сохраните. Связи, заданные внешними ключами, проверит SQL в транзакции.";
             UpdateActionState();
         }
-        catch (Exception ex) { StatusText.Text = ex.Message; }
+        catch (Exception ex) { StatusText.Text = Configurator.Infrastructure.UserErrorMessage.Format(ex); }
     }
 
     private void AssignSelectedDevice()
@@ -1212,7 +1212,7 @@ public partial class MatrixCatalogControl : UserControl
             StatusText.Text = $"Объект назначен группе {group}, позиции {position.Position}. Сохраните изменения.";
             UpdateActionState();
         }
-        catch (Exception ex) { StatusText.Text = ex.Message; }
+        catch (Exception ex) { StatusText.Text = Configurator.Infrastructure.UserErrorMessage.Format(ex); }
     }
 
     private void Delete_Click(object sender, RoutedEventArgs e)
@@ -1246,7 +1246,7 @@ public partial class MatrixCatalogControl : UserControl
             UpdateEmptyState();
             UpdateActionState();
         }
-        catch (Exception ex) { StatusText.Text = ex.Message; }
+        catch (Exception ex) { StatusText.Text = Configurator.Infrastructure.UserErrorMessage.Format(ex); }
     }
 
     private async void Save_Click(object sender, RoutedEventArgs e)

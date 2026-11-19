@@ -120,7 +120,7 @@ public partial class FreeAddressCheckWindow : Window
         catch (Exception ex)
         {
             TxtStatus.Text = "Ошибка подключения";
-            Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Проверить свободные адреса", MessageBoxButton.OK, MessageBoxImage.Warning);
+            Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Проверить свободные адреса", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
 
@@ -204,7 +204,7 @@ public partial class FreeAddressCheckWindow : Window
         catch (Exception ex)
         {
             TxtStatus.Text = "Ошибка";
-            Configurator.Infrastructure.ModernDialog.Show($"Не удалось проверить адреса: {ex.Message}", "Проверить свободные адреса", MessageBoxButton.OK, MessageBoxImage.Error);
+            Configurator.Infrastructure.ModernDialog.Show($"Не удалось проверить адреса: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", "Проверить свободные адреса", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally { SetBusy(false); }
     }
@@ -291,7 +291,7 @@ public partial class FreeAddressCheckWindow : Window
         }
         catch (Exception ex)
         {
-            Configurator.Infrastructure.ModernDialog.Show($"Не удалось экспортировать результат: {ex.Message}", "Экспорт Excel", MessageBoxButton.OK, MessageBoxImage.Error);
+            Configurator.Infrastructure.ModernDialog.Show($"Не удалось экспортировать результат: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", "Экспорт Excel", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 

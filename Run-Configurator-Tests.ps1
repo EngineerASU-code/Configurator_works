@@ -1,48 +1,94 @@
+[CmdletBinding()]
+param(
+    [ValidateScript({ -not [string]::IsNullOrWhiteSpace($_) })]
+    [string]$Filter
+)
+
 $ErrorActionPreference = 'Stop'
-$projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$projectRoot = $PSScriptRoot
 $testProject = Join-Path $projectRoot 'tests\Configurator.Security.Tests\Configurator.Security.Tests.csproj'
-$appProject = Join-Path $projectRoot 'Configurator.csproj'
 $solution = Join-Path $projectRoot 'Configurator.slnx'
+$quick = $PSBoundParameters.ContainsKey('Filter')
 $originalTemp = $env:TEMP
 $originalTmp = $env:TMP
-$testTemp = Join-Path $projectRoot ('artifacts\quality-temp-' + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $testTemp -Force | Out-Null
-$env:TEMP = $testTemp
-$env:TMP = $testTemp
-$resultsDir = Join-Path $projectRoot 'test-results'
-New-Item -ItemType Directory -Path $resultsDir -Force | Out-Null
-$stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-$transcriptPath = Join-Path $resultsDir "run_$stamp.log"
-Start-Transcript -Path $transcriptPath -Force | Out-Null
+$testTemp = $null
+$transcriptStarted = $false
+$exitCode = 0
+
+Push-Location -LiteralPath $projectRoot
 try {
-    Write-Host "Configurator test run: $stamp"
-    dotnet --info
-    if ($LASTEXITCODE -ne 0) { throw "dotnet --info failed with exit code $LASTEXITCODE" }
+    $tempRoot = Join-Path $projectRoot 'artifacts'
+    $runId = [guid]::NewGuid().ToString('N')
+    $tempPath = Join-Path $tempRoot "quality-temp-$runId"
+    New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+    if ((Get-Item -LiteralPath $tempRoot).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw "Test artifacts directory is a reparse point: $tempRoot"
+    }
+    $testTemp = (New-Item -ItemType Directory -Path $tempPath).FullName
+    $env:TEMP = $testTemp
+    $env:TMP = $testTemp
 
-    Write-Host "`n=== RESTORE ==="
-    dotnet restore $solution
-    if ($LASTEXITCODE -ne 0) { throw "dotnet restore failed with exit code $LASTEXITCODE" }
+    $testArgs = @('test', $testProject, '-c', 'Release')
+    if ($quick) {
+        $testArgs += @('--filter', $Filter, '--logger', 'console;verbosity=minimal', '-v', 'quiet')
+    }
+    else {
+        $resultsDir = Join-Path $projectRoot 'test-results'
+        New-Item -ItemType Directory -Path $resultsDir -Force | Out-Null
+        $stamp = (Get-Date -Format 'yyyyMMdd_HHmmss') + '_' + $runId.Substring(0, 8)
+        $transcriptPath = Join-Path $resultsDir "run_$stamp.log"
+        Start-Transcript -LiteralPath $transcriptPath | Out-Null
+        $transcriptStarted = $true
 
-    Write-Host "`n=== RELEASE BUILD ==="
-    dotnet build $appProject -c Release --no-restore
-    if ($LASTEXITCODE -ne 0) { throw "dotnet build failed with exit code $LASTEXITCODE" }
+        dotnet --info
+        if ($LASTEXITCODE -ne 0) { throw "dotnet --info failed with exit code $LASTEXITCODE" }
 
-    Write-Host "`n=== SECURITY / REGRESSION TESTS ==="
-    $trxPath = Join-Path $resultsDir "tests_$stamp.trx"
-    dotnet test $testProject -c Release --no-restore --logger "console;verbosity=normal" --logger "trx;LogFileName=$trxPath"
+        dotnet restore $solution
+        if ($LASTEXITCODE -ne 0) { throw "dotnet restore failed with exit code $LASTEXITCODE" }
+
+        $trxName = "tests_$stamp.trx"
+        $testArgs += @('--no-restore', '--results-directory', $resultsDir,
+            '--logger', 'console;verbosity=normal', '--logger', "trx;LogFileName=$trxName")
+    }
+
+    dotnet @testArgs -- RunConfiguration.TreatNoTestsAsError=true
     if ($LASTEXITCODE -ne 0) { throw "dotnet test failed with exit code $LASTEXITCODE" }
-
-    Write-Host "`nRESULT: restore, Release build and test command completed successfully."
-    Write-Host "Transcript: $transcriptPath"
-    Write-Host "TRX: $trxPath"
+    if (-not $quick) {
+        $trxPath = Join-Path $resultsDir $trxName
+        if (-not (Test-Path -LiteralPath $trxPath -PathType Leaf)) { throw "Missing test report: $trxPath" }
+        Write-Host "TRX: $trxPath"
+    }
 }
 catch {
-    Write-Error $_
-    Write-Host "RESULT: FAILED. See transcript: $transcriptPath"
-    exit 1
+    $exitCode = 1
+    Write-Error $_ -ErrorAction Continue
 }
 finally {
     $env:TEMP = $originalTemp
     $env:TMP = $originalTmp
-    Stop-Transcript | Out-Null
+    Pop-Location
+    try {
+        if ($testTemp -and (Test-Path -LiteralPath $testTemp)) {
+            $expectedPath = [IO.Path]::GetFullPath($tempPath)
+            $tempDirectory = Get-Item -LiteralPath $testTemp
+            if ($tempDirectory.FullName -ne $expectedPath -or
+                ($tempDirectory.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+                ((Get-Item -LiteralPath $tempRoot).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                throw "Unexpected temporary directory: $testTemp"
+            }
+            $tempDirectory.Delete($true)
+        }
+    }
+    catch {
+        $exitCode = 1
+        Write-Error $_ -ErrorAction Continue
+    }
+
+    if ($exitCode -eq 0) { Write-Host 'RESULT: PASSED' }
+    else { Write-Host 'RESULT: FAILED' }
+    if ($transcriptStarted) {
+        Write-Host "Transcript: $transcriptPath"
+        Stop-Transcript | Out-Null
+    }
 }
+exit $exitCode

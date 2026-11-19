@@ -119,7 +119,7 @@ public partial class FreeRecordCheckWindow : Window
         catch (Exception ex)
         {
             TxtStatus.Text = "Ошибка подключения";
-            Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Проверить свободные поля", MessageBoxButton.OK, MessageBoxImage.Warning);
+            Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Проверить свободные поля", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
 
@@ -192,7 +192,7 @@ public partial class FreeRecordCheckWindow : Window
         catch (Exception ex)
         {
             TxtStatus.Text = "Ошибка";
-            Configurator.Infrastructure.ModernDialog.Show($"Не удалось проверить Record: {ex.Message}",
+            Configurator.Infrastructure.ModernDialog.Show($"Не удалось проверить Record: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}",
                 "Проверить свободные поля", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
@@ -233,7 +233,7 @@ public partial class FreeRecordCheckWindow : Window
         }
         catch (Exception ex)
         {
-            Configurator.Infrastructure.ModernDialog.Show($"Не удалось экспортировать результат: {ex.Message}", "Экспорт Excel", MessageBoxButton.OK, MessageBoxImage.Error);
+            Configurator.Infrastructure.ModernDialog.Show($"Не удалось экспортировать результат: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", "Экспорт Excel", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 

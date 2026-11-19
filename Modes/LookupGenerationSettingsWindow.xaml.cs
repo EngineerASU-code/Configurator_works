@@ -72,7 +72,7 @@ public partial class LookupGenerationSettingsWindow : Window
             foreach (var rule in imported.Rules) _rules.Add(Clone(rule));
             ChkAutomaticDiscovery.IsChecked = imported.AutomaticDiscoveryEnabled;
         }
-        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(this, ex.Message, "Ошибка импорта", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(this, Configurator.Infrastructure.UserErrorMessage.Format(ex), "Ошибка импорта", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
     private void Export_Click(object sender, RoutedEventArgs e)
@@ -83,7 +83,7 @@ public partial class LookupGenerationSettingsWindow : Window
             var dialog = new SaveFileDialog { Title = "Экспорт настроек справочников", Filter = "Настройки справочников (*.json)|*.json", DefaultExt = ".json", AddExtension = true, FileName = "LookupGenerationSettings.json" };
             if (dialog.ShowDialog(this) == true) LookupGenerationSettingsStore.Export(dialog.FileName, BuildSettings());
         }
-        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(this, ex.Message, "Ошибка экспорта", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(this, Configurator.Infrastructure.UserErrorMessage.Format(ex), "Ошибка экспорта", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
     private void Save_Click(object sender, RoutedEventArgs e)
@@ -95,7 +95,7 @@ public partial class LookupGenerationSettingsWindow : Window
             DialogResult = true;
             Close();
         }
-        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(this, ex.Message, "Настройки не сохранены", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(this, Configurator.Infrastructure.UserErrorMessage.Format(ex), "Настройки не сохранены", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
     private void Cancel_Click(object sender, RoutedEventArgs e) => Close();

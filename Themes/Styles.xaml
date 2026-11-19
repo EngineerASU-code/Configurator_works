@@ -156,6 +156,21 @@
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="30"/>
                             </Grid.ColumnDefinitions>
+                            <ToggleButton x:Name="DropDownToggle" Grid.Column="0" Grid.ColumnSpan="2" Focusable="False"
+                                ClickMode="Press" IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                Background="Transparent" BorderBrush="Transparent" BorderThickness="0"
+                                Padding="0,0,9,0" HorizontalContentAlignment="Right" OverridesDefaultStyle="True">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border Background="Transparent">
+                                            <ContentPresenter HorizontalAlignment="Right" VerticalAlignment="Center"
+                                                              Margin="{TemplateBinding Padding}"/>
+                                        </Border>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                                <TextBlock Text="▾" FontSize="14" Foreground="{TemplateBinding Foreground}"
+                                           HorizontalAlignment="Right" VerticalAlignment="Center" IsHitTestVisible="False"/>
+                            </ToggleButton>
                             <ContentPresenter x:Name="SelectionPresenter" Grid.Column="0"
                                 Margin="{TemplateBinding Padding}" VerticalAlignment="Center"
                                 HorizontalAlignment="Left" IsHitTestVisible="False"
@@ -164,12 +179,6 @@
                                 ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
                                 TextElement.Foreground="{TemplateBinding Foreground}"
                                 TextElement.FontSize="{TemplateBinding FontSize}"/>
-                            <ToggleButton x:Name="DropDownToggle" Grid.Column="1" Focusable="False"
-                                ClickMode="Press" IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
-                                Background="Transparent" BorderThickness="0" Padding="0">
-                                <TextBlock Text="▾" FontSize="14" Foreground="{TemplateBinding Foreground}"
-                                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                            </ToggleButton>
                         </Grid>
                         <Popup x:Name="PART_Popup" Placement="Bottom" AllowsTransparency="True"
                                Focusable="False" IsOpen="{TemplateBinding IsDropDownOpen}"

@@ -1,4 +1,4 @@
-#nullable enable annotations
+﻿#nullable enable annotations
 using System;
 using System.Collections.Generic;
 using System.Data;
@@ -84,9 +84,6 @@ public partial class ProjectModeView : UserControl
         Configurator.Core.Projects.SqlProviderGuard.SetOfflineActive(true);
         _onlineLookupOptionsService = null;
         _onlineLookupDatabaseKey = string.Empty;
-        _offlineLookupCache.Clear();
-        _offlineLookupTableCache.Clear();
-        _offlineTablesCache = null;
         _offlineSource = new OfflineProjectDataSource(project);
         _offlineSource.ProjectChanged += (_, _) => OfflineProjectChanged?.Invoke(this, EventArgs.Empty);
         SetCrudSource(_offlineSource);
@@ -409,7 +406,7 @@ public partial class ProjectModeView : UserControl
             {
                 if (generation != _loadGeneration) return;
                 SessionTestLog.Trace("ОШИБКА-РЕЖИМ3", $"Offline ConfigureProjectAsync: {ex}");
-                TxtStatus.Text = "Ошибка локального проекта: " + ex.Message;
+                TxtStatus.Text = "Ошибка локального проекта: " + Configurator.Infrastructure.UserErrorMessage.Format(ex);
                 configureTimer.Stop();
                 SessionTestLog.Trace("РЕЖИМ3-ПРОИЗВОДИТЕЛЬНОСТЬ", $"offline configure-total-ms={configureTimer.ElapsedMilliseconds}; result=error; sqlUsed=false");
             }
@@ -731,7 +728,7 @@ public partial class ProjectModeView : UserControl
         }
         catch (Exception ex)
         {
-            TxtStatus.Text = $"Не удалось загрузить конфигурацию: {ex.Message}";
+            TxtStatus.Text = $"Не удалось загрузить конфигурацию: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}";
         }
     }
 
@@ -976,7 +973,7 @@ public partial class ProjectModeView : UserControl
         catch (Exception ex)
         {
             SessionTestLog.Trace("ОШИБКА-РЕЖИМ3-ОБЪЕКТЫ", ex.ToString());
-            TxtStatus.Text = $"Не удалось загрузить объекты: {ex.Message}";
+            TxtStatus.Text = $"Не удалось загрузить объекты: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}";
         }
     }
 
@@ -1306,37 +1303,14 @@ public partial class ProjectModeView : UserControl
 
     private async void SaveObject_Click(object sender, RoutedEventArgs e)
     {
+        SessionTestLog.Trace("РЕЖИМ3-СОХРАНЕНИЕ", $"Save requested; kind={_configurationKind}; selected={_selectedRow != null}; offline={_offlineProject != null}");
         if (_configurationKind is ConfigurationKind.Plc or ConfigurationKind.Area)
         {
             await SaveConfigurationObjectAsync();
             return;
         }
         if (!UserAuthorizationService.Require(Permission.EditData)) return;
-        if (_selectedRow == null || _selectedClass?.PrimaryStorage == null) return;
-        var mutationGeneration = _workspaceGeneration;
-        try
-        {
-            var before = SnapshotRow(_selectedRow);
-            var values = CollectValues();
-            var identity = await BuildIdentityAsync();
-            var keyColumns = identity.Keys.ToList();
-            if (keyColumns.Count == 0) throw new InvalidOperationException("Не удалось определить ключ изменяемой записи.");
-            var after = new Dictionary<string, object>(before, StringComparer.OrdinalIgnoreCase);
-            foreach (var pair in values) after[pair.Key] = pair.Value ?? DBNull.Value;
-            await RequireCrudSource().UpdateRecordAsync(_selectedClass.PrimaryStorage.TableName, keyColumns, identity, values);
-            RecordMode3Mutation(_selectedClass.PrimaryStorage.TableName, ChangeJournalOperationKind.Update,
-                "Изменён объект", before, after, identity, ResolveMode3Identity(after), mutationGeneration);
-            foreach (var pair in values)
-                if (_objects.Columns.Contains(pair.Key))
-                    _selectedRow[pair.Key] = pair.Value ?? DBNull.Value;
-            BuildObjectEditor();
-            TxtStatus.Text = _offlineProject != null ? "Объект сохранён в локальный проект" : "Объект сохранён";
-            ShowActionFeedback($"Изменения объекта «{PickName(_selectedRow, _selectedClass)}» сохранены");
-        }
-        catch (Exception ex)
-        {
-            ShowSaveError(ex, "объект проекта", "Сохранение объекта", _selectedClass?.PrimaryStorage?.TableName);
-        }
+        SaveObjectWithLookupControlsAsync();
     }
 
     private async Task SaveConfigurationObjectAsync()
@@ -1397,6 +1371,7 @@ public partial class ProjectModeView : UserControl
 
             if (updates.Count == 0)
             {
+                SessionTestLog.Trace("РЕЖИМ3-СОХРАНЕНИЕ", $"No changes detected; table='{_configurationTableName}'");
                 TxtStatus.Text = "Изменений нет";
                 ShowActionFeedback(TxtStatus.Text);
                 BtnSave.IsEnabled = false;
@@ -1405,7 +1380,9 @@ public partial class ProjectModeView : UserControl
 
             var tableName = _configurationTableName;
             var selectedKey = GetConfigurationKeyValue();
+            SessionTestLog.Trace("РЕЖИМ3-СОХРАНЕНИЕ", $"Updating table='{tableName}'; fields={string.Join(",", updates.Keys)}; offline={_offlineProject != null}");
             await RequireCrudSource().UpdateRecordAsync(tableName, keyColumns, keyValues, updates);
+            SessionTestLog.Trace("РЕЖИМ3-СОХРАНЕНИЕ", $"Update completed; table='{tableName}'; offline={_offlineProject != null}");
             foreach (var pair in updates) row[pair.Key] = pair.Value ?? DBNull.Value;
             try
             {
@@ -1619,8 +1596,8 @@ public partial class ProjectModeView : UserControl
         }
         catch (Exception ex)
         {
-            ShowActionFeedback($"Ошибка: {ex.Message}", isError: true);
-            Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Дублирование", MessageBoxButton.OK, MessageBoxImage.Error);
+            ShowActionFeedback($"Ошибка: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", isError: true);
+            Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Дублирование", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -1748,8 +1725,8 @@ public partial class ProjectModeView : UserControl
         }
         catch (Exception ex)
         {
-            ShowActionFeedback($"Ошибка: {ex.Message}", isError: true);
-            Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Удаление", MessageBoxButton.OK, MessageBoxImage.Error);
+            ShowActionFeedback($"Ошибка: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", isError: true);
+            Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Удаление", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -1788,8 +1765,8 @@ public partial class ProjectModeView : UserControl
             }
             catch (Exception ex)
             {
-                ShowActionFeedback($"Ошибка: {ex.Message}", isError: true);
-                Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Добавление локального справочника", MessageBoxButton.OK, MessageBoxImage.Error);
+                ShowActionFeedback($"Ошибка: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", isError: true);
+                Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Добавление локального справочника", MessageBoxButton.OK, MessageBoxImage.Error);
             }
             return;
         }
@@ -1836,8 +1813,7 @@ public partial class ProjectModeView : UserControl
         }
         catch (Exception ex)
         {
-            ShowActionFeedback($"Ошибка: {ex.Message}", isError: true);
-            Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Добавление конфигурации", MessageBoxButton.OK, MessageBoxImage.Error);
+            ShowSaveError(ex, "значение справочника", "Добавление конфигурации", _configurationTableName);
         }
     }
 
@@ -1873,8 +1849,8 @@ public partial class ProjectModeView : UserControl
             {
                 deleteTimer.Stop();
                 SessionTestLog.Trace("CRUD", $"operation=DeleteConfigurationValue; phase=complete; result=error; source=offline; table='{_configurationTableName}'; projectId='{_offlineProject?.Manifest.ProjectId}'; elapsedMs={deleteTimer.ElapsedMilliseconds}; exception={ex}");
-                ShowActionFeedback($"Ошибка: {ex.Message}", isError: true);
-                Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Offline · удаление", MessageBoxButton.OK, MessageBoxImage.Warning);
+                ShowActionFeedback($"Ошибка: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", isError: true);
+                Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Offline · удаление", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
             return;
         }
@@ -1934,8 +1910,8 @@ public partial class ProjectModeView : UserControl
         }
         catch (Exception ex)
         {
-            ShowActionFeedback($"Ошибка: {ex.Message}", isError: true);
-            Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Удаление конфигурации", MessageBoxButton.OK, MessageBoxImage.Error);
+            ShowActionFeedback($"Ошибка: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", isError: true);
+            Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Удаление конфигурации", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -1963,7 +1939,7 @@ public partial class ProjectModeView : UserControl
                 var recordColumn = columns.FirstOrDefault(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase))?.Name ?? "";
                 var plcColumn = columns.FirstOrDefault(c => c.Name.Equals("PLC", StringComparison.OrdinalIgnoreCase))?.Name;
                 var classNumberColumn = columns.FirstOrDefault(c => new[] { "PLCClassNumber", "PLC_Class_Number", "PLCClasssNumber" }.Contains(c.Name, StringComparer.OrdinalIgnoreCase))?.Name;
-                var localLookups = await LoadOfflineLookupOptionsForProjectTableAsync(tableName);
+                var localLookups = LoadOfflineLookupOptionsForProjectTable(tableName, columns);
                 Func<string, CancellationToken, Task<int>> localRecordProvider = null;
                 if (!string.IsNullOrWhiteSpace(recordColumn) && !string.IsNullOrWhiteSpace(plcColumn))
                 {
@@ -1994,8 +1970,8 @@ public partial class ProjectModeView : UserControl
             }
             catch (Exception ex)
             {
-                ShowActionFeedback($"Ошибка: {ex.Message}", isError: true);
-                Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Новый локальный объект", MessageBoxButton.OK, MessageBoxImage.Error);
+                ShowActionFeedback($"Ошибка: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", isError: true);
+                Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Новый локальный объект", MessageBoxButton.OK, MessageBoxImage.Error);
             }
             return;
         }
@@ -2046,8 +2022,8 @@ public partial class ProjectModeView : UserControl
         }
         catch (Exception ex)
         {
-            ShowActionFeedback($"Ошибка: {ex.Message}", isError: true);
-            Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Новый объект", MessageBoxButton.OK, MessageBoxImage.Error);
+            ShowActionFeedback($"Ошибка: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", isError: true);
+            Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Новый объект", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -2203,7 +2179,7 @@ public partial class ProjectModeView : UserControl
                         catch (Exception ex)
                         {
                             await LoadObjectsAsync();
-                            ShowActionFeedback($"Ошибка: {ex.Message}", isError: true);
+                            ShowActionFeedback($"Ошибка: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", isError: true);
                             return $"Сохранение прервано после {inserted} из {rows.Count} объектов. Уже добавленные записи не отменены слоем данных. Ошибка: {ex.Message}";
                         }
                     }
@@ -2218,8 +2194,8 @@ public partial class ProjectModeView : UserControl
         }
         catch (Exception ex)
         {
-            ShowActionFeedback($"Ошибка: {ex.Message}", isError: true);
-            Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Массовое добавление объектов", MessageBoxButton.OK, MessageBoxImage.Error);
+            ShowActionFeedback($"Ошибка: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", isError: true);
+            Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Массовое добавление объектов", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -2272,48 +2248,17 @@ public partial class ProjectModeView : UserControl
         return result;
     }
 
-    private async Task<Dictionary<string, List<LookupOption>>> LoadOfflineLookupOptionsForProjectTableAsync(string tableName)
+    private Dictionary<string, List<LookupOption>> LoadOfflineLookupOptionsForProjectTable(string tableName, IReadOnlyCollection<ColumnInfo> columns)
     {
         var result = new Dictionary<string, List<LookupOption>>(StringComparer.OrdinalIgnoreCase);
-        if (_offlineProject == null) return result;
-        foreach (var field in _selectedClass?.Fields ?? new List<FieldDefinition>())
+        if (_offlineProject == null || _selectedClass == null) return result;
+        foreach (var column in columns)
         {
-            if (!field.Name.Equals("PLC", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(field.LookupTable)) continue;
-            string lookupTable = !string.IsNullOrWhiteSpace(field.LookupTable)
-                ? field.LookupTable
-                : _offlineProject.TableSchemas.FirstOrDefault(x => new[] { "dbo.PLC", "dbo.PLCs", "PLC", "PLCs" }.Contains(x.TableName, StringComparer.OrdinalIgnoreCase))?.TableName;
-            if (string.IsNullOrWhiteSpace(lookupTable)) continue;
-            var rows = await _offlineReader.ReadRowsAsync(lookupTable, 5000);
-            var keyColumn = !string.IsNullOrWhiteSpace(field.LookupKeyField) ? field.LookupKeyField
-                : rows.Columns.Cast<DataColumn>().FirstOrDefault(c => new[] { "Record", "Id", "ID" }.Contains(c.ColumnName, StringComparer.OrdinalIgnoreCase))?.ColumnName;
-            var displayColumn = !string.IsNullOrWhiteSpace(field.LookupDisplayField) ? field.LookupDisplayField
-                : rows.Columns.Cast<DataColumn>().FirstOrDefault(c => new[] { "NameL1", "Name", "DescriptionL1", "Title" }.Contains(c.ColumnName, StringComparer.OrdinalIgnoreCase))?.ColumnName;
-            if (keyColumn == null || !rows.Columns.Contains(keyColumn)) continue;
-            result[field.Name] = rows.Rows.Cast<DataRow>()
-                .Where(r => r[keyColumn] != DBNull.Value)
-                .Select(r => new LookupOption
-                {
-                    Key = Convert.ToString(r[keyColumn]) ?? "",
-                    Display = displayColumn != null && rows.Columns.Contains(displayColumn) && r[displayColumn] != DBNull.Value
-                        ? Convert.ToString(r[displayColumn]) ?? Convert.ToString(r[keyColumn]) ?? ""
-                        : Convert.ToString(r[keyColumn]) ?? ""
-                }).Where(x => !string.IsNullOrWhiteSpace(x.Key)).ToList();
-        }
-        // PLC is often omitted from the class field metadata; use the local PLC snapshot directly.
-        if (!result.ContainsKey("PLC"))
-        {
-            var plcTable = _offlineProject.TableSchemas.FirstOrDefault(x => new[] { "dbo.PLC", "dbo.PLCs", "PLC", "PLCs" }.Contains(x.TableName, StringComparer.OrdinalIgnoreCase))?.TableName;
-            if (!string.IsNullOrWhiteSpace(plcTable))
-            {
-                var rows = await _offlineReader.ReadRowsAsync(plcTable, 5000);
-                var key = rows.Columns.Cast<DataColumn>().FirstOrDefault(c => new[] { "Record", "Id", "ID" }.Contains(c.ColumnName, StringComparer.OrdinalIgnoreCase))?.ColumnName;
-                var display = rows.Columns.Cast<DataColumn>().FirstOrDefault(c => new[] { "NameL1", "Name", "DescriptionL1", "Title" }.Contains(c.ColumnName, StringComparer.OrdinalIgnoreCase))?.ColumnName;
-                if (key != null) result["PLC"] = rows.Rows.Cast<DataRow>().Where(r => r[key] != DBNull.Value).Select(r => new LookupOption
-                {
-                    Key = Convert.ToString(r[key]) ?? "",
-                    Display = display != null && rows.Columns.Contains(display) && r[display] != DBNull.Value ? Convert.ToString(r[display]) ?? Convert.ToString(r[key]) ?? "" : Convert.ToString(r[key]) ?? ""
-                }).Where(x => !string.IsNullOrWhiteSpace(x.Key)).ToList();
-            }
+            var field = _selectedClass.Fields.FirstOrDefault(f => f.Name.Equals(column.Name, StringComparison.OrdinalIgnoreCase))
+                ?? new FieldDefinition { Name = column.Name };
+            var options = GetOfflineLookupOptions(field, _selectedClass.Name, tableName);
+            if (options.Count > 0 || !string.IsNullOrWhiteSpace(field.LookupTable))
+                result[column.Name] = options.ToList();
         }
         return result;
     }
@@ -2327,7 +2272,8 @@ public partial class ProjectModeView : UserControl
         // поля, для которых есть известная системная эвристика.
         foreach (var field in _selectedClass.Fields)
         {
-            bool candidate = !string.IsNullOrWhiteSpace(field.LookupTable)
+            bool candidate = LookupGenerationRuleSelector.Find(LookupGenerationSettingsRuntime.Current, _selectedClass.Name, tableName, field.Name) != null
+                || !string.IsNullOrWhiteSpace(field.LookupTable)
                 || field.Name.Equals("Area", StringComparison.OrdinalIgnoreCase)
                 || field.Name.Equals("AreaName", StringComparison.OrdinalIgnoreCase)
                 || field.Name.Equals("PLC", StringComparison.OrdinalIgnoreCase)

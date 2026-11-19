@@ -65,16 +65,16 @@ public partial class MultiObjectEditorWindow : Window
         var workArea = GetOwnerWorkArea();
         double maxHeight = Math.Max(1, workArea.Height - 40);
         double maxWidth = Math.Max(1, workArea.Width - 40);
-        Width = Math.Min(820, maxWidth);
-        MinWidth = Math.Min(600, Width);
-        MinHeight = Math.Min(320, maxHeight);
+        Width = Math.Min(960, maxWidth);
+        MinWidth = Math.Min(720, Width);
+        MinHeight = Math.Min(420, maxHeight);
         MaxWidth = maxWidth;
         MaxHeight = maxHeight;
 
         // Keep four row slots visible from the first open. Grow with added rows,
         // then let the DataGrid scroll instead of pushing the footer off screen.
         double visibleRows = Math.Max(4, Math.Min(8, _rows.Count));
-        double desiredHeight = 196 + 40 * visibleRows;
+        double desiredHeight = 300 + 46 * visibleRows;
         Height = Math.Min(maxHeight, Math.Max(Height, desiredHeight));
 
         if (IsLoaded && Owner != null)

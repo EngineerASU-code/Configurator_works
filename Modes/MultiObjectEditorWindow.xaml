@@ -1,58 +1,104 @@
 <Window x:Class="Configurator.MultiObjectEditorWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Добавить несколько объектов" Width="820" Height="380" MinWidth="600" MinHeight="320"
-        WindowStartupLocation="CenterOwner" ResizeMode="CanResize" Background="{DynamicResource BrushBase}" Foreground="{DynamicResource BrushText}"
+        Title="Добавить несколько объектов" Width="960" Height="520" MinWidth="720" MinHeight="420"
+        WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
+        Background="{DynamicResource BrushBase}" Foreground="{DynamicResource BrushText}"
         PreviewKeyDown="Window_PreviewKeyDown">
     <Grid Margin="16">
-        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-        <StackPanel Margin="0,0,0,10">
-            <TextBlock x:Name="TitleText" Text="Массовое добавление объектов" FontSize="20" FontWeight="SemiBold"/>
-            <TextBlock Text="Укажите PLC и название для каждой строки. Record назначается автоматически; при необходимости его можно изменить." Margin="0,4,0,0" Foreground="{DynamicResource BrushTextSecondary}" TextWrapping="Wrap"/>
-            <Border x:Name="ValidationPanel" Visibility="Collapsed" Background="#12B42318" BorderBrush="#55B42318" BorderThickness="1" CornerRadius="6" Padding="8,5" Margin="0,8,0,0">
-                <TextBlock x:Name="ValidationText" Foreground="#B42318" TextWrapping="Wrap"/>
-            </Border>
-        </StackPanel>
-        <DataGrid x:Name="RowsGrid" Grid.Row="1" AutoGenerateColumns="False" CanUserAddRows="False"
-                  HeadersVisibility="Column" SelectionMode="Single" SelectionUnit="FullRow"
-                  IsReadOnly="False" GridLinesVisibility="All" HorizontalGridLinesBrush="{DynamicResource BrushGridLine}"
-                  VerticalGridLinesBrush="{DynamicResource BrushGridLine}"
-                  CanUserResizeColumns="True" CanUserReorderColumns="False" CanUserResizeRows="False"
-                  RowHeaderWidth="0" RowHeight="40" ColumnHeaderHeight="36" MinHeight="170"
-                  EnableRowVirtualization="True" ScrollViewer.CanContentScroll="True"
-                  ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.HorizontalScrollBarVisibility="Auto"
-                  FrozenColumnCount="1">
-            <DataGrid.Columns>
-                <DataGridTextColumn Header="Record" Binding="{Binding Record, UpdateSourceTrigger=PropertyChanged}" Width="100" MinWidth="86"/>
-                <DataGridTemplateColumn Header="PLC" Width="2*" MinWidth="145">
-                    <DataGridTemplateColumn.CellTemplate>
-                        <DataTemplate>
-                            <ComboBox ItemsSource="{Binding PlcOptions, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
-                                      SelectedValuePath="Key"
-                                      SelectedValue="{Binding PlcKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                      Height="32" Padding="6,2" MinWidth="0"
-                                      MaxDropDownHeight="280" ToolTip="Выберите PLC для строки">
-                                <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Title}"/></DataTemplate></ComboBox.ItemTemplate>
-                            </ComboBox>
-                        </DataTemplate>
-                    </DataGridTemplateColumn.CellTemplate>
-                </DataGridTemplateColumn>
-                <DataGridTextColumn Header="Name" Binding="{Binding Name, UpdateSourceTrigger=PropertyChanged}" Width="3*" MinWidth="160"/>
-                <DataGridTemplateColumn Header="Действие" Width="96" MinWidth="88">
-                    <DataGridTemplateColumn.CellTemplate>
-                        <DataTemplate>
-                            <Button Content="Удалить" Tag="{Binding}" Click="RemoveRow_Click" Padding="6,2" MinHeight="28" ToolTip="Удалить эту строку"/>
-                        </DataTemplate>
-                    </DataGridTemplateColumn.CellTemplate>
-                </DataGridTemplateColumn>
-            </DataGrid.Columns>
-        </DataGrid>
-        <DockPanel Grid.Row="2" Margin="0,10,0,0" LastChildFill="False">
-            <Button x:Name="BtnAddRow" DockPanel.Dock="Left" Content="+ Добавить строку" Style="{StaticResource BtnPrimary}" Click="AddRow_Click" Height="36" Padding="12,4" ToolTip="Добавить строку (Insert)"/>
-            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                <Button x:Name="BtnCancel" Content="Отмена" Click="Cancel_Click" Height="36" Width="100" Margin="0,0,8,0" Style="{StaticResource BtnSecondary}" IsCancel="True"/>
-                <Button x:Name="BtnAccept" Content="Добавить элементы" Click="Accept_Click" Height="36" MinWidth="170" Style="{StaticResource BtnPrimary}" ToolTip="Проверить и добавить подготовленные строки (Ctrl+Enter)"/>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Background="{DynamicResource BrushPanel}"
+                BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1"
+                CornerRadius="10" Padding="16" Margin="0,0,0,12">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Border Width="42" Height="42" CornerRadius="9" Background="{DynamicResource BrushSelected}"
+                        VerticalAlignment="Top" Margin="0,0,14,0">
+                    <TextBlock Text="＋" FontSize="25" FontWeight="SemiBold" Foreground="{DynamicResource BrushAccent}"
+                               HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,-3,0,0"/>
+                </Border>
+                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                    <TextBlock x:Name="TitleText" Text="Массовое добавление объектов" FontSize="19" FontWeight="SemiBold"/>
+                    <TextBlock Text="Добавьте объекты в несколько строк. Номер Record подбирается автоматически; при необходимости его можно изменить."
+                               Margin="0,4,0,0" Foreground="{DynamicResource BrushTextSecondary}" TextWrapping="Wrap"/>
+                    <Border x:Name="ValidationPanel" Visibility="Collapsed" Background="#12B42318"
+                            BorderBrush="#55B42318" BorderThickness="1" CornerRadius="6" Padding="9,6" Margin="0,10,0,0">
+                        <TextBlock x:Name="ValidationText" Foreground="#B42318" TextWrapping="Wrap"/>
+                    </Border>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="1" Background="{DynamicResource BrushPanel}"
+                BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="10"
+                Padding="8" ClipToBounds="True">
+            <DataGrid x:Name="RowsGrid" AutoGenerateColumns="False" CanUserAddRows="False"
+                      HeadersVisibility="Column" SelectionMode="Single" SelectionUnit="FullRow"
+                      IsReadOnly="False" GridLinesVisibility="Horizontal"
+                      HorizontalGridLinesBrush="{DynamicResource BrushGridLine}"
+                      VerticalGridLinesBrush="{DynamicResource BrushGridLine}"
+                      CanUserResizeColumns="True" CanUserReorderColumns="False" CanUserResizeRows="False"
+                      RowHeaderWidth="0" RowHeight="46" ColumnHeaderHeight="42" MinHeight="180"
+                      EnableRowVirtualization="True" ScrollViewer.CanContentScroll="True"
+                      ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                      FrozenColumnCount="1" BorderThickness="0" Background="Transparent">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="Record" Binding="{Binding Record, UpdateSourceTrigger=PropertyChanged}"
+                                        Width="130" MinWidth="100"/>
+                    <DataGridTemplateColumn Header="PLC" Width="2*" MinWidth="190">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <ComboBox ItemsSource="{Binding PlcOptions, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
+                                          SelectedValuePath="Key"
+                                          SelectedValue="{Binding PlcKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                          Height="36" Padding="8,3" MinWidth="0" MaxDropDownHeight="300"
+                                          ToolTip="Выберите PLC для этой строки">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate><TextBlock Text="{Binding Title}"/></DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTextColumn Header="Название объекта" Binding="{Binding Name, UpdateSourceTrigger=PropertyChanged}"
+                                        Width="3*" MinWidth="220"/>
+                    <DataGridTemplateColumn Header="" Width="100" MinWidth="90">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <Button Content="Удалить" Tag="{Binding}" Click="RemoveRow_Click" Padding="8,4"
+                                        MinHeight="32" Style="{StaticResource BtnSecondary}"
+                                        ToolTip="Удалить строку"/>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                </DataGrid.Columns>
+            </DataGrid>
+        </Border>
+
+        <Grid Grid.Row="2" Margin="0,12,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <Button x:Name="BtnAddRow" Grid.Column="0" HorizontalAlignment="Left"
+                    Content="＋  Добавить строку" Style="{StaticResource BtnSecondary}"
+                    Click="AddRow_Click" Height="40" Padding="14,6"
+                    ToolTip="Добавить строку (Insert)"/>
+            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                <Button x:Name="BtnCancel" Content="Отмена" Click="Cancel_Click" Height="40"
+                        MinWidth="110" Margin="0,0,8,0" Style="{StaticResource BtnSecondary}" IsCancel="True"/>
+                <Button x:Name="BtnAccept" Content="Добавить объекты" Click="Accept_Click" Height="40"
+                        MinWidth="180" Style="{StaticResource BtnPrimary}"
+                        ToolTip="Проверить и добавить подготовленные строки (Ctrl+Enter)"/>
             </StackPanel>
-        </DockPanel>
+        </Grid>
     </Grid>
 </Window>

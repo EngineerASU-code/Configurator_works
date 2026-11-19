@@ -90,7 +90,7 @@ namespace Configurator
             {
                 ResultGrid.ItemsSource = null;
                 TxtStatus.Text = "Ошибка выполнения";
-                Configurator.Infrastructure.ModernDialog.Show(ex.Message, "SQL ошибка",
+                Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "SQL ошибка",
                     MessageBoxButton.OK, MessageBoxImage.Error);
             }
             finally

@@ -150,7 +150,7 @@ public partial class MainWindow
         }
         catch (Exception ex)
         {
-            Configurator.Infrastructure.ModernDialog.Show(this, "Не удалось сохранить Offline-проект: " + ex.Message,
+            Configurator.Infrastructure.ModernDialog.Show(this, "Не удалось сохранить Offline-проект: " + Configurator.Infrastructure.UserErrorMessage.Format(ex),
                 "Ошибка сохранения", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
@@ -309,7 +309,7 @@ public partial class MainWindow
         catch (Exception ex)
         {
             StatusText.Text = "Ошибка локального сохранения";
-            Configurator.Infrastructure.ModernDialog.Show($"Не удалось создать локальный проект. Исходная Online-БД не изменялась.\n\n{ex.Message}", "Ошибка сохранения", MessageBoxButton.OK, MessageBoxImage.Error);
+            Configurator.Infrastructure.ModernDialog.Show($"Не удалось создать локальный проект. Исходная Online-БД не изменялась.\n\n{Configurator.Infrastructure.UserErrorMessage.Format(ex)}", "Ошибка сохранения", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally { Mouse.OverrideCursor = null; }
     }
@@ -405,7 +405,7 @@ public partial class MainWindow
         catch (Exception ex)
         {
             StatusText.Text = "Ошибка открытия локального проекта";
-            Configurator.Infrastructure.ModernDialog.Show($"Не удалось открыть локальный проект.\n\n{ex.Message}", "Ошибка открытия", MessageBoxButton.OK, MessageBoxImage.Error);
+            Configurator.Infrastructure.ModernDialog.Show($"Не удалось открыть локальный проект.\n\n{Configurator.Infrastructure.UserErrorMessage.Format(ex)}", "Ошибка открытия", MessageBoxButton.OK, MessageBoxImage.Error);
             return false;
         }
         finally
@@ -946,7 +946,7 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
             }
             catch (Exception ex)
             {
-                StatusText.Text = "Ошибка автосохранения Offline: " + ex.Message;
+                StatusText.Text = "Ошибка автосохранения Offline: " + Configurator.Infrastructure.UserErrorMessage.Format(ex);
             }
             finally
             {

@@ -87,7 +87,7 @@ private async Task LoadFieldsAsync(ClassDefinition selected)
         catch (Exception ex)
         {
             RebuildGroups();
-            TxtStatus.Text = $"Структура SQL не загружена: {ex.Message}";
+            TxtStatus.Text = $"Структура SQL не загружена: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}";
         }
     }
 
@@ -314,7 +314,7 @@ private void FieldList_PreviewMouseDown(object sender, System.Windows.Input.Mous
                     : $"Поле {field.Name} связано с {field.LookupTable}.{field.LookupKeyField}. Нажмите «Сохранить».";
             }
         }
-        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Связь поля", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Связь поля", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
 private static Grid CreateFieldHeader()

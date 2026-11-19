@@ -55,7 +55,7 @@ public partial class TemplateArchitectureView
             if (_selectedClass != null) await RenderSelectedClassAsync(_selectedClass);
             TxtStatus.Text = $"Структура классов определена по БД «{_selectedDatabase}»";
         }
-        catch (Exception ex) { TxtStatus.Text = $"Структура проекта не определена: {ex.Message}"; }
+        catch (Exception ex) { TxtStatus.Text = $"Структура проекта не определена: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}"; }
         finally
         {
             _resolvingProjectArchitectureV42 = false;

@@ -104,7 +104,7 @@ public partial class LookupSettingsWindow : Window
         }
         catch (Exception ex)
         {
-            TxtStatus.Text = $"Не удалось получить список Type/Types: {ex.Message}";
+            TxtStatus.Text = $"Не удалось получить список Type/Types: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}";
         }
 
         available = available
@@ -157,7 +157,7 @@ public partial class LookupSettingsWindow : Window
         {
             DataGrid.ItemsSource = null;
             SetButtons(false);
-            TxtStatus.Text = ex.Message;
+            TxtStatus.Text = Configurator.Infrastructure.UserErrorMessage.Format(ex);
         }
     }
 
@@ -183,7 +183,7 @@ public partial class LookupSettingsWindow : Window
             await _db.InsertRowAsync(_selectedDefinition.LookupTable, window.Values);
             await LoadSelectedLookupAsync();
         }
-        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Сохранение списка", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Сохранение списка", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
     private async void BtnEdit_Click(object sender, RoutedEventArgs e)
@@ -200,7 +200,7 @@ public partial class LookupSettingsWindow : Window
             await _db.UpdateRowByValuesAsync(_selectedDefinition.LookupTable, identity, window.Values);
             await LoadSelectedLookupAsync();
         }
-        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Сохранение списка", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Сохранение списка", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
     private async void BtnDelete_Click(object sender, RoutedEventArgs e)
@@ -243,7 +243,7 @@ public partial class LookupSettingsWindow : Window
             await protection.ExecuteAsync(plan, replacements, (_, _, _) => Task.FromResult(true));
             await LoadSelectedLookupAsync();
         }
-        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Удаление", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Удаление", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
     private async void Refresh_Click(object sender, RoutedEventArgs e)
@@ -261,7 +261,7 @@ public partial class LookupSettingsWindow : Window
         }
         catch (Exception ex)
         {
-            Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Обновление списков", MessageBoxButton.OK, MessageBoxImage.Warning);
+            Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Обновление списков", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
 

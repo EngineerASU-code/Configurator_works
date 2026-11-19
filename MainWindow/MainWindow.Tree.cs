@@ -233,7 +233,7 @@ namespace Configurator
                 }
                 else
                 {
-                    Configurator.Infrastructure.ModernDialog.Show($"Ошибка загрузки метаданных: {ex.Message}", "Ошибка",
+                    Configurator.Infrastructure.ModernDialog.Show($"Ошибка загрузки метаданных: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", "Ошибка",
                         MessageBoxButton.OK, MessageBoxImage.Error);
                 }
                 ClearActiveTable();

@@ -44,7 +44,7 @@ public partial class FieldRelationWindow : Window
                 CmbTable.SelectedItem = _tables.FirstOrDefault(x => x.EndsWith("_Type", StringComparison.OrdinalIgnoreCase) || x.EndsWith("_Types", StringComparison.OrdinalIgnoreCase));
             if (CmbTable.SelectedItem == null) TxtStatus.Text = "Выберите таблицу, которая хранит допустимые значения этого поля.";
         }
-        catch (Exception ex) { TxtStatus.Text = $"Не удалось получить таблицы: {ex.Message}"; }
+        catch (Exception ex) { TxtStatus.Text = $"Не удалось получить таблицы: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}"; }
     }
 
     private async void Table_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -64,7 +64,7 @@ public partial class FieldRelationWindow : Window
                                       ?? CmbKey.SelectedItem;
             TxtStatus.Text = $"Поле «{_field.Name}» будет использовать значения из списка «{table}» ({CmbDisplay.SelectedItem ?? CmbKey.SelectedItem}).";
         }
-        catch (Exception ex) { TxtStatus.Text = $"Не удалось получить поля таблицы: {ex.Message}"; }
+        catch (Exception ex) { TxtStatus.Text = $"Не удалось получить поля таблицы: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}"; }
     }
 
     private void Save_Click(object sender, RoutedEventArgs e)

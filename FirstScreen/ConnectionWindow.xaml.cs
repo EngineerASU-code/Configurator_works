@@ -1,4 +1,4 @@
-#nullable enable
+﻿#nullable enable
 using Microsoft.Data.SqlClient;
 using System;
 using System.Collections.Generic;
@@ -86,7 +86,7 @@ public partial class ConnectionWindow : Window
         }
         catch (Exception ex)
         {
-            SetStatus($"Не удалось подключиться: {ex.Message}", false);
+            SetStatus($"Не удалось подключиться: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", false);
         }
         finally { BtnConnect.IsEnabled = true; }
     }

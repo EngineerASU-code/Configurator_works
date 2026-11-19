@@ -6,7 +6,7 @@ The solution and project are in this repository root. Source, tests, runtime ima
 
 `MainWindow/`, `Modes/`, and `FirstScreen/` contain the WPF interface; `Core/` defines architecture and workspace contracts; `Application/`, `Services/`, and `Infrastructure/` implement workflows and storage. Shared UI resources live in `Themes/`, `Helpers/`, `ViewModels/`, and `Images/`.
 
-See [the architecture index](docs/project/ARCHITECTURE_INDEX.md), [the preparation report](docs/project/PROJECT_PREPARATION_2026-11-17.md), and [manual acceptance materials](testing/README.md). Open task requirements remain in `docs/tasks/` and `tasks/`. This is a development snapshot; WPF/SQL acceptance and legacy round-trip compatibility remain open.
+See the [architecture map](docs/architecture.md) and [repository instructions](AGENTS.md). In Codex app, open the `configurator/` folder with `Configurator.slnx` to discover the [project skills](.agents/skills). Local Roadmaps and reports describe their recorded snapshots.
 
 Use Windows, the .NET 10 SDK (for the `.slnx` solution), and the .NET 8 Windows Desktop Runtime. Restore from a fresh checkout:
 
@@ -18,18 +18,19 @@ Build from the repository root:
 
 ```powershell
 dotnet build Configurator.csproj -c Release --no-restore
+dotnet run --project Configurator.csproj
 ```
 
-Run the security tests from the repository root:
+Run a group of tests or the full suite from the repository root:
 
 ```powershell
-$testTemp = Join-Path (Get-Location) ('artifacts\quality-temp-' + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $testTemp -Force | Out-Null
-$env:TEMP = $testTemp; $env:TMP = $testTemp
-dotnet test tests\Configurator.Security.Tests\Configurator.Security.Tests.csproj -c Release --no-restore --logger 'console;verbosity=minimal' -v quiet
+.\Run-Configurator-Tests.ps1 -Filter 'FullyQualifiedName~ProjectPackageAdversarialTests'
+.\Run-Configurator-Tests.ps1
 ```
 
-Run the tests in a separate PowerShell session so the temporary environment changes stay isolated. To create a local runnable package:
+Both modes isolate and clean up test temporary files. The filtered run uses incremental restore and build checks and concise console output. The full run checks the SDK, restores the solution as needed, builds and tests in Release, and writes a TRX and transcript to `test-results/`.
+
+To create a local runnable package:
 
 ```powershell
 dotnet publish Configurator.csproj -c Release --no-restore -o artifacts/Configurator-release

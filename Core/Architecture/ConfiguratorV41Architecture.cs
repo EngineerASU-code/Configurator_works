@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -177,8 +177,8 @@ public sealed class ReferenceRemappingEngine
 
     public void Add(string oldId, string newId)
     {
-        if (string.IsNullOrWhiteSpace(oldId)) throw new ArgumentException("Old identifier is empty.");
-        if (string.IsNullOrWhiteSpace(newId)) throw new ArgumentException("New identifier is empty.");
+        if (string.IsNullOrWhiteSpace(oldId)) throw new ArgumentException("Старый идентификатор пуст.");
+        if (string.IsNullOrWhiteSpace(newId)) throw new ArgumentException("Новый идентификатор пуст.");
         _map[oldId] = newId;
     }
 
@@ -236,14 +236,14 @@ public sealed class RecordAllocator
         var used = new HashSet<int>(occupied.Where(x => x >= min && x <= max));
         for (var value = min; value <= max; value++)
             if (!used.Contains(value)) return value;
-        throw new InvalidOperationException($"No free Record exists in range {min}..{max}.");
+        throw new InvalidOperationException($"Нет свободного Record в диапазоне {min}..{max}.");
     }
 
     public void Validate(int record, IEnumerable<int> occupied, int min = 1, int max = ushort.MaxValue)
     {
         if (record < min || record > max)
-            throw new ArgumentOutOfRangeException(nameof(record), $"Record must be in range {min}..{max}.");
+            throw new ArgumentOutOfRangeException(nameof(record), $"Record должен быть в диапазоне {min}..{max}.");
         if (occupied.Contains(record))
-            throw new InvalidOperationException($"Record {record} is already occupied in this scope.");
+            throw new InvalidOperationException($"Record {record} уже занят в этой области.");
     }
 }

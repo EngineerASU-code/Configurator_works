@@ -1,4 +1,4 @@
-#nullable enable
+﻿#nullable enable
 using System;
 using System.Collections.Generic;
 using System.Data;
@@ -200,7 +200,7 @@ public partial class ProgramSupportControl : UserControl
         }
         catch (Exception ex)
         {
-            if (contextVersion == _contextVersion && loadVersion == _loadVersion) StatusText.Text = ex.Message;
+            if (contextVersion == _contextVersion && loadVersion == _loadVersion) StatusText.Text = Configurator.Infrastructure.UserErrorMessage.Format(ex);
             return false;
         }
         finally
@@ -324,7 +324,7 @@ public partial class ProgramSupportControl : UserControl
         }
         catch (Exception ex)
         {
-            StatusText.Text = $"Изменения не сохранены. Транзакция отменена: {ex.Message}";
+            StatusText.Text = $"Изменения не сохранены. Транзакция отменена: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}";
             return false;
         }
     }
@@ -383,7 +383,7 @@ public partial class ProgramSupportControl : UserControl
             StatusText.Text = "Заполните поля новой строки и сохраните. Ключевые поля существующих строк менять нельзя.";
             UpdateActionState();
         }
-        catch (Exception ex) { StatusText.Text = ex.Message; }
+        catch (Exception ex) { StatusText.Text = Configurator.Infrastructure.UserErrorMessage.Format(ex); }
     }
 
     private void Delete_Click(object sender, RoutedEventArgs e)
@@ -399,7 +399,7 @@ public partial class ProgramSupportControl : UserControl
             StatusText.Text = "Строка помечена для удаления. Нажмите «Сохранить», чтобы применить изменение.";
             UpdateActionState();
         }
-        catch (Exception ex) { StatusText.Text = ex.Message; }
+        catch (Exception ex) { StatusText.Text = Configurator.Infrastructure.UserErrorMessage.Format(ex); }
     }
 
     private async void Save_Click(object sender, RoutedEventArgs e)

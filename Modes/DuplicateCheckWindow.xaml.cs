@@ -104,7 +104,7 @@ public partial class DuplicateCheckWindow : Window
             if ((_addresses ? _addressResults.Count : _recordResults.Count) == 0)
             { ResultsPanel.Children.Add(new TextBlock { Text = "Дублирования не найдено.", Foreground = (Brush)FindResource("BrushTextSecondary") }); TxtStatus.Text = "Дублирования не найдено"; }
         }
-        catch (Exception ex) { TxtStatus.Text = "Ошибка"; Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Проверка дублирования", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex) { TxtStatus.Text = "Ошибка"; Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Проверка дублирования", MessageBoxButton.OK, MessageBoxImage.Error); }
         finally { SetBusy(false); }
     }
 
@@ -137,7 +137,7 @@ public partial class DuplicateCheckWindow : Window
             }
             TxtStatus.Text = "Экспорт Excel выполнен";
         }
-        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Экспорт Excel", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Экспорт Excel", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
     private void Close_Click(object sender, RoutedEventArgs e) => Close();

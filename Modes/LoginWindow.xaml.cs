@@ -34,7 +34,7 @@ public partial class LoginWindow : Window
         }
         catch (Exception ex)
         {
-            ErrorText.Text = "Не удалось выполнить гостевой вход: " + ex.Message;
+            ErrorText.Text = "Не удалось выполнить гостевой вход: " + Configurator.Infrastructure.UserErrorMessage.Format(ex);
         }
     }
     private void PasswordBox_KeyDown(object sender, KeyEventArgs e) { if (e.Key == Key.Enter) Login(); }

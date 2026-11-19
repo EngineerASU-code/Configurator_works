@@ -205,7 +205,7 @@ namespace Configurator
             }
             catch (Exception ex)
             {
-                Configurator.Infrastructure.ModernDialog.Show($"Внимание: {ex.Message}\n\nНастройки будут созданы заново.",
+                Configurator.Infrastructure.ModernDialog.Show($"Внимание: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}\n\nНастройки будут созданы заново.",
                     "Загрузка настроек", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
 
@@ -662,7 +662,7 @@ namespace Configurator
                 _templateEditor?.Configure(_connection, GetActiveDatabases(), dbName);
                 _projectEditor?.Configure(_connection, GetActiveDatabases(), dbName);
                 try { _connection.SaveToFile(); }
-                catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show($"Не удалось сохранить настройки: {ex.Message}", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Warning); }
+                catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show($"Не удалось сохранить настройки: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Warning); }
                 return true;
             };
             window.ShowDialog();
@@ -730,7 +730,7 @@ namespace Configurator
             }
             catch (Exception ex)
             {
-                Configurator.Infrastructure.ModernDialog.Show($"Не удалось обновить структуру БД: {ex.Message}", "Обновление БД", MessageBoxButton.OK, MessageBoxImage.Warning);
+                Configurator.Infrastructure.ModernDialog.Show($"Не удалось обновить структуру БД: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", "Обновление БД", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
 
@@ -1019,7 +1019,7 @@ namespace Configurator
                 await db.BackupDatabaseAsync(database, dialog.FileName);
                 Configurator.Infrastructure.ModernDialog.Show("Резервная копия базы проекта создана.", "Экспорт проекта", MessageBoxButton.OK, MessageBoxImage.Information);
             }
-            catch (Exception ex) { StatusText.Text = "Ошибка экспорта проекта"; Configurator.Infrastructure.ModernDialog.Show(ex.Message, "Экспорт проекта", MessageBoxButton.OK, MessageBoxImage.Error); }
+            catch (Exception ex) { StatusText.Text = "Ошибка экспорта проекта"; Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Экспорт проекта", MessageBoxButton.OK, MessageBoxImage.Error); }
         }
 
 
@@ -1050,7 +1050,7 @@ namespace Configurator
                 try { project = await _projectPackageService.OpenAsync(projectPath); }
                 catch (Exception ex)
                 {
-                    Configurator.Infrastructure.ModernDialog.Show(this, ex.Message, "Не удалось открыть .cfgproj", MessageBoxButton.OK, MessageBoxImage.Error);
+                    Configurator.Infrastructure.ModernDialog.Show(this, Configurator.Infrastructure.UserErrorMessage.Format(ex), "Не удалось открыть .cfgproj", MessageBoxButton.OK, MessageBoxImage.Error);
                     return;
                 }
             }
@@ -1073,7 +1073,7 @@ namespace Configurator
                 }
                 catch (Exception ex)
                 {
-                    Configurator.Infrastructure.ModernDialog.Show(this, ex.Message, "Не удалось сохранить настройки", MessageBoxButton.OK, MessageBoxImage.Error);
+                    Configurator.Infrastructure.ModernDialog.Show(this, Configurator.Infrastructure.UserErrorMessage.Format(ex), "Не удалось сохранить настройки", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
             }
         }

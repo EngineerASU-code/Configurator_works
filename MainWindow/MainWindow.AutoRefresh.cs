@@ -227,7 +227,7 @@ public partial class MainWindow
             _rightPanel.FieldsEmptyHint.Text = "Связь с БД потеряна. Восстановите подключение; дерево обновится автоматически.";
             _rightPanel.FieldsEmptyHint.Visibility = Visibility.Visible;
         }
-        if (newlyFailed && string.Equals(_selectedDbName, dbName, StringComparison.OrdinalIgnoreCase))
+        if (!_isOfflineWorkspace && newlyFailed && string.Equals(_selectedDbName, dbName, StringComparison.OrdinalIgnoreCase))
         {
             // Keep MainWindow's project selection for recovery, but clear both project
             // editors so stale classes/fields cannot be edited while SQL is unavailable.
@@ -256,7 +256,7 @@ public partial class MainWindow
         // A TableViewModel may retain a dead connection/pool state from the outage.
         // Drop the cached VM so the next expand creates a fresh model and reloads tables.
         _vms.Remove(VmCacheKey(dbName));
-        if (string.Equals(_selectedDbName, dbName, StringComparison.OrdinalIgnoreCase))
+        if (!_isOfflineWorkspace && string.Equals(_selectedDbName, dbName, StringComparison.OrdinalIgnoreCase))
         {
             _templateEditor?.Configure(_connection, GetActiveDatabases(), dbName);
             _projectEditor?.Configure(_connection, GetActiveDatabases(), dbName);

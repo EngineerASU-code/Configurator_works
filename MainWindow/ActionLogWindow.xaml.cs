@@ -42,7 +42,7 @@ public partial class ActionLogWindow : Window
         }
         catch (Exception ex)
         {
-            Configurator.Infrastructure.ModernDialog.Show("Не удалось восстановить операцию: " + ex.Message, "Восстановление", MessageBoxButton.OK, MessageBoxImage.Error);
+            Configurator.Infrastructure.ModernDialog.Show("Не удалось восстановить операцию: " + Configurator.Infrastructure.UserErrorMessage.Format(ex), "Восстановление", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
