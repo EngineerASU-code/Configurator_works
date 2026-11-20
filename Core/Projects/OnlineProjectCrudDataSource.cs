@@ -13,7 +13,7 @@ namespace Configurator.Core.Projects;
 /// Online implementation of the shared mutation contract. It is constructed only
 /// for an explicitly selected Online database; it never selects a database itself.
 /// </summary>
-public sealed class OnlineProjectCrudDataSource : IProjectCrudDataSource, IProjectBatchCrudDataSource
+public sealed class OnlineProjectCrudDataSource : IProjectCrudDataSource, IProjectBatchCrudDataSource, IProjectCreateWithKeyDataSource
 {
     private readonly Configurator.DatabaseService _database;
     private readonly string _connectionString;
@@ -31,6 +31,17 @@ public sealed class OnlineProjectCrudDataSource : IProjectCrudDataSource, IProje
         cancellationToken.ThrowIfCancellationRequested();
         if (values == null || values.Count == 0) throw new InvalidOperationException("Нет данных для создания записи.");
         await _database.InsertRowAsync(tableName, ToMutableDictionary(values), cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyDictionary<string, object?>> CreateRecordAndGetKeyAsync(string tableName,
+        IReadOnlyDictionary<string, object?> values, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (values == null || values.Count == 0) throw new InvalidOperationException("Нет данных для вставки.");
+        var keyColumns = await _database.GetPrimaryKeyColumnsAsync(tableName, cancellationToken).ConfigureAwait(false);
+        if (keyColumns.Count == 0) throw new InvalidOperationException("Не удалось определить первичный ключ созданной записи.");
+        return await _database.InsertRowAndGetKeyAsync(tableName, ToMutableDictionary(values), keyColumns, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     public async Task CreateRecordsAsync(string tableName, IReadOnlyList<IReadOnlyDictionary<string, object?>> records, CancellationToken cancellationToken = default)
@@ -102,6 +113,21 @@ public sealed class OnlineProjectCrudDataSource : IProjectCrudDataSource, IProje
         if (keyValues == null || keyColumns.Any(k => !keyValues.ContainsKey(k))) throw new InvalidOperationException("Не заданы все значения ключа.");
         if (values == null || values.Count == 0) throw new InvalidOperationException("Нет данных для изменения.");
         await _database.UpdateRowAsync(tableName, keyColumns.ToList(), ToMutableDictionary(keyValues), ToMutableDictionary(values), cancellationToken).ConfigureAwait(false);
+    }
+
+    internal Task UpdateCompareRecordAsync(ProjectTableSchema schema, ProjectRecord expectedRecord,
+        IReadOnlyDictionary<string, object?> keyValues, IReadOnlyDictionary<string, object?> values,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(schema);
+        ArgumentNullException.ThrowIfNull(expectedRecord);
+        if (keyValues == null || schema.KeyColumns.Any(key => !keyValues.ContainsKey(key)))
+            throw new InvalidOperationException("Не заданы все значения стабильного ключа.");
+        if (values == null || values.Count != 1)
+            throw new InvalidOperationException("Compare может изменить только одно выбранное поле.");
+
+        return _database.UpdateCompareRowAsync(schema, expectedRecord, ToMutableDictionary(keyValues),
+            ToMutableDictionary(values), cancellationToken);
     }
 
     public Task<int> DeleteRecordsAsync(string tableName, IReadOnlyList<string> keyColumns,

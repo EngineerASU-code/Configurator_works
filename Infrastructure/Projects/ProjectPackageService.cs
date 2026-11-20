@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 #nullable enable
 using System.IO.Compression;
 using System.Security.Cryptography;
@@ -205,7 +205,50 @@ public sealed class ProjectPackageService
         if (!File.Exists(fullPath)) throw new FileNotFoundException("Файл проекта не найден.", fullPath);
 
         await using var file = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, useAsync: true);
-        using var archive = new ZipArchive(file, ZipArchiveMode.Read, leaveOpen: false);
+        return await ReadPackageAsync(file, cancellationToken);
+    }
+
+    /// <summary>Reads a validated package without recovering or modifying it.</summary>
+    public async Task<(ConfiguratorProject Project, string Fingerprint, bool HasWriter)> OpenForCompareAsync(
+        string path, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        var fullPath = Path.GetFullPath(path);
+        try
+        {
+            await using var file = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, useAsync: true);
+            var (project, fingerprint) = await ReadForCompareAsync(file, cancellationToken);
+            return (project, fingerprint, false);
+        }
+        catch (IOException ex) when ((ex.HResult & 0xffff) is 32 or 33)
+        {
+            // The normal Offline workspace may retain a write handle. Compare the last
+            // saved package only when both fingerprints agree and no save is in progress.
+            await using var file = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 81920, useAsync: true);
+            var (project, fingerprint) = await ReadForCompareAsync(file, cancellationToken);
+            file.Position = 0;
+            var current = Convert.ToHexString(await SHA256.HashDataAsync(file, cancellationToken));
+            if (current != fingerprint || File.Exists(GetRecoveryMarkerPath(fullPath)))
+                throw new IOException("Offline-проект сохраняется. Повторите сравнение после завершения сохранения.");
+            return (project, fingerprint, true);
+        }
+    }
+
+    internal static async Task<(ConfiguratorProject Project, string Fingerprint)> ReadForCompareAsync(
+        FileStream file, CancellationToken cancellationToken)
+    {
+        if (File.Exists(GetRecoveryMarkerPath(file.Name)))
+            throw new InvalidDataException("Снимок содержит незавершённое сохранение. Для восстановления откройте его в Offline-режиме.");
+
+        file.Position = 0;
+        var fingerprint = Convert.ToHexString(await SHA256.HashDataAsync(file, cancellationToken));
+        file.Position = 0;
+        return (await ReadPackageAsync(file, cancellationToken), fingerprint);
+    }
+
+    private static async Task<ConfiguratorProject> ReadPackageAsync(Stream file, CancellationToken cancellationToken)
+    {
+        using var archive = new ZipArchive(file, ZipArchiveMode.Read, leaveOpen: true);
         ValidateArchive(archive);
 
         var manifest = await ReadJsonAsync<ConfiguratorProjectManifest>(archive, "manifest.json", cancellationToken)

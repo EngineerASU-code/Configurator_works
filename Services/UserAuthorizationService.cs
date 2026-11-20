@@ -1,4 +1,4 @@
-﻿using System.Windows;
+using System.Windows;
 using System.IO;
 using Newtonsoft.Json;
 using System.Security.Cryptography;
@@ -89,6 +89,7 @@ public static class UserAuthorizationService
                 var commissioningPermissions = new[]
                 {
                     Permission.Mode3Show, Permission.Mode3View, Permission.Mode3Manage,
+                    Permission.Mode4Show, Permission.Mode4View, Permission.Mode4Manage,
                     Permission.ManageObjects, Permission.ViewData, Permission.AddData,
                     Permission.EditData, Permission.DeleteData
                 }.Select(x => x.ToString()).ToList();
@@ -103,12 +104,24 @@ public static class UserAuthorizationService
 
             var commissioningRole = _document.Roles.First(r => r.Name.Equals("Инженер ПНР", StringComparison.OrdinalIgnoreCase));
             commissioningRole.BuiltIn = true;
-            foreach (var permission in new[] { Permission.Mode3Show, Permission.Mode3View, Permission.Mode3Manage, Permission.ManageObjects, Permission.ViewData, Permission.AddData, Permission.EditData, Permission.DeleteData })
+            foreach (var permission in new[] { Permission.Mode3Show, Permission.Mode3View, Permission.Mode3Manage, Permission.Mode4Show, Permission.Mode4View, Permission.Mode4Manage, Permission.ManageObjects, Permission.ViewData, Permission.AddData, Permission.EditData, Permission.DeleteData })
                 if (!commissioningRole.Permissions.Contains(permission.ToString(), StringComparer.OrdinalIgnoreCase))
                 {
                     commissioningRole.Permissions.Add(permission.ToString());
                     commissioningRoleNeedsSave = true;
                 }
+
+            if (!_document.Users.Any(u => u.UserName.Equals("Инженер-ПНР", StringComparison.OrdinalIgnoreCase)))
+            {
+                _document.Users.Add(new UserAccount
+                {
+                    UserName = "Инженер-ПНР",
+                    DisplayName = "Инженер",
+                    RoleName = "Инженер ПНР",
+                    Enabled = false
+                });
+                commissioningRoleNeedsSave = true;
+            }
 
             var administratorRole = _document.Roles.First(r => r.Name.Equals("Администратор", StringComparison.OrdinalIgnoreCase));
             administratorRole.BuiltIn = true;
@@ -462,7 +475,7 @@ public static class UserAuthorizationService
 
     public static IReadOnlyList<UserAccount> Users => _document.Users.Where(u => IsBuiltInUser(u.UserName)).ToList();
     public static IReadOnlyList<RoleDefinition> Roles => _document.Roles;
-    public static bool IsBuiltInUser(string name) => string.Equals(name, "admin", StringComparison.OrdinalIgnoreCase);
+    public static bool IsBuiltInUser(string name) => string.Equals(name, "admin", StringComparison.OrdinalIgnoreCase) || string.Equals(name, "Инженер-ПНР", StringComparison.OrdinalIgnoreCase);
     public static void SaveUser(string originalName, string userName, string displayName, string role, bool enabled, string newPassword)
     {
         RequireAdministrativeSession();

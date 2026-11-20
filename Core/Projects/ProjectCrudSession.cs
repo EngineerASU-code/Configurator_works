@@ -11,7 +11,7 @@ namespace Configurator.Core.Projects;
 /// cancels all in-flight mutations; Online adapters receive that token all the way to
 /// SqlClient commands, while Offline adapters stop before changing the local snapshot.
 /// </summary>
-public sealed class ProjectCrudSession : IProjectCrudDataSource, IProjectBatchCrudDataSource, IDisposable
+public sealed class ProjectCrudSession : IProjectCrudDataSource, IProjectBatchCrudDataSource, IProjectCreateWithKeyDataSource, IDisposable
 {
     private readonly IProjectCrudDataSource _inner;
     private readonly CancellationTokenSource _lifetime = new();
@@ -25,6 +25,16 @@ public sealed class ProjectCrudSession : IProjectCrudDataSource, IProjectBatchCr
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, cancellationToken);
         ThrowIfDisposed();
         await _inner.CreateRecordAsync(tableName, values, linked.Token).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyDictionary<string, object?>> CreateRecordAndGetKeyAsync(string tableName,
+        IReadOnlyDictionary<string, object?> values, CancellationToken cancellationToken = default)
+    {
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, cancellationToken);
+        ThrowIfDisposed();
+        if (_inner is not IProjectCreateWithKeyDataSource keyed)
+            throw new NotSupportedException("Источник данных не возвращает ключ созданной записи.");
+        return await keyed.CreateRecordAndGetKeyAsync(tableName, values, linked.Token).ConfigureAwait(false);
     }
 
     public async Task CreateRecordsAsync(string tableName, IReadOnlyList<IReadOnlyDictionary<string, object?>> records, CancellationToken cancellationToken = default)

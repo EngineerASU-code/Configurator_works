@@ -895,15 +895,68 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
             var rows = _rightPanel.DataTableGrid.SelectedItems.OfType<DataRowView>().Select(x => x.Row).ToList();
             if (rows.Count == 0) return;
             if (Configurator.Infrastructure.ModernDialog.Show(this, rows.Count == 1 ? "Удалить выбранную строку из локальной копии?" : $"Удалить {rows.Count} строк из локальной копии?", "Offline · подтверждение", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
-            foreach (var row in rows)
+
+            try
             {
-                _offlineRowRecordKeys.Remove(row);
-                _offlineCurrentDataTable.Rows.Remove(row);
+                var source = _projectDataSource.Current as Configurator.Core.Projects.OfflineProjectDataSource
+                    ?? throw new InvalidOperationException("Не удалось проверить связи локального проекта.");
+                var schema = _openedLocalProject.TableSchemas.FirstOrDefault(x =>
+                    x.TableName.Equals(_offlineCurrentTableName, StringComparison.OrdinalIgnoreCase));
+                var targets = rows.Select(row => row.Table.Columns.Cast<DataColumn>()
+                    .ToDictionary(column => column.ColumnName, column => row[column] == DBNull.Value ? null! : row[column], StringComparer.OrdinalIgnoreCase)).ToList();
+                OfflineObjectDeletionGuard.Check(source, _offlineCurrentTableName!, targets);
+
+                var affectedKeys = new List<string>(rows.Count);
+                var recordsToRemove = new HashSet<Configurator.Core.Projects.ProjectRecord>();
+                var journalChanges = new List<ChangeJournalRowChange>(rows.Count);
+                foreach (var row in rows)
+                {
+                    if (!_offlineRowRecordKeys.TryGetValue(row, out var key) ||
+                        !_offlineCurrentRecordIndex.TryGetValue(key, out var record))
+                        throw new InvalidOperationException("Не удалось определить запись локального проекта для удаления.");
+
+                    var values = OfflineRecordValues(record);
+                    var identity = schema?.KeyColumns.Where(column => values.TryGetValue(column, out var value) &&
+                            value != null && value != DBNull.Value && !string.IsNullOrWhiteSpace(Convert.ToString(value, CultureInfo.InvariantCulture)))
+                        .ToDictionary(column => column, column => values[column], StringComparer.OrdinalIgnoreCase)
+                        ?? new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+                    if (identity.Count == 0) identity["__ProjectRecordKey"] = key;
+                    journalChanges.Add(CreateJournalChange(_offlineCurrentTableName!, ChangeJournalOperationKind.Delete,
+                        values, null, identity, null));
+                    if (!recordsToRemove.Add(record))
+                        throw new InvalidOperationException("Выбранные строки указывают на одну и ту же запись.");
+                    affectedKeys.Add(key);
+                }
+
+                _openedLocalProject.LocalRecords.RemoveAll(recordsToRemove.Contains);
+                source.InvalidateIndex();
+                foreach (var key in affectedKeys)
+                {
+                    _offlineCurrentRecordIndex.Remove(key);
+                    _offlineBaselineRows.Remove(key);
+                }
+                foreach (var row in rows)
+                {
+                    _offlineRowRecordKeys.Remove(row);
+                    _offlineCurrentDataTable.Rows.Remove(row);
+                }
+                _offlineGridDirty = false;
+                _offlineProjectDirty = true;
+                LogAction($"Offline: удалено строк: {rows.Count} · {_offlineCurrentTableName}",
+                    category: "Удаление", source: _offlineCurrentTableName!,
+                    details: $"Локальный проект: {_openedLocalProject.Manifest.Name}",
+                    journalChanges: journalChanges, operationKind: ChangeJournalOperationKind.Delete,
+                    databaseName: _openedLocalProject.Manifest.Name);
+                _rightPanel.PageInfo.Text = $"{_offlineCurrentDataTable.Rows.Count:N0} строк · локально";
+                SetOfflineEditorButtons();
+                StatusText.Text = "Строки удалены только из локального проекта. SQL Server не изменялся.";
             }
-            CommitOfflineGridToProject();
-            _rightPanel.PageInfo.Text = $"{_offlineCurrentDataTable.Rows.Count:N0} строк · локально";
-            SetOfflineEditorButtons();
-            StatusText.Text = "Строки удалены только из локального проекта. SQL Server не изменялся.";
+            catch (Exception ex)
+            {
+                Configurator.Infrastructure.ModernDialog.Show(this,
+                    "Удаление остановлено: " + Configurator.Infrastructure.UserErrorMessage.Format(ex),
+                    "Offline · удаление", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
         }
 
         private void SetOfflineEditorButtons()

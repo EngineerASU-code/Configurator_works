@@ -20,16 +20,19 @@ public sealed class ProjectArchitectureDataSource : IProjectArchitectureDataSour
 {
     private readonly TemplateLibraryStore _classes;
     private readonly Configurator.GraphRelationStore _relations;
+    private readonly bool _strictReads;
 
-    public ProjectArchitectureDataSource(ConfiguratorProject project)
+    public ProjectArchitectureDataSource(ConfiguratorProject project, bool strictReads = false)
     {
         ArgumentNullException.ThrowIfNull(project);
+        _strictReads = strictReads;
         _classes = new TemplateLibraryStore(project);
         _relations = new Configurator.GraphRelationStore(project);
     }
 
-    public ProjectArchitectureDataSource(string server, string database)
+    public ProjectArchitectureDataSource(string server, string database, bool strictReads = false)
     {
+        _strictReads = strictReads;
         _classes = new TemplateLibraryStore();
         _relations = new Configurator.GraphRelationStore(server, database);
     }
@@ -43,7 +46,7 @@ public sealed class ProjectArchitectureDataSource : IProjectArchitectureDataSour
     public Task<IReadOnlyList<ClassDefinition>> GetClassDefinitionsAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult<IReadOnlyList<ClassDefinition>>(_classes.Load());
+        return Task.FromResult<IReadOnlyList<ClassDefinition>>(_classes.Load(_strictReads));
     }
 
     public Task SaveClassDefinitionsAsync(IReadOnlyList<ClassDefinition> definitions, CancellationToken cancellationToken = default)
@@ -56,7 +59,7 @@ public sealed class ProjectArchitectureDataSource : IProjectArchitectureDataSour
     public Task<JsonObject> GetGraphRelationsAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var document = _relations.Load();
+        var document = _relations.Load(_strictReads);
         var json = JsonSerializer.SerializeToNode(document) as JsonObject ?? new JsonObject();
         return Task.FromResult(json);
     }

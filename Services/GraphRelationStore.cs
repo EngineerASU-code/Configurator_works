@@ -1,4 +1,4 @@
-﻿#nullable enable
+#nullable enable
 using System;
 using System.IO;
 using System.Text.Json;
@@ -23,7 +23,6 @@ public sealed class GraphRelationStore
         var safeServer = MakeSafe(server);
         var safeDatabase = MakeSafe(database);
         var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Configurator", "GraphRelations");
-        Directory.CreateDirectory(root);
         _path = Path.Combine(root, $"{safeServer}__{safeDatabase}.json");
     }
 
@@ -33,7 +32,7 @@ public sealed class GraphRelationStore
         _project = project ?? throw new ArgumentNullException(nameof(project));
     }
 
-    public GraphRelationProjectDocument Load()
+    public GraphRelationProjectDocument Load(bool strict = false)
     {
         try
         {
@@ -44,10 +43,14 @@ public sealed class GraphRelationStore
                     ? new GraphRelationProjectDocument()
                     : JsonSerializer.Deserialize<GraphRelationProjectDocument>(node.ToJsonString()) ?? new GraphRelationProjectDocument();
             }
-            if (_path is null || !File.Exists(_path)) return new GraphRelationProjectDocument();
-            return JsonSerializer.Deserialize<GraphRelationProjectDocument>(File.ReadAllText(_path)) ?? new GraphRelationProjectDocument();
+            if (_path is null) return new GraphRelationProjectDocument();
+            return JsonSerializer.Deserialize<GraphRelationProjectDocument>(File.ReadAllText(_path))
+                ?? throw new JsonException("Файл логических связей содержит NULL вместо документа.");
         }
-        catch { return new GraphRelationProjectDocument(); }
+        catch (Exception ex) when (!strict || ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return new GraphRelationProjectDocument();
+        }
     }
 
     public void Save(GraphRelationProjectDocument document)
@@ -63,6 +66,7 @@ public sealed class GraphRelationStore
         }
 
         if (_path is null) throw new InvalidOperationException("Не задано хранилище связей графа.");
+        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
         var temp = _path + ".tmp";
         File.WriteAllText(temp, JsonSerializer.Serialize(document, Options));
         File.Move(temp, _path, true);

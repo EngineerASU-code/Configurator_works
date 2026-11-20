@@ -34,9 +34,15 @@ public sealed class DatabaseArchitectureAnalyzer
         const string sql = @"
 SELECT s.name AS SchemaName,t.name AS TableName,c.name AS ColumnName,ty.name AS DataType,
        c.max_length AS MaxLength,c.is_nullable AS IsNullable,c.is_identity AS IsIdentity,
-       c.is_computed AS IsComputed,c.column_id AS ColumnId
+       c.is_computed AS IsComputed,c.column_id AS ColumnId,dc.definition AS DefaultDefinition,
+       CASE WHEN HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'VIEW DEFINITION')=1
+            AND HAS_PERMS_BY_NAME(QUOTENAME(s.name)+'.'+QUOTENAME(t.name), 'OBJECT', 'UPDATE')=1
+            AND DATABASEPROPERTYEX(DB_NAME(), 'Updateability')='READ_WRITE'
+            AND NOT EXISTS (SELECT 1 FROM sys.triggers tr WHERE tr.parent_id=t.object_id AND tr.is_disabled=0)
+            THEN 1 ELSE 0 END AS CanCompareUpdate
 FROM sys.tables t JOIN sys.schemas s ON s.schema_id=t.schema_id
 JOIN sys.columns c ON c.object_id=t.object_id JOIN sys.types ty ON ty.user_type_id=c.user_type_id
+LEFT JOIN sys.default_constraints dc ON dc.object_id=c.default_object_id
 WHERE t.is_ms_shipped=0 ORDER BY s.name,t.name,c.column_id;";
         var map = new Dictionary<string, DatabaseTable>(StringComparer.OrdinalIgnoreCase);
         await using var command = new SqlCommand(sql, connection);
@@ -48,7 +54,13 @@ WHERE t.is_ms_shipped=0 ORDER BY s.name,t.name,c.column_id;";
             var fullName = $"{schemaName}.{tableName}";
             if (!map.TryGetValue(fullName, out var table))
             {
-                table = new DatabaseTable { SchemaName = schemaName, Name = tableName, IsComplexEntity = IsComplexName(tableName) };
+                table = new DatabaseTable
+                {
+                    SchemaName = schemaName,
+                    Name = tableName,
+                    IsComplexEntity = IsComplexName(tableName),
+                    CanCompareUpdate = Convert.ToBoolean(reader["CanCompareUpdate"])
+                };
                 map[fullName] = table; schema.Tables.Add(table);
             }
             table.Columns.Add(new DatabaseColumn
@@ -58,7 +70,8 @@ WHERE t.is_ms_shipped=0 ORDER BY s.name,t.name,c.column_id;";
                 MaxLength = Convert.ToInt32(reader["MaxLength"]),
                 IsNullable = Convert.ToBoolean(reader["IsNullable"]),
                 IsIdentity = Convert.ToBoolean(reader["IsIdentity"]),
-                IsComputed = Convert.ToBoolean(reader["IsComputed"])
+                IsComputed = Convert.ToBoolean(reader["IsComputed"]),
+                DefaultDefinition = reader["DefaultDefinition"] is string definition ? definition : null
             });
         }
     }
@@ -107,15 +120,18 @@ ORDER BY fk.name,fkc.constraint_column_id;";
         while (await reader.ReadAsync(ct))
         {
             var name = Convert.ToString(reader["ConstraintName"]) ?? "";
-            if (!map.TryGetValue(name, out var relation))
+            var sourceTable = $"{reader["SourceSchema"]}.{reader["SourceTable"]}";
+            var targetTable = $"{reader["TargetSchema"]}.{reader["TargetTable"]}";
+            var key = $"{sourceTable}\u001f{name}\u001f{targetTable}";
+            if (!map.TryGetValue(key, out var relation))
             {
                 relation = new DatabaseRelation
                 {
-                    SourceTable = $"{reader["SourceSchema"]}.{reader["SourceTable"]}", TargetTable = $"{reader["TargetSchema"]}.{reader["TargetTable"]}",
+                    SourceTable = sourceTable, TargetTable = targetTable,
                     Kind = DatabaseRelationKind.PhysicalForeignKey, Confidence = RelationConfidence.Confirmed,
                     RuleId = name, Comment = "Physical SQL Server FK; authoritative."
                 };
-                map[name] = relation; schema.Relations.Add(relation);
+                map[key] = relation; schema.Relations.Add(relation);
             }
             relation.SourceColumns.Add(Convert.ToString(reader["SourceColumn"]) ?? "");
             relation.TargetColumns.Add(Convert.ToString(reader["TargetColumn"]) ?? "");

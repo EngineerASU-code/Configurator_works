@@ -1,4 +1,4 @@
-﻿#nullable enable
+#nullable enable
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 namespace Configurator.Core.Projects;
 
 /// <summary>Local source for an opened .cfgproj package. It never creates or uses a SQL connection.</summary>
-public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudDataSource, IProjectBatchCrudDataSource
+public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudDataSource, IProjectBatchCrudDataSource, IProjectCreateWithKeyDataSource
 {
     private readonly ConfiguratorProject _project;
     // The local snapshot may contain 100k+ records. Repeated UI lookups must not
@@ -16,6 +16,7 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
     private Dictionary<string, List<ProjectRecord>>? _recordsByTable;
     private Dictionary<string, List<string>>? _tableNamesByLeaf;
     private bool _suspendNotifications;
+    private Dictionary<string, ILookup<string, ProjectRecord>>? _transactionKeyIndexes;
     public OfflineProjectDataSource(ConfiguratorProject project) => _project = project ?? throw new ArgumentNullException(nameof(project));
     public event EventHandler? ProjectChanged;
     public string DisplayName => _project.Manifest.Name;
@@ -26,11 +27,7 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
     public void NotifyProjectChanged() => Touch();
 
     /// <summary>Invalidates indexes after an out-of-band, project-scoped journal restore.</summary>
-    public void InvalidateIndex()
-    {
-        _recordsByTable = null;
-        _tableNamesByLeaf = null;
-    }
+    public void InvalidateIndex() => InvalidateIndexes();
 
     public IReadOnlyList<ProjectTableSchema> GetTables()
     {
@@ -90,7 +87,13 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
         return matches.Count == 1 ? matches[0] : tableName;
     }
 
-    public Task CreateRecordAsync(string tableName, IReadOnlyDictionary<string, object?> values, CancellationToken cancellationToken = default)
+    public async Task CreateRecordAsync(string tableName, IReadOnlyDictionary<string, object?> values, CancellationToken cancellationToken = default)
+    {
+        await CreateRecordAndGetKeyAsync(tableName, values, cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task<IReadOnlyDictionary<string, object?>> CreateRecordAndGetKeyAsync(string tableName,
+        IReadOnlyDictionary<string, object?> values, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(values);
@@ -126,7 +129,8 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
         foreach (var pair in normalizedValues) json[pair.Key] = ProjectKeyCodec.ToNode(pair.Value);
         _project.LocalRecords.Add(new ProjectRecord { TableName = resolved, Key = key, Values = json });
         Touch();
-        return Task.CompletedTask;
+        return Task.FromResult<IReadOnlyDictionary<string, object?>>(keyColumns.ToDictionary(
+            keyColumn => keyColumn, keyColumn => (object?)normalizedValues[keyColumn], StringComparer.OrdinalIgnoreCase));
     }
 
     public Task CreateRecordsAsync(string tableName, IReadOnlyList<IReadOnlyDictionary<string, object?>> records, CancellationToken cancellationToken = default)
@@ -175,7 +179,18 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
             throw new InvalidOperationException("Переданные ключевые столбцы не совпадают со стабильным ключом проверенной схемы.");
         EnsureRecordIndex();
         if (!_recordsByTable!.TryGetValue(resolved, out var tableRecords)) throw new InvalidOperationException($"В локальном проекте отсутствует таблица «{resolved}».");
-        var matches = tableRecords.Where(r => KeyMatches(schema, r, keyColumns, keyValues)).ToList();
+        var oldKey = BuildKey(schema, keyColumns, keyValues);
+        string ReadKey(ProjectRecord row) => ProjectKeyCodec.Encode(schema, keyColumns, name => row.Values[name]);
+        IEnumerable<ProjectRecord> FindByKey(string key)
+        {
+            if (_transactionKeyIndexes == null)
+                return tableRecords.Where(row => string.Equals(ReadKey(row), key, StringComparison.Ordinal));
+            if (!_transactionKeyIndexes.TryGetValue(resolved, out var byKey))
+                _transactionKeyIndexes[resolved] = byKey = tableRecords.ToLookup(ReadKey, StringComparer.Ordinal);
+            return byKey[key];
+        }
+
+        var matches = FindByKey(oldKey).Take(2).ToList();
         if (matches.Count != 1) throw new InvalidOperationException(matches.Count == 0
             ? "Изменяемая запись не найдена в локальном проекте."
             : "Ключ записи неоднозначен в локальном проекте; изменение отменено.");
@@ -189,12 +204,13 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
             candidate[column.Name] = ProjectKeyCodec.ToNode(pair.Value);
         }
         var newKey = ProjectKeyCodec.Encode(schema, schema.KeyColumns, name => candidate[name]);
-        if (tableRecords.Any(other => !ReferenceEquals(other, record) &&
-            string.Equals(ProjectKeyCodec.Encode(schema, schema.KeyColumns, name => other.Values[name]), newKey, StringComparison.Ordinal)))
+        bool keyChanged = !string.Equals(newKey, oldKey, StringComparison.Ordinal);
+        if (keyChanged && FindByKey(newKey).Any())
             throw new InvalidOperationException("Запись с таким ключом уже существует в локальном проекте.");
         record.Values = candidate;
         record.Key = newKey;
-        Touch();
+        if (keyChanged) _transactionKeyIndexes?.Remove(resolved);
+        Touch(invalidateIndex: false);
         return Task.CompletedTask;
     }
 
@@ -226,15 +242,12 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
         if (_suspendNotifications)
             throw new InvalidOperationException("В локальном проекте уже выполняется пакетное изменение.");
 
-        var backup = _project.LocalRecords.Select(record => new ProjectRecord
-        {
-            TableName = record.TableName,
-            Key = record.Key,
-            RowVersion = record.RowVersion,
-            Values = (System.Text.Json.Nodes.JsonObject)record.Values.DeepClone()
-        }).ToList();
+        // CRUD replaces Values rather than mutating its existing JSON tree.
+        var backup = _project.LocalRecords.Select(record =>
+            (Record: record, record.TableName, record.Key, record.RowVersion, record.Values)).ToList();
         var previousModifiedUtc = _project.Manifest.ModifiedUtc;
         _suspendNotifications = true;
+        _transactionKeyIndexes = new(StringComparer.OrdinalIgnoreCase);
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -246,11 +259,22 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
         catch
         {
             _project.LocalRecords.Clear();
-            _project.LocalRecords.AddRange(backup);
+            foreach (var snapshot in backup)
+            {
+                snapshot.Record.TableName = snapshot.TableName;
+                snapshot.Record.Key = snapshot.Key;
+                snapshot.Record.RowVersion = snapshot.RowVersion;
+                snapshot.Record.Values = snapshot.Values;
+                _project.LocalRecords.Add(snapshot.Record);
+            }
             _project.Manifest.ModifiedUtc = previousModifiedUtc;
             _suspendNotifications = false;
             InvalidateIndexes();
             throw;
+        }
+        finally
+        {
+            _transactionKeyIndexes = null;
         }
     }
 
@@ -272,7 +296,7 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
         schema.Columns.FirstOrDefault(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
         ?? throw new InvalidOperationException($"Поле «{name}» отсутствует в проверенной схеме.");
 
-    private static void ValidateValues(ProjectTableSchema schema, IReadOnlyDictionary<string, object?> values, bool isCreate, ISet<string>? generatedIdentityColumns)
+    internal static void ValidateValues(ProjectTableSchema schema, IReadOnlyDictionary<string, object?> values, bool isCreate, ISet<string>? generatedIdentityColumns)
     {
         foreach (var pair in values)
         {
@@ -403,11 +427,12 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
     {
         _recordsByTable = null;
         _tableNamesByLeaf = null;
+        _transactionKeyIndexes?.Clear();
     }
 
-    private void Touch()
+    private void Touch(bool invalidateIndex = true)
     {
-        InvalidateIndexes();
+        if (invalidateIndex) InvalidateIndexes();
         if (_suspendNotifications) return;
         _project.Manifest.ModifiedUtc = DateTimeOffset.UtcNow;
         ProjectChanged?.Invoke(this, EventArgs.Empty);

@@ -100,6 +100,18 @@ public sealed class OnlineProjectDataSource : IProjectDataSource, IProjectAsyncD
         lock (_schemaSync)
             if (_schemaCache.TryGetValue(cacheKey, out var cached)) return cached;
 
+        await using var connection = CreateConnection();
+        await SqlProviderGuard.OpenConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
+        var schema = await ReadSchemaAsync(connection, null, cacheKey, cancellationToken).ConfigureAwait(false);
+        if (schema != null)
+            lock (_schemaSync) _schemaCache[cacheKey] = schema;
+        return schema;
+    }
+
+    internal static async Task<ProjectTableSchema?> ReadSchemaAsync(
+        SqlConnection connection, SqlTransaction? transaction, string tableName, CancellationToken cancellationToken)
+    {
+        var (schemaName, bareTable) = ParseTableName(tableName);
         const string sql = @"
 ;WITH CandidateIndexes AS (
     SELECT i.object_id, i.index_id, i.is_primary_key,
@@ -133,40 +145,34 @@ LEFT JOIN SelectedKeyColumns sk ON sk.object_id=c.object_id AND sk.column_id=c.c
 WHERE s.name=@schema AND t.name=@table
 ORDER BY c.column_id";
         var columns = new List<(ProjectColumnSchema Column, bool IsKey, int Ordinal)>();
-        await using (var connection = CreateConnection())
+        await using var command = new SqlCommand(sql, connection, transaction);
+        command.Parameters.Add("@schema", SqlDbType.NVarChar, 128).Value = schemaName;
+        command.Parameters.Add("@table", SqlDbType.NVarChar, 128).Value = bareTable;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
-            await using var command = new SqlCommand(sql, connection);
-            command.Parameters.Add("@schema", SqlDbType.NVarChar, 128).Value = schemaName;
-            command.Parameters.Add("@table", SqlDbType.NVarChar, 128).Value = bareTable;
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            columns.Add((new ProjectColumnSchema
             {
-                columns.Add((new ProjectColumnSchema
-                {
-                    Name = reader.GetString(0),
-                    DataType = reader.GetString(1),
-                    IsNullable = reader.GetBoolean(2),
-                    IsIdentity = reader.GetBoolean(3),
-                    IsComputed = reader.GetBoolean(4),
-                    MaxLength = reader.GetInt16(5),
-                    Precision = reader.GetByte(6),
-                    Scale = reader.GetByte(7),
-                    HasDefault = reader.GetInt32(8) != 0,
-                    IsReadOnly = reader.GetBoolean(3) || reader.GetBoolean(4)
-                }, reader.GetInt32(9) == 1, Convert.ToInt32(reader.GetValue(10), CultureInfo.InvariantCulture)));
-            }
+                Name = reader.GetString(0),
+                DataType = reader.GetString(1),
+                IsNullable = reader.GetBoolean(2),
+                IsIdentity = reader.GetBoolean(3),
+                IsComputed = reader.GetBoolean(4),
+                MaxLength = reader.GetInt16(5),
+                Precision = reader.GetByte(6),
+                Scale = reader.GetByte(7),
+                HasDefault = reader.GetInt32(8) != 0,
+                IsReadOnly = reader.GetBoolean(3) || reader.GetBoolean(4)
+            }, reader.GetInt32(9) == 1, Convert.ToInt32(reader.GetValue(10), CultureInfo.InvariantCulture)));
         }
         if (columns.Count == 0) return null;
-        var result = new ProjectTableSchema
+        return new ProjectTableSchema
         {
-            TableName = cacheKey,
+            TableName = $"{schemaName}.{bareTable}",
             Columns = columns.Select(x => x.Column).ToList(),
             KeyColumns = columns.Where(x => x.IsKey).OrderBy(x => x.Ordinal).Select(x => x.Column.Name).ToList(),
             HasStableKey = columns.Any(x => x.IsKey)
         };
-        lock (_schemaSync) _schemaCache[cacheKey] = result;
-        return result;
     }
 
     public async Task<ProjectRecordPage> ReadPageAsync(ProjectReadQuery query, CancellationToken cancellationToken = default)
@@ -221,14 +227,32 @@ ORDER BY c.column_id";
                 var values = new JsonObject();
                 for (int i = 0; i < reader.FieldCount; i++)
                 {
-                    var value = reader.IsDBNull(i) ? null : reader.GetValue(i);
-                    values[reader.GetName(i)] = value == null ? null : JsonSerializer.SerializeToNode(value);
+                    values[reader.GetName(i)] = ReadValue(reader, i);
                 }
                 var key = schema.KeyColumns.Count == 0 ? string.Empty : BuildKey(schema, values);
                 items.Add(new ProjectRecord { TableName = schema.TableName, Key = key, Values = values });
             }
         }
         return new ProjectRecordPage { Items = items, PageNumber = page, PageSize = size, TotalCount = total };
+    }
+
+    internal async Task<IReadOnlyList<ProjectRecord>> ReadUnkeyedTableAsync(
+        string tableName, CancellationToken cancellationToken)
+    {
+        // Offset paging cannot reliably order duplicate rows or SQL types such as xml.
+        await using var connection = CreateConnection();
+        await SqlProviderGuard.OpenConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
+        await using var command = new SqlCommand($"SELECT * FROM {QuoteTable(tableName)};", connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var rows = new List<ProjectRecord>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var values = new JsonObject();
+            for (int i = 0; i < reader.FieldCount; i++)
+                values[reader.GetName(i)] = ReadValue(reader, i);
+            rows.Add(new ProjectRecord { TableName = tableName, Values = values });
+        }
+        return rows;
     }
 
     public async Task<int> CountAsync(ProjectReadQuery query, CancellationToken cancellationToken = default)
@@ -244,6 +268,14 @@ ORDER BY c.column_id";
         var raw = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
         long count = Convert.ToInt64(raw, CultureInfo.InvariantCulture);
         return count > int.MaxValue ? int.MaxValue : (int)count;
+    }
+
+    internal static JsonNode? ReadValue(SqlDataReader reader, int ordinal)
+    {
+        if (reader.IsDBNull(ordinal)) return null;
+        if (reader.GetDataTypeName(ordinal) is "decimal" or "numeric")
+            return JsonNode.Parse(reader.GetSqlDecimal(ordinal).ToString());
+        return JsonSerializer.SerializeToNode(reader.GetValue(ordinal));
     }
 
     private SqlConnection CreateConnection()

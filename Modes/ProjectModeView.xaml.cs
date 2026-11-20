@@ -1,4 +1,4 @@
-﻿#nullable enable annotations
+#nullable enable annotations
 using System;
 using System.Collections.Generic;
 using System.Data;
@@ -1520,93 +1520,16 @@ public partial class ProjectModeView : UserControl
         return result;
     }
 
-    private async void DuplicateObject_Click(object sender, RoutedEventArgs e)
-    {
-        if (!UserAuthorizationService.Require(Permission.AddData)) return;
-        if (_selectedRow == null || _selectedClass?.PrimaryStorage == null) return;
-        var mutationGeneration = _workspaceGeneration;
-        if (_offlineProject != null)
-        {
-            var sourceSnapshot = SnapshotRow(_selectedRow);
-            var sourceName = PickName(_selectedRow, _selectedClass);
-            var clone = _objects.NewRow();
-            foreach (DataColumn column in _objects.Columns) clone[column] = _selectedRow[column];
-            if (_objects.Columns.Contains("Record"))
-            {
-                int next = _objects.Rows.Cast<DataRow>().Where(r => r["Record"] != DBNull.Value).Select(r => int.TryParse(Convert.ToString(r["Record"]), out var n) ? n : 0).DefaultIfEmpty(0).Max() + 1;
-                clone["Record"] = next;
-            }
-            var schema = _offlineSource?.GetSchema(_selectedClass.PrimaryStorage.TableName);
-            var generatedColumns = new HashSet<string>(schema?.Columns.Where(c => c.IsIdentity || c.IsComputed).Select(c => c.Name) ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
-            var values = _objects.Columns.Cast<DataColumn>()
-                .Where(c => !generatedColumns.Contains(c.ColumnName))
-                .ToDictionary(c => c.ColumnName, c => (object?)(clone[c] == DBNull.Value ? null : clone[c]), StringComparer.OrdinalIgnoreCase);
-            var tableName = _selectedClass.PrimaryStorage.TableName;
-            var previousKeys = CaptureOfflineRecordKeys(tableName);
-            await RequireCrudSource().CreateRecordAsync(tableName, values);
-            var duplicateValues = values.ToDictionary(x => x.Key, x => x.Value == null ? (object)DBNull.Value : x.Value, StringComparer.OrdinalIgnoreCase);
-            var targetName = PickName(clone, _selectedClass);
-            var description = DescribeDuplicate(sourceName, targetName, duplicateValues);
-            RecordCreatedMode3Object(tableName, duplicateValues.ToDictionary(x => x.Key, x => (object?)x.Value), previousKeys,
-                description, mutationGeneration, ChangeJournalOperationKind.Duplicate, sourceSnapshot);
-            await LoadObjectsAsync(); RebuildObjectFilters();
-            TxtStatus.Text = "Объект скопирован в локальном проекте";
-            ShowActionFeedback(description);
-            return;
-        }
-        try
-        {
-            var sourceSnapshot = SnapshotRow(_selectedRow);
-            var sourceName = PickName(_selectedRow, _selectedClass);
-            var db = new DatabaseService(_connection.ToConnectionString(_selectedDatabase));
-            var values = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
-            var columns = await db.GetTableColumnsAsync(_selectedClass.PrimaryStorage.TableName);
-            foreach (DataColumn c in _objects.Columns)
-            {
-                var meta = columns.FirstOrDefault(x => x.Name.Equals(c.ColumnName, StringComparison.OrdinalIgnoreCase));
-                if (meta != null && meta.IsReadOnly) continue;
-                if (c.ColumnName.Equals("Record", StringComparison.OrdinalIgnoreCase) && _objects.Columns.Contains("PLC")) continue;
-                values[c.ColumnName] = _selectedRow[c.ColumnName];
-            }
-            if (_objects.Columns.Contains("Record"))
-            {
-                int plc = _objects.Columns.Contains("PLC") && _selectedRow["PLC"] != DBNull.Value ? Convert.ToInt32(_selectedRow["PLC"]) : 0;
-                int max = 0;
-                foreach (DataRow row in _objects.Rows)
-                {
-                    if (_objects.Columns.Contains("PLC") && row["PLC"] != DBNull.Value && Convert.ToInt32(row["PLC"]) != plc) continue;
-                    if (row["Record"] == DBNull.Value) continue;
-                    if (int.TryParse(Convert.ToString(row["Record"]), out int r)) max = Math.Max(max, r);
-                }
-                values["Record"] = max + 1;
-            }
-            var tableName = _selectedClass.PrimaryStorage.TableName;
-            await RequireCrudSource().CreateRecordAsync(tableName, values);
-            var duplicateValues = values.ToDictionary(x => x.Key, x => (object)(x.Value ?? DBNull.Value), StringComparer.OrdinalIgnoreCase);
-            var targetName = new[] { "Name", "Name_L1", "NameL1", "Tag" }
-                .Where(values.ContainsKey)
-                .Select(name => Convert.ToString(values[name]) ?? "")
-                .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name)) ?? sourceName;
-            var description = DescribeDuplicate(sourceName, targetName, duplicateValues);
-            RecordCreatedMode3Object(tableName, duplicateValues.ToDictionary(x => x.Key, x => (object?)x.Value), new HashSet<string>(StringComparer.Ordinal),
-                description, mutationGeneration, ChangeJournalOperationKind.Duplicate, sourceSnapshot);
-            await LoadObjectsAsync();
-            TxtStatus.Text = "Объект продублирован";
-            ShowActionFeedback(description);
-        }
-        catch (Exception ex)
-        {
-            ShowActionFeedback($"Ошибка: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", isError: true);
-            Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Дублирование", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
     private async void DeleteObject_Click(object sender, RoutedEventArgs e)
     {
         if (!UserAuthorizationService.Require(Permission.DeleteData)) return;
         if (_selectedClass?.PrimaryStorage == null || ObjectList.SelectedItems.Count == 0) return;
         var selected = ObjectList.SelectedItems.Cast<ObjectItem>().ToList();
         var mutationGeneration = _workspaceGeneration;
+        var tableName = _selectedClass.PrimaryStorage.TableName;
+        var rows = selected.Where(item => item.RowIndex >= 0 && item.RowIndex < _objects.Rows.Count)
+            .Select(item => SnapshotRow(_objects.Rows[item.RowIndex])).ToArray();
+        if (rows.Length != selected.Count) return;
         var names = selected.Select(x => x.Name).ToList();
         var message = selected.Count == 1
             ? $"Удалить объект «{names[0]}»?"
@@ -1614,66 +1537,60 @@ public partial class ProjectModeView : UserControl
         if (Configurator.Infrastructure.ModernDialog.Show(message, "Удаление объекта", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         try
         {
-            if (_offlineProject != null)
+            if (mutationGeneration != _workspaceGeneration) return;
+            if (_offlineSource != null)
             {
                 var deleteTimer = System.Diagnostics.Stopwatch.StartNew();
-                var tableName = _selectedClass.PrimaryStorage.TableName;
                 var localSchema = _offlineSource?.GetSchema(tableName);
-                var keyColumns = localSchema?.KeyColumns ?? _selectedClass.PrimaryStorage.KeyColumns ?? new List<string>();
-                if (keyColumns.Count == 0)
-                    keyColumns = new[] { "PLC", "Record", "Area" }.Where(_objects.Columns.Contains).ToList();
-                if (keyColumns.Count == 0) throw new InvalidOperationException("В локальном снимке не сохранён ключ для удаления записей.");
+                var keyColumns = localSchema?.KeyColumns;
+                if (localSchema?.HasStableKey != true || keyColumns.Count == 0) throw new InvalidOperationException("В локальном снимке не сохранён ключ для удаления записей.");
                 var keyValues = new List<IReadOnlyDictionary<string, object?>>();
                 var deletedSnapshots = new List<(Dictionary<string, object> Values, Dictionary<string, object> Identity)>();
-                foreach (var item in selected)
+                foreach (var snapshot in rows)
                 {
-                    if (item.RowIndex < 0 || item.RowIndex >= _objects.Rows.Count) continue;
-                    var row = _objects.Rows[item.RowIndex];
-                    var snapshot = SnapshotRow(row);
-                    var identitySnapshot = keyColumns.Where(snapshot.ContainsKey).ToDictionary(k => k, k => snapshot[k], StringComparer.OrdinalIgnoreCase);
-                    deletedSnapshots.Add((snapshot, identitySnapshot));
-                    var key = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var column in keyColumns)
-                    {
-                        if (!_objects.Columns.Contains(column))
-                            throw new InvalidOperationException($"В загруженных данных отсутствует ключевой столбец «{column}».");
-                        key[column] = row[column] == DBNull.Value ? null : row[column];
-                    }
-                    keyValues.Add(key);
+                    var identity = SelectIdentity(snapshot, keyColumns);
+                    deletedSnapshots.Add((snapshot, identity));
+                    keyValues.Add(identity.ToDictionary(pair => pair.Key,
+                        pair => pair.Value == DBNull.Value ? null : pair.Value, StringComparer.OrdinalIgnoreCase));
                 }
-                var deleted = await RequireCrudSource().DeleteRecordsAsync(tableName, keyColumns, keyValues);
-                foreach (var snapshot in deletedSnapshots.Take(Math.Max(0, deleted)))
+                var source = _offlineSource;
+                await source.ExecuteMutationTransactionAsync(async () =>
+                {
+                    OfflineObjectDeletionGuard.Check(source, tableName, rows);
+                    var removed = await RequireCrudSource().DeleteRecordsAsync(tableName, keyColumns, keyValues);
+                    if (removed != keyValues.Count)
+                        throw new InvalidOperationException("Состав выбранных строк изменился. Удаление отменено.");
+                });
+                int deleted = keyValues.Count;
+                foreach (var snapshot in deletedSnapshots)
                     RecordMode3Mutation(tableName, ChangeJournalOperationKind.Delete, "Удалён объект",
                         snapshot.Values, null, snapshot.Identity, null, mutationGeneration);
                 await LoadObjectsAsync();
                 SessionTestLog.Trace("РЕЖИМ3-УДАЛЕНИЕ", $"Offline delete complete; selected={selected.Count}, deleted={deleted}, table='{tableName}', rowsAfter={_objects.Rows.Count}, totalMs={deleteTimer.ElapsedMilliseconds}");
                 TxtStatus.Text = $"Объекты удалены из локального проекта: {deleted}";
-                ShowActionFeedback(selected.Count == 1 ? $"Объект «{names[0]}» удалён" : $"Удалено объектов: {deleted}");
+                ShowActionFeedback($"Удалено объектов: {deleted}");
                 return;
             }
             var connectionString = _connection.ToConnectionString(_selectedDatabase);
             var analyzer = new DatabaseArchitectureAnalyzer(connectionString);
             var schema = await analyzer.AnalyzeAsync();
             var protection = new DeletionProtectionService(connectionString, schema);
-            int affected = 0;
-            foreach (var item in selected)
+            var verifiedKey = await new DatabaseService(connectionString).GetPrimaryKeyColumnsAsync(tableName);
+            if (verifiedKey.Count == 0)
+                throw new InvalidOperationException("Для удаления требуется подтверждённый первичный или уникальный ключ.");
+            var deletions = new List<(DeletionExecutionItem Item, Dictionary<string, object> Before, Dictionary<string, object> Identity)>();
+            foreach (var beforeSnapshot in rows)
             {
-                if (item.RowIndex < 0 || item.RowIndex >= _objects.Rows.Count) continue;
-                _selectedRow = _objects.Rows[item.RowIndex];
-                var beforeSnapshot = SnapshotRow(_selectedRow);
-                var identity = await BuildIdentityAsync();
-
-                // Include columns used by configured/known relations so a logical
-                // target such as AreaName can be resolved even when it is not part
-                // of the normal object identity.
-                foreach (var relation in schema.Relations.Where(r => r.TargetTable.Equals(_selectedClass.PrimaryStorage.TableName, StringComparison.OrdinalIgnoreCase)))
-                    foreach (var column in relation.TargetColumns)
-                        if (_objects.Columns.Contains(column) && !identity.ContainsKey(column))
-                            identity[column] = _selectedRow[column];
+                var identity = SelectIdentity(beforeSnapshot, verifiedKey);
+                var relationColumns = schema.Relations.Where(r => r.TargetTable.Equals(tableName, StringComparison.OrdinalIgnoreCase))
+                    .SelectMany(r => r.TargetColumns).Distinct(StringComparer.OrdinalIgnoreCase);
+                foreach (var column in relationColumns)
+                    if (beforeSnapshot.TryGetValue(column, out var value))
+                        identity.TryAdd(column, value);
 
                 var plan = await protection.BuildPlanAsync(new DeletionRequest
                 {
-                    TableName = _selectedClass.PrimaryStorage.TableName,
+                    TableName = tableName,
                     Key = identity
                 });
 
@@ -1688,6 +1605,8 @@ public partial class ProjectModeView : UserControl
                 IReadOnlyList<ReferenceReplacement> replacements = Array.Empty<ReferenceReplacement>();
                 if (plan.RequiresReplacement)
                 {
+                    if (selected.Count > 1)
+                        throw new InvalidOperationException("Объекты с зависимыми строками нужно удалять по одному, чтобы проверить выбранные замены.");
                     var options = new List<DependencyReplacementWindow.DependencyOption>();
                     foreach (var hit in plan.Dependencies)
                     {
@@ -1709,18 +1628,25 @@ public partial class ProjectModeView : UserControl
                     replacements = dialog.Replacements;
                 }
 
-                await protection.ExecuteAsync(plan, replacements, (_, _, _) => Task.FromResult(true));
-                RecordMode3Mutation(_selectedClass.PrimaryStorage.TableName, ChangeJournalOperationKind.Delete,
-                    plan.RequiresReplacement ? $"Удалён объект; заменено зависимых значений: {replacements.Count}" : "Удалён объект",
+                deletions.Add((new DeletionExecutionItem(plan, replacements), beforeSnapshot, identity));
+            }
+
+            if (deletions.Count == 0 || mutationGeneration != _workspaceGeneration) return;
+            await protection.ExecuteBatchAsync(deletions.Select(x => x.Item).ToArray(),
+                (_, _, _) => Task.FromResult(true));
+            foreach (var (item, beforeSnapshot, identity) in deletions)
+            {
+                bool replacedDependencies = item.Plan.RequiresReplacement;
+                RecordMode3Mutation(tableName, ChangeJournalOperationKind.Delete,
+                    replacedDependencies ? $"Удалён объект; заменено зависимых значений: {item.Replacements.Count}" : "Удалён объект",
                     beforeSnapshot, null, identity, null, mutationGeneration,
-                    restoreIncludesAllChanges: !plan.RequiresReplacement,
-                    details: plan.RequiresReplacement
+                    restoreIncludesAllChanges: !replacedDependencies,
+                    details: replacedDependencies
                         ? $"Зависимости изменены вместе с удалением. Отмена отключена, потому что журнал не хранит полное состояние заменённых строк. Ключ: {string.Join(", ", identity.Select(x => $"{x.Key}={x.Value}"))}."
                         : null);
-                affected++;
             }
             await LoadObjectsAsync();
-            TxtStatus.Text = $"Удалено объектов: {selected.Count} · строк: {affected}";
+            TxtStatus.Text = $"Удалено объектов: {deletions.Count}";
             ShowActionFeedback(TxtStatus.Text);
         }
         catch (Exception ex)
@@ -1729,6 +1655,13 @@ public partial class ProjectModeView : UserControl
             Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Удаление", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
+
+    private static Dictionary<string, object> SelectIdentity(
+        IReadOnlyDictionary<string, object> snapshot, IEnumerable<string> columns) =>
+        columns.ToDictionary(column => column, column => snapshot.TryGetValue(column, out var value)
+            ? value
+            : throw new InvalidOperationException($"В загруженных данных отсутствует ключевой столбец «{column}»."),
+            StringComparer.OrdinalIgnoreCase);
 
     private string GetConfigurationKeyValue()
     {
@@ -1749,9 +1682,12 @@ public partial class ProjectModeView : UserControl
                 var recordColumn = columns.FirstOrDefault(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase))?.Name ?? "";
                 int nextRecord = 1;
                 if (!string.IsNullOrWhiteSpace(recordColumn) && _configurationRows.Columns.Contains(recordColumn)) nextRecord = _configurationRows.Rows.Cast<DataRow>().Select(r => r[recordColumn] == DBNull.Value ? 0 : int.TryParse(Convert.ToString(r[recordColumn]), out var n) ? n : 0).DefaultIfEmpty(0).Max() + 1;
-                var dialog = new AddRowWindow(_configurationTableName, columns, nextRecord, recordColumn, null, null, null, null, new Dictionary<string, List<LookupOption>>()) { Owner = Window.GetWindow(this) };
+                var lookups = OfflineLookupOptionsService.Build(_offlineProject, _configurationTableName, columns);
+                var dialog = new AddRowWindow(_configurationTableName, columns, nextRecord, recordColumn, lookupOptions: lookups)
+                { Owner = Window.GetWindow(this) };
                 dialog.ShowDialog();
                 if (!dialog.Confirmed || dialog.Values == null || dialog.Values.Count == 0) return;
+                RequireExplicitOfflineDefaults(columns, dialog.Values.Keys);
                 await RequireCrudSource().CreateRecordAsync(_configurationTableName, dialog.Values);
                 string insertedKey = dialog.Values
                     .Where(pair => pair.Key.Equals(_configurationKeyColumn, StringComparison.OrdinalIgnoreCase))
@@ -1923,107 +1859,75 @@ public partial class ProjectModeView : UserControl
             return;
         }
         if (!UserAuthorizationService.Require(Permission.AddData)) return;
+        if (_selectedClass?.PrimaryStorage == null) return;
+        var selectedClass = _selectedClass;
         var mutationGeneration = _workspaceGeneration;
-        if (_offlineProject != null)
-        {
-            if (_selectedClass?.PrimaryStorage == null) return;
-            try
-            {
-                var tableName = _selectedClass.PrimaryStorage.TableName;
-                var schema = _offlineProject.TableSchemas.FirstOrDefault(x => x.TableName.Equals(tableName, StringComparison.OrdinalIgnoreCase));
-                if (schema == null) throw new InvalidOperationException($"В локальном снимке отсутствует схема {tableName}.");
-                var columns = schema.Columns.Select(c => new ColumnInfo { Name = c.Name, DataType = c.DataType, IsIdentity = c.IsIdentity, IsNullable = c.IsNullable, IsComputed = c.IsComputed, MaxLength = c.MaxLength, Precision = c.Precision, Scale = c.Scale, HasDefault = c.HasDefault }).ToList();
-                int nextRecord = 1;
-                if (_objects.Columns.Contains("Record"))
-                    nextRecord = _objects.Rows.Cast<DataRow>().Where(r => r["Record"] != DBNull.Value).Select(r => int.TryParse(Convert.ToString(r["Record"]), out var n) ? n : 0).DefaultIfEmpty(0).Max() + 1;
-                var recordColumn = columns.FirstOrDefault(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase))?.Name ?? "";
-                var plcColumn = columns.FirstOrDefault(c => c.Name.Equals("PLC", StringComparison.OrdinalIgnoreCase))?.Name;
-                var classNumberColumn = columns.FirstOrDefault(c => new[] { "PLCClassNumber", "PLC_Class_Number", "PLCClasssNumber" }.Contains(c.Name, StringComparer.OrdinalIgnoreCase))?.Name;
-                var localLookups = LoadOfflineLookupOptionsForProjectTable(tableName, columns);
-                Func<string, CancellationToken, Task<int>> localRecordProvider = null;
-                if (!string.IsNullOrWhiteSpace(recordColumn) && !string.IsNullOrWhiteSpace(plcColumn))
-                {
-                    localRecordProvider = (plcValue, ct) =>
-                    {
-                        ct.ThrowIfCancellationRequested();
-                        var max = _offlineProject.LocalRecords
-                            .Where(r => r.TableName.Equals(tableName, StringComparison.OrdinalIgnoreCase))
-                            .Select(r => (Record: r, Plc: r.Values.TryGetPropertyValue(plcColumn, out var pv) ? pv?.ToString() : null,
-                                Rec: r.Values.TryGetPropertyValue(recordColumn, out var rv) ? rv?.ToString() : null))
-                            .Where(x => string.Equals(x.Plc, plcValue, StringComparison.OrdinalIgnoreCase))
-                            .Select(x => int.TryParse(x.Rec, out var n) ? n : 0).DefaultIfEmpty(0).Max();
-                        return Task.FromResult(max + 1);
-                    };
-                }
-                var dialog = new AddRowWindow(tableName, columns, nextRecord, recordColumn, null, plcColumn,
-                    string.IsNullOrWhiteSpace(classNumberColumn) ? null : _selectedClass.ClassNumber, classNumberColumn,
-                    localLookups, scopedRecordProvider: localRecordProvider) { Owner = Window.GetWindow(this) };
-                dialog.ShowDialog();
-                if (!dialog.Confirmed || dialog.Values == null) return;
-                var previousKeys = CaptureOfflineRecordKeys(tableName);
-                await RequireCrudSource().CreateRecordAsync(tableName, dialog.Values);
-                RecordCreatedMode3Object(tableName, dialog.Values, previousKeys, "Создан объект", mutationGeneration);
-                await LoadObjectsAsync();
-                RebuildObjectFilters();
-                TxtStatus.Text = "Объект добавлен в локальный проект";
-                ShowActionFeedback(TxtStatus.Text);
-            }
-            catch (Exception ex)
-            {
-                ShowActionFeedback($"Ошибка: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", isError: true);
-                Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Новый локальный объект", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-            return;
-        }
-        if (_selectedClass?.PrimaryStorage == null || _connection == null || string.IsNullOrWhiteSpace(_selectedDatabase)) return;
+        var tableName = selectedClass.PrimaryStorage.TableName;
+        var offlineSource = _offlineSource;
+        var connectionString = offlineSource == null ? _connection?.ToConnectionString(_selectedDatabase) : null;
         try
         {
-            var db = new DatabaseService(_connection.ToConnectionString(_selectedDatabase));
-            var columns = await db.GetTableColumnsAsync(_selectedClass.PrimaryStorage.TableName);
-            if (columns.Count == 0) throw new InvalidOperationException("Не удалось получить структуру таблицы класса.");
+            var crud = RequireCrudSource();
+            var db = connectionString == null ? null : new DatabaseService(connectionString);
+            var columns = await ReadObjectColumnsAsync(tableName, db);
+            var recordColumn = columns.FirstOrDefault(c => !c.IsIdentity && !c.IsReadOnly && c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase))?.Name ?? "";
+            var plcColumn = columns.FirstOrDefault(c => c.Name.Equals("PLC", StringComparison.OrdinalIgnoreCase))?.Name;
+            var classNumberColumn = columns.FirstOrDefault(c => new[] { "PLCClassNumber", "PLC_Class_Number", "PLCClasssNumber" }.Contains(c.Name, StringComparer.OrdinalIgnoreCase))?.Name;
+            var lookupOptions = await LoadObjectLookupOptionsAsync(selectedClass, columns, db);
+            var nameColumn = columns.FirstOrDefault(c => c.Name.Equals("Name", StringComparison.OrdinalIgnoreCase))
+                ?? columns.FirstOrDefault(c => c.Name.Equals("Tag", StringComparison.OrdinalIgnoreCase));
+            var initialValues = nameColumn == null ? null : new Dictionary<string, object> { [nameColumn.Name] = selectedClass.Name };
 
-            bool hasRecord = columns.Any(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase));
-            bool hasPlc = columns.Any(c => c.Name.Equals("PLC", StringComparison.OrdinalIgnoreCase));
-            int nextRecord = !hasPlc && hasRecord ? await NextRecordAsync(db) : 0;
-            var lookupOptions = await LoadLookupOptionsForProjectTableAsync(_selectedClass.PrimaryStorage.TableName);
-            if (!lookupOptions.ContainsKey("PLC"))
+            IEnumerable<int> LocalRecordNumbers(string plc)
             {
-                var plcOptions = await GetOnlinePlcOptionsAsync(db);
-                if (plcOptions.Count > 0)
-                    lookupOptions["PLC"] = plcOptions.Select(x => new LookupOption { Key = x.Key, Display = x.Title }).ToList();
+                return offlineSource.GetRecords(tableName)
+                    .Where(row => plcColumn == null || string.Equals(row.Values[plcColumn]?.ToString(), plc, StringComparison.OrdinalIgnoreCase))
+                    .Select(row => row.Values[recordColumn])
+                    .Where(value => value != null)
+                    .Select(value => int.Parse(value.ToString(), System.Globalization.CultureInfo.InvariantCulture));
             }
-            string nameField = columns.FirstOrDefault(c => c.Name.Equals("Name", StringComparison.OrdinalIgnoreCase))?.Name
-                               ?? columns.FirstOrDefault(c => c.Name.Equals("Tag", StringComparison.OrdinalIgnoreCase))?.Name;
-            string classNumberColumn = columns.FirstOrDefault(c => c.Name.Equals("PLCClassNumber", StringComparison.OrdinalIgnoreCase))?.Name
-                ?? columns.FirstOrDefault(c => c.Name.Equals("PLC_Class_Number", StringComparison.OrdinalIgnoreCase))?.Name
-                ?? columns.FirstOrDefault(c => c.Name.Equals("PLCClasssNumber", StringComparison.OrdinalIgnoreCase))?.Name;
 
-            var dialog = new AddRowWindow(
-                _selectedClass.PrimaryStorage.TableName, columns, nextRecord,
-                hasRecord ? columns.First(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase)).Name : "",
-                _connection.ToConnectionString(_selectedDatabase),
-                hasPlc ? columns.First(c => c.Name.Equals("PLC", StringComparison.OrdinalIgnoreCase)).Name : null,
-                string.IsNullOrWhiteSpace(classNumberColumn) ? null : _selectedClass.ClassNumber,
-                classNumberColumn, lookupOptions) { Owner = Window.GetWindow(this) };
-
-            // Если таблица содержит Name, предлагаем имя класса как удобное начальное значение.
-            if (!string.IsNullOrWhiteSpace(nameField))
+            int nextRecord = 0;
+            if (recordColumn.Length != 0 && plcColumn == null)
             {
-                // AddRowWindow уже подставляет значения только после открытия; имя пользователь введёт в самом редакторе.
+                if (offlineSource != null)
+                    nextRecord = checked(LocalRecordNumbers(null).DefaultIfEmpty(0).Max() + 1);
+                else
+                    nextRecord = checked(await db.GetMaxRecordValueAsync(tableName, recordColumn) + 1);
             }
+
+            var dialog = new AddRowWindow(tableName, columns, nextRecord, recordColumn, connectionString,
+                plcColumn, classNumberColumn == null ? null : selectedClass.ClassNumber, classNumberColumn, lookupOptions,
+                initialValues: initialValues,
+                scopedRecordProvider: offlineSource == null ? null : (plc, ct) =>
+                {
+                    ct.ThrowIfCancellationRequested();
+                    return Task.FromResult(checked(LocalRecordNumbers(plc).DefaultIfEmpty(0).Max() + 1));
+                },
+                recordExistsProvider: offlineSource == null ? null : (plc, record, ct) =>
+                {
+                    ct.ThrowIfCancellationRequested();
+                    return Task.FromResult(int.TryParse(record, out var number) && LocalRecordNumbers(plc).Contains(number));
+                })
+            { Owner = Window.GetWindow(this) };
+
+            if (mutationGeneration != _workspaceGeneration || !ReferenceEquals(selectedClass, _selectedClass)) return;
             dialog.ShowDialog();
             if (!dialog.Confirmed || dialog.Values == null || dialog.Values.Count == 0) return;
 
-            var tableName = _selectedClass.PrimaryStorage.TableName;
-            await RequireCrudSource().CreateRecordAsync(tableName, dialog.Values);
-            RecordCreatedMode3Object(tableName, dialog.Values, new HashSet<string>(StringComparer.Ordinal), "Создан объект", mutationGeneration);
+            if (offlineSource != null) RequireExplicitOfflineDefaults(columns, dialog.Values.Keys);
+            var previousKeys = CaptureOfflineRecordKeys(tableName);
+            await crud.CreateRecordAsync(tableName, dialog.Values);
+            RecordCreatedMode3Object(tableName, dialog.Values, previousKeys, "Создан объект", mutationGeneration);
+            if (mutationGeneration != _workspaceGeneration) return;
             await LoadObjectsAsync();
             ShowActionFeedback("Объект добавлен");
         }
         catch (Exception ex)
         {
-            ShowActionFeedback($"Ошибка: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", isError: true);
-            Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Новый объект", MessageBoxButton.OK, MessageBoxImage.Error);
+            var error = Configurator.Infrastructure.UserErrorMessage.Format(ex);
+            ShowActionFeedback($"Ошибка: {error}", isError: true);
+            Configurator.Infrastructure.ModernDialog.Show(error, "Новый объект", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -2032,65 +1936,46 @@ public partial class ProjectModeView : UserControl
         if (!UserAuthorizationService.Require(Permission.AddData)) return;
         if (_selectedClass?.PrimaryStorage == null) return;
 
-        var tableName = _selectedClass.PrimaryStorage.TableName;
-        bool offline = _offlineProject != null;
-        DatabaseService db = null;
-        List<ColumnInfo> columns;
-        List<(string Key, string Title)> plcOptions;
+        var selectedClass = _selectedClass;
+        var mutationGeneration = _workspaceGeneration;
+        var tableName = selectedClass.PrimaryStorage.TableName;
+        var offlineSource = _offlineSource;
         try
         {
-            if (offline)
-            {
-                var schema = _offlineProject.TableSchemas.FirstOrDefault(x => x.TableName.Equals(tableName, StringComparison.OrdinalIgnoreCase));
-                if (schema == null) throw new InvalidOperationException($"В локальном снимке отсутствует схема {tableName}.");
-                columns = schema.Columns.Select(c => new ColumnInfo
-                {
-                    Name = c.Name, DataType = c.DataType, IsIdentity = c.IsIdentity, IsNullable = c.IsNullable,
-                    IsComputed = c.IsComputed, MaxLength = c.MaxLength, Precision = c.Precision, Scale = c.Scale, HasDefault = c.HasDefault
-                }).ToList();
-                plcOptions = await GetOfflinePlcOptionsAsync();
-            }
-            else
-            {
-                if (_connection == null || string.IsNullOrWhiteSpace(_selectedDatabase)) return;
-                db = new DatabaseService(_connection.ToConnectionString(_selectedDatabase));
-                columns = await db.GetTableColumnsAsync(tableName);
-                plcOptions = await GetOnlinePlcOptionsAsync(db);
-            }
-
-            if (columns.Count == 0) throw new InvalidOperationException("Не удалось получить структуру таблицы класса.");
-            var nameColumn = columns.FirstOrDefault(c => c.Name.Equals("Name", StringComparison.OrdinalIgnoreCase))
-                ?? columns.FirstOrDefault(c => c.Name.Equals("Tag", StringComparison.OrdinalIgnoreCase));
+            var crud = _crudSession ??
+                throw new InvalidOperationException("Рабочий источник пакетного добавления недоступен.");
+            var db = offlineSource == null ? new DatabaseService(_connection.ToConnectionString(_selectedDatabase)) : null;
+            var columns = await ReadObjectColumnsAsync(tableName, db);
+            var writable = columns.Where(c => !c.IsReadOnly && !c.IsIdentity).ToList();
+            var nameColumn = writable.FirstOrDefault(c => c.Name.Equals("Name", StringComparison.OrdinalIgnoreCase))
+                ?? writable.FirstOrDefault(c => c.Name.Equals("Tag", StringComparison.OrdinalIgnoreCase));
             if (nameColumn == null) throw new InvalidOperationException("Для массового создания не найдено поле Name или Tag.");
 
-            string recordColumn = columns.FirstOrDefault(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase))?.Name;
-            string plcColumn = columns.FirstOrDefault(c => c.Name.Equals("PLC", StringComparison.OrdinalIgnoreCase))?.Name;
-            string classNumberColumn = columns.FirstOrDefault(c => new[] { "PLCClassNumber", "PLC_Class_Number", "PLCClasssNumber" }.Contains(c.Name, StringComparer.OrdinalIgnoreCase))?.Name;
-            var required = columns.Where(c => !c.IsReadOnly && !c.IsIdentity && !c.IsComputed && !c.IsNullable && !c.HasDefault
-                && !c.Name.Equals(nameColumn.Name, StringComparison.OrdinalIgnoreCase)
-                && !c.Name.Equals(recordColumn, StringComparison.OrdinalIgnoreCase)
-                && !c.Name.Equals(plcColumn, StringComparison.OrdinalIgnoreCase)
-                && !c.Name.Equals(classNumberColumn, StringComparison.OrdinalIgnoreCase)).ToList();
+            string recordColumn = writable.FirstOrDefault(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase))?.Name;
+            string plcColumn = writable.FirstOrDefault(c => c.Name.Equals("PLC", StringComparison.OrdinalIgnoreCase))?.Name;
+            string classNumberColumn = writable.FirstOrDefault(c => new[] { "PLCClassNumber", "PLC_Class_Number", "PLCClasssNumber" }.Contains(c.Name, StringComparer.OrdinalIgnoreCase))?.Name;
+            var assigned = new[] { nameColumn.Name, recordColumn, plcColumn, classNumberColumn };
+            var required = writable.Where(c => !c.IsNullable && !c.HasDefault
+                && !assigned.Contains(c.Name, StringComparer.OrdinalIgnoreCase)).ToList();
             if (required.Count > 0)
                 throw new InvalidOperationException("Невозможно корректно заполнить обязательные поля автоматически: " + string.Join(", ", required.Select(c => c.Name)));
-            if (offline)
+            if (offlineSource != null) RequireExplicitOfflineDefaults(columns, assigned);
+
+            var plcOptions = new List<(string Key, string Title)>();
+            if (plcColumn != null)
             {
-                var unknownDefaults = columns.Where(c => !c.IsReadOnly && !c.IsNullable && c.HasDefault
-                    && !c.Name.Equals(nameColumn.Name, StringComparison.OrdinalIgnoreCase)
-                    && !c.Name.Equals(recordColumn, StringComparison.OrdinalIgnoreCase)
-                    && !c.Name.Equals(plcColumn, StringComparison.OrdinalIgnoreCase)
-                    && !c.Name.Equals(classNumberColumn, StringComparison.OrdinalIgnoreCase)).ToList();
-                if (unknownDefaults.Count > 0)
-                    throw new InvalidOperationException("Локальный снимок хранит признак наличия значения по умолчанию, но не само выражение SQL DEFAULT. Чтобы не записать NULL вместо корректного значения, массовое добавление остановлено для полей: " + string.Join(", ", unknownDefaults.Select(c => c.Name)) + ". Создайте новый снимок с поддержкой выражений DEFAULT или заполните эти поля через форму с явными значениями.");
+                var field = selectedClass.Fields.FirstOrDefault(f => f.Name.Equals(plcColumn, StringComparison.OrdinalIgnoreCase))
+                    ?? new FieldDefinition { Name = plcColumn };
+                plcOptions = (await ReadObjectLookupAsync(selectedClass, field, db == null ? null : new LookupOptionsService(db)))
+                    .Select(option => (Key: option.Key, Title: option.Display)).ToList();
             }
 
             DataTable uniquenessRows;
-            if (offline)
+            if (offlineSource != null)
             {
                 // Validate against the complete local package, not the UI's paged 5,000-row view.
                 uniquenessRows = new DataTable();
-                var localTable = _offlineProject.LocalRecords
-                    .Where(r => r.TableName.Equals(tableName, StringComparison.OrdinalIgnoreCase)).ToList();
+                var localTable = offlineSource.GetRecords(tableName);
                 var localColumns = columns.Select(c => c.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
                 foreach (var column in localColumns) uniquenessRows.Columns.Add(column, typeof(string));
                 foreach (var record in localTable)
@@ -2121,71 +2006,46 @@ public partial class ProjectModeView : UserControl
                 }
             }
 
-            var dialog = new MultiObjectEditorWindow(_selectedClass.Name, plcOptions, existingNames,
+            if (mutationGeneration != _workspaceGeneration || !ReferenceEquals(selectedClass, _selectedClass)) return;
+            var dialog = new MultiObjectEditorWindow(selectedClass.Name, plcOptions, existingNames,
                 existingRecordKeys, !string.IsNullOrWhiteSpace(recordColumn), !string.IsNullOrWhiteSpace(plcColumn),
                 async rows =>
                 {
-                    if (offline)
-                    {
-                        var schema = _offlineSource?.GetSchema(_selectedClass.PrimaryStorage.TableName);
-                        var generatedColumns = new HashSet<string>(schema?.Columns.Where(c => c.IsIdentity || c.IsComputed).Select(c => c.Name) ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
-                        foreach (var item in rows)
-                        {
-                            var values = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
-                            {
-                                [nameColumn.Name] = item.Name
-                            };
-                            if (!string.IsNullOrWhiteSpace(plcColumn)) values[plcColumn] = item.PlcKey;
-                            if (!string.IsNullOrWhiteSpace(recordColumn)) values[recordColumn] = item.Record;
-                            if (!string.IsNullOrWhiteSpace(classNumberColumn)) values[classNumberColumn] = _selectedClass.ClassNumber;
-                            foreach (var generated in generatedColumns) values.Remove(generated);
-                            await RequireCrudSource().CreateRecordAsync(_selectedClass.PrimaryStorage.TableName, values);
-                        }
-                        await LoadObjectsAsync();
-                        RebuildObjectFilters();
-                        ApplyObjectFilters();
-                        TxtStatus.Text = $"Создано объектов: {rows.Count} · локальный проект";
-                        ShowActionFeedback(TxtStatus.Text);
-                        return null;
-                    }
-
-                    int inserted = 0;
+                    var batch = new List<IReadOnlyDictionary<string, object?>>(rows.Count);
                     foreach (var item in rows)
                     {
-                        var values = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+                        var values = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
                         {
                             [nameColumn.Name] = item.Name
                         };
                         if (!string.IsNullOrWhiteSpace(plcColumn))
-                        {
-                            if (!int.TryParse(item.PlcKey, out var plcId))
-                            {
-                                ShowActionFeedback($"Ошибка: PLC «{item.PlcKey}» не является допустимым ключом.", isError: true);
-                                return $"PLC «{item.PlcKey}» не является допустимым ключом. Добавлено до ошибки: {inserted}.";
-                            }
-                            values[plcColumn] = plcId;
-                        }
+                            values[plcColumn] = item.PlcKey;
                         if (!string.IsNullOrWhiteSpace(recordColumn))
                         {
                             if (!int.TryParse(item.Record, out var recordValue))
-                            {
-                                ShowActionFeedback($"Ошибка: Record «{item.Record}» должен быть целым числом.", isError: true);
-                                return $"Record «{item.Record}» должен быть целым числом. Добавлено до ошибки: {inserted}.";
-                            }
+                                return $"Record «{item.Record}» должен быть целым числом.";
                             values[recordColumn] = recordValue;
                         }
-                        if (!string.IsNullOrWhiteSpace(classNumberColumn)) values[classNumberColumn] = _selectedClass.ClassNumber;
-                        try { await RequireCrudSource().CreateRecordAsync(tableName, values); inserted++; }
-                        catch (Exception ex)
-                        {
-                            await LoadObjectsAsync();
-                            ShowActionFeedback($"Ошибка: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", isError: true);
-                            return $"Сохранение прервано после {inserted} из {rows.Count} объектов. Уже добавленные записи не отменены слоем данных. Ошибка: {ex.Message}";
-                        }
+                        if (!string.IsNullOrWhiteSpace(classNumberColumn))
+                            values[classNumberColumn] = selectedClass.ClassNumber;
+                        batch.Add(values);
                     }
+
+                    try
+                    {
+                        await crud.CreateRecordsAsync(tableName, batch);
+                    }
+                    catch (Exception ex)
+                    {
+                        var error = Configurator.Infrastructure.UserErrorMessage.Format(ex);
+                        ShowActionFeedback($"Ошибка: {error}", isError: true);
+                        return error;
+                    }
+
+                    if (mutationGeneration != _workspaceGeneration) return null;
                     await LoadObjectsAsync();
-                    TxtStatus.Text = $"Создано объектов: {inserted}";
-                        ShowActionFeedback(TxtStatus.Text);
+                    TxtStatus.Text = $"Создано объектов: {batch.Count}";
+                    ShowActionFeedback(TxtStatus.Text);
                     return null;
                 })
             { Owner = Window.GetWindow(this) };
@@ -2199,106 +2059,57 @@ public partial class ProjectModeView : UserControl
         }
     }
 
-    private async Task<List<(string Key, string Title)>> GetOnlinePlcOptionsAsync(DatabaseService db)
+    private static void RequireExplicitOfflineDefaults(IEnumerable<ColumnInfo> columns, IEnumerable<string> assigned)
     {
-        foreach (var table in new[] { "dbo.PLCs", "dbo.PLC" })
-        {
-            try
+        var missing = columns.Where(c => c.HasDefault && !c.IsReadOnly && !c.IsIdentity &&
+            !assigned.Contains(c.Name, StringComparer.OrdinalIgnoreCase)).Select(c => c.Name).ToArray();
+        if (missing.Length > 0)
+            throw new InvalidOperationException("Для локального проекта укажите явные значения полей с SQL DEFAULT: " + string.Join(", ", missing));
+    }
+
+    private async Task<List<ColumnInfo>> ReadObjectColumnsAsync(string tableName, DatabaseService db)
+    {
+        var columns = db != null
+            ? await db.GetTableColumnsAsync(tableName)
+            : (_offlineSource?.GetSchema(tableName)?.Columns.Select(c => new ColumnInfo
             {
-                var columns = await db.GetTableColumnsAsync(table);
-                if (columns.Count == 0) continue;
-                var data = await db.GetTableDataPageAsync(table, 1, 5000,
-                    columns.Take(3).Select(c => c.Name).ToList(), null);
-                var keyColumn = data.Columns.Cast<DataColumn>().FirstOrDefault(c =>
-                    c.ColumnName.Equals("Record", StringComparison.OrdinalIgnoreCase) ||
-                    c.ColumnName.Equals("Id", StringComparison.OrdinalIgnoreCase));
-                if (keyColumn == null) continue;
-                var displayColumn = data.Columns.Cast<DataColumn>().FirstOrDefault(c =>
-                    c.ColumnName.Equals("NameL1", StringComparison.OrdinalIgnoreCase) ||
-                    c.ColumnName.Equals("Name", StringComparison.OrdinalIgnoreCase) ||
-                    c.ColumnName.Equals("DescriptionL1", StringComparison.OrdinalIgnoreCase));
-                var result = data.Rows.Cast<DataRow>()
-                    .Select(r => (Key: Convert.ToString(r[keyColumn]) ?? "",
-                        Title: displayColumn == null ? (Convert.ToString(r[keyColumn]) ?? "") : (Convert.ToString(r[displayColumn]) ?? Convert.ToString(r[keyColumn]) ?? "")))
-                    .Where(x => !string.IsNullOrWhiteSpace(x.Key)).ToList();
-                if (result.Count > 0) return result;
-            }
-            catch { /* Try the alternate known PLC table name. */ }
-        }
-        return new List<(string Key, string Title)>();
+                Name = c.Name, DataType = c.DataType, IsIdentity = c.IsIdentity, IsNullable = c.IsNullable,
+                IsComputed = c.IsComputed, MaxLength = c.MaxLength, Precision = c.Precision, Scale = c.Scale, HasDefault = c.HasDefault
+            }).ToList() ?? new List<ColumnInfo>());
+        if (columns.Count == 0)
+            throw new InvalidOperationException($"Не удалось получить структуру таблицы «{tableName}».");
+        return columns;
     }
 
-    private static object ConvertForColumn(object value, Type targetType)
+    private Task<IReadOnlyList<LookupOption>> ReadObjectLookupAsync(ClassDefinition selectedClass, FieldDefinition field, LookupOptionsService onlineLookup)
     {
-        if (value == null || value == DBNull.Value) return DBNull.Value;
-        var text = Convert.ToString(value);
-        if (targetType == typeof(string)) return text ?? string.Empty;
-        try { return Convert.ChangeType(value, targetType); } catch { return text ?? string.Empty; }
+        var tableName = selectedClass.PrimaryStorage.TableName;
+        return onlineLookup == null
+            ? Task.FromResult(GetOfflineLookupOptions(field, selectedClass.Name, tableName))
+            : onlineLookup.TryGetAsync(selectedClass.Name, tableName, field.Name, default,
+                field.LookupTable, field.LookupKeyField, field.LookupDisplayField);
     }
 
-    private async Task<List<(string Key, string Title)>> GetOfflinePlcOptionsAsync()
-    {
-        var result = new List<(string Key, string Title)>();
-        var table = _offlineProject?.TableSchemas.FirstOrDefault(x => new[] { "dbo.PLC", "dbo.PLCs", "PLC", "PLCs" }.Contains(x.TableName, StringComparer.OrdinalIgnoreCase))?.TableName;
-        if (table == null) return new List<(string, string)>();
-        var rows = await _offlineReader.ReadRowsAsync(table, 5000);
-        var key = rows.Columns.Cast<DataColumn>().FirstOrDefault(c => c.ColumnName.Equals("Record", StringComparison.OrdinalIgnoreCase) || c.ColumnName.Equals("Id", StringComparison.OrdinalIgnoreCase))?.ColumnName;
-        var title = rows.Columns.Cast<DataColumn>().FirstOrDefault(c => c.ColumnName.Equals("NameL1", StringComparison.OrdinalIgnoreCase) || c.ColumnName.Equals("Name", StringComparison.OrdinalIgnoreCase) || c.ColumnName.Equals("DescriptionL1", StringComparison.OrdinalIgnoreCase))?.ColumnName;
-        if (key != null) foreach (DataRow row in rows.Rows) { var k = Convert.ToString(row[key]) ?? ""; if (!string.IsNullOrWhiteSpace(k)) result.Add((k, title != null && row[title] != DBNull.Value ? Convert.ToString(row[title]) ?? k : "PLC " + k)); }
-        return result;
-    }
-
-    private Dictionary<string, List<LookupOption>> LoadOfflineLookupOptionsForProjectTable(string tableName, IReadOnlyCollection<ColumnInfo> columns)
+    private async Task<Dictionary<string, List<LookupOption>>> LoadObjectLookupOptionsAsync(
+        ClassDefinition selectedClass, IReadOnlyCollection<ColumnInfo> columns, DatabaseService db)
     {
         var result = new Dictionary<string, List<LookupOption>>(StringComparer.OrdinalIgnoreCase);
-        if (_offlineProject == null || _selectedClass == null) return result;
+        var tableName = selectedClass.PrimaryStorage.TableName;
+        var onlineLookup = db == null ? null : new LookupOptionsService(db);
         foreach (var column in columns)
         {
-            var field = _selectedClass.Fields.FirstOrDefault(f => f.Name.Equals(column.Name, StringComparison.OrdinalIgnoreCase))
+            var field = selectedClass.Fields.FirstOrDefault(f => f.Name.Equals(column.Name, StringComparison.OrdinalIgnoreCase))
                 ?? new FieldDefinition { Name = column.Name };
-            var options = GetOfflineLookupOptions(field, _selectedClass.Name, tableName);
+            bool candidate = !string.IsNullOrWhiteSpace(field.LookupTable)
+                || LookupGenerationRuleSelector.Find(LookupGenerationSettingsRuntime.Current, selectedClass.Name, tableName, field.Name) != null
+                || new[] { "Area", "AreaName", "PLC", "Class", "PLCClassNumber", "PLCClasssNumber", "Type", "Unit" }
+                    .Contains(field.Name, StringComparer.OrdinalIgnoreCase);
+            if (!candidate) continue;
+            var options = await ReadObjectLookupAsync(selectedClass, field, onlineLookup);
             if (options.Count > 0 || !string.IsNullOrWhiteSpace(field.LookupTable))
                 result[column.Name] = options.ToList();
         }
         return result;
-    }
-
-    private async Task<Dictionary<string, List<LookupOption>>> LoadLookupOptionsForProjectTableAsync(string tableName)
-    {
-        var result = new Dictionary<string, List<LookupOption>>(StringComparer.OrdinalIgnoreCase);
-        var lookup = new LookupOptionsService(new DatabaseService(_connection.ToConnectionString(_selectedDatabase)));
-        // Не опрашиваем БД для каждого произвольного поля: это было причиной долгого
-        // открытия окна нового объекта. Сначала берём явные связи класса, затем только
-        // поля, для которых есть известная системная эвристика.
-        foreach (var field in _selectedClass.Fields)
-        {
-            bool candidate = LookupGenerationRuleSelector.Find(LookupGenerationSettingsRuntime.Current, _selectedClass.Name, tableName, field.Name) != null
-                || !string.IsNullOrWhiteSpace(field.LookupTable)
-                || field.Name.Equals("Area", StringComparison.OrdinalIgnoreCase)
-                || field.Name.Equals("AreaName", StringComparison.OrdinalIgnoreCase)
-                || field.Name.Equals("PLC", StringComparison.OrdinalIgnoreCase)
-                || field.Name.Equals("Class", StringComparison.OrdinalIgnoreCase)
-                || field.Name.Equals("PLCClassNumber", StringComparison.OrdinalIgnoreCase)
-                || field.Name.Equals("Type", StringComparison.OrdinalIgnoreCase)
-                || field.Name.Equals("Unit", StringComparison.OrdinalIgnoreCase);
-            if (!candidate) continue;
-            try
-            {
-                var options = await lookup.TryGetAsync(_selectedClass.Name, tableName, field.Name, default, field.LookupTable, field.LookupKeyField, field.LookupDisplayField);
-                if (options.Count > 0 || !string.IsNullOrWhiteSpace(field.LookupTable)) result[field.Name] = options.ToList();
-            }
-            catch { }
-        }
-        return result;
-    }
-
-    private async Task<int> NextRecordAsync(DatabaseService db)
-    {
-        if (!_objects.Columns.Contains("Record")) return 1;
-        int plc = _objects.Columns.Contains("PLC") ? 1 : 0;
-        int max = _objects.Rows.Cast<DataRow>().Where(r => !_objects.Columns.Contains("PLC") || r["PLC"] == DBNull.Value || Convert.ToInt32(r["PLC"]) == plc).Select(r => r["Record"] == DBNull.Value ? 0 : Convert.ToInt32(r["Record"])).DefaultIfEmpty(0).Max();
-        await Task.CompletedTask;
-        return max + 1;
     }
 
     private async void Refresh_Click(object sender, RoutedEventArgs e)

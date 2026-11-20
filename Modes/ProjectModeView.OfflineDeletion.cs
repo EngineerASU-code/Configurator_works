@@ -17,6 +17,7 @@ public partial class ProjectModeView
     private async Task<bool> DeleteOfflineConfigurationValueAsync(OfflineProjectDataSource source, int expectedGeneration)
     {
         if (_selectedRow == null) return false;
+        var timer = System.Diagnostics.Stopwatch.StartNew();
         var table = source.ResolveTableName(_configurationTableName);
         var schema = source.GetSchema(table)
             ?? throw new InvalidOperationException($"В локальном проекте отсутствует схема «{table}». Удаление отменено.");
@@ -27,14 +28,21 @@ public partial class ProjectModeView
         var targetRecord = records[rowIndex];
         var relations = BuildOfflineDeletionRelations(source, table);
         var targetKey = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
-        foreach (var relation in relations)
-            foreach (var column in relation.TargetColumns)
-                if (!targetKey.ContainsKey(column) && TryReadProjectValue(targetRecord, schema, column, out var value))
-                    targetKey[column] = value;
-        if (targetKey.Count == 0)
-            throw new InvalidOperationException("Не удалось определить логический ключ выбранного значения. Удаление отменено.");
+        IEnumerable<string> identityColumns = schema.HasStableKey ? schema.KeyColumns : new[] { _configurationKeyColumn };
+        foreach (var column in identityColumns.Where(column => !string.IsNullOrWhiteSpace(column)))
+            if (TryReadProjectValue(targetRecord, schema, column, out var value))
+                targetKey[column] = value;
+        var targetColumns = relations.SelectMany(relation => relation.TargetColumns)
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+        foreach (var column in targetColumns)
+        {
+            if (!TryReadProjectValue(targetRecord, schema, column, out var value))
+                throw new InvalidOperationException($"В записи отсутствует поле связи «{column}». Удаление отменено.");
+            targetKey[column] = value;
+        }
 
         var dependencies = FindOfflineDependents(source, targetRecord, targetKey, relations);
+        SessionTestLog.Trace("CRUD", $"operation=DeleteConfigurationValue; phase=dependencies; source=offline; table='{table}'; dependentRows={dependencies.Count}; elapsedMs={timer.ElapsedMilliseconds}");
         if (dependencies.Any(item => item.Hit.SourceKey.Count == 0))
             throw new InvalidOperationException("В снимке найдены зависимые строки без стабильного ключа. Их нельзя безопасно заменить; удаление отменено.");
         if (dependencies.Count > 0 && dependencies.Any(item => !CanReplaceOfflineDependency(item)))
@@ -57,7 +65,7 @@ public partial class ProjectModeView
                     Candidates = candidates
                 });
             }
-            var dialog = new DependencyReplacementWindow(options) { Owner = Window.GetWindow(this) };
+            var dialog = new DependencyReplacementWindow(options, requireExistingCandidates: true) { Owner = Window.GetWindow(this) };
             if (dialog.ShowDialog() != true) return false;
             replacements = dialog.Replacements;
             if (replacements.Count != dependencies.Count)
@@ -81,6 +89,8 @@ public partial class ProjectModeView
         foreach (var pair in targetKey)
             if (!targetIdentity.ContainsKey(pair.Key)) targetIdentity[pair.Key] = pair.Value ?? DBNull.Value;
 
+        if (expectedGeneration != _workspaceGeneration || !ReferenceEquals(source, _offlineSource)) return false;
+        var commitTimer = System.Diagnostics.Stopwatch.StartNew();
         var before = SnapshotProjectRecord(targetRecord, schema);
         var relatedChanges = new List<ChangeJournalRowChange>();
         await source.ExecuteMutationTransactionAsync(async () =>
@@ -141,6 +151,7 @@ public partial class ProjectModeView
                 throw new InvalidOperationException("Удаление не затронуло ровно одну строку. Все изменения отменены.");
         });
 
+        SessionTestLog.Trace("CRUD", $"operation=DeleteConfigurationValue; phase=committed; source=offline; table='{table}'; elapsedMs={commitTimer.ElapsedMilliseconds}");
         var description = $"Удалено значение {_configurationKind}: «{GetConfigurationKeyValue()}»";
         if (dependencies.Count > 0)
             description += $"; заменено ссылок: {dependencies.Count}";
@@ -160,39 +171,58 @@ public partial class ProjectModeView
         var targetSchema = source.GetSchema(targetTable);
         if (targetSchema == null) return result;
 
-        void Add(string sourceTableName, string sourceColumn, string targetTableName, string targetColumn, string rule)
+        void Add(string sourceTableName, IEnumerable<string> sourceColumns, string targetTableName, IEnumerable<string> targetColumns,
+            string rule, DatabaseRelationKind kind = DatabaseRelationKind.ConventionalLookup, RelationConfidence confidence = RelationConfidence.High)
         {
-            if (string.IsNullOrWhiteSpace(sourceTableName) || string.IsNullOrWhiteSpace(sourceColumn) ||
-                string.IsNullOrWhiteSpace(targetTableName) || string.IsNullOrWhiteSpace(targetColumn)) return;
+            var sourceColumnList = sourceColumns?.Where(column => !string.IsNullOrWhiteSpace(column)).ToList() ?? new List<string>();
+            var targetColumnList = targetColumns?.Where(column => !string.IsNullOrWhiteSpace(column)).ToList() ?? new List<string>();
+            if (string.IsNullOrWhiteSpace(sourceTableName) || string.IsNullOrWhiteSpace(targetTableName) ||
+                sourceColumnList.Count == 0 || sourceColumnList.Count != targetColumnList.Count) return;
             string resolvedSource = source.ResolveTableName(sourceTableName);
             string resolvedTarget = source.ResolveTableName(targetTableName);
             var sourceSchema = source.GetSchema(resolvedSource);
             var resolvedTargetSchema = source.GetSchema(resolvedTarget);
-            bool sourceColumnExists = sourceSchema?.Columns.Any(column => column.Name.Equals(sourceColumn, StringComparison.OrdinalIgnoreCase)) == true
-                || source.GetRecords(resolvedSource).Any(record => record.Values.ContainsKey(sourceColumn));
-            if (!sourceColumnExists || resolvedTargetSchema == null ||
-                !resolvedTargetSchema.Columns.Any(column => column.Name.Equals(targetColumn, StringComparison.OrdinalIgnoreCase)) ||
+            bool sourceColumnsExist = sourceColumnList.All(sourceColumn =>
+                sourceSchema?.Columns.Any(column => column.Name.Equals(sourceColumn, StringComparison.OrdinalIgnoreCase)) == true ||
+                source.GetRecords(resolvedSource).Any(record => record.Values.ContainsKey(sourceColumn)));
+            if (!sourceColumnsExist || resolvedTargetSchema == null ||
+                targetColumnList.Any(targetColumn => !resolvedTargetSchema.Columns.Any(column => column.Name.Equals(targetColumn, StringComparison.OrdinalIgnoreCase))) ||
                 !resolvedTarget.Equals(targetTable, StringComparison.OrdinalIgnoreCase)) return;
             if (result.Any(relation => relation.SourceTable.Equals(resolvedSource, StringComparison.OrdinalIgnoreCase) &&
-                relation.SourceColumns.SequenceEqual(new[] { sourceColumn }, StringComparer.OrdinalIgnoreCase) &&
-                relation.TargetColumns.SequenceEqual(new[] { targetColumn }, StringComparer.OrdinalIgnoreCase))) return;
+                relation.SourceColumns.SequenceEqual(sourceColumnList, StringComparer.OrdinalIgnoreCase) &&
+                relation.TargetColumns.SequenceEqual(targetColumnList, StringComparer.OrdinalIgnoreCase))) return;
             var relation = new DatabaseRelation
             {
                 SourceTable = resolvedSource,
                 TargetTable = resolvedTarget,
-                Kind = DatabaseRelationKind.ConventionalLookup,
-                Confidence = RelationConfidence.High,
+                Kind = kind,
+                Confidence = confidence,
                 RuleId = rule,
-                Comment = $"Значение {sourceColumn} использует запись из {resolvedTarget}.{targetColumn}."
+                Comment = $"Значение {string.Join(", ", sourceColumnList)} использует запись из {resolvedTarget}.{string.Join(", ", targetColumnList)}."
             };
-            relation.SourceColumns.Add(sourceColumn);
-            relation.TargetColumns.Add(targetColumn);
+            relation.SourceColumns.AddRange(sourceColumnList);
+            relation.TargetColumns.AddRange(targetColumnList);
             result.Add(relation);
         }
 
-        var graph = new GraphRelationStore(_offlineProject!).Load();
+        // Captured relations are the same physical and inferred edges used by Online.
+        // Keep composite keys intact so deletion checks every part of the relationship.
+        var capturedSchema = DatabaseGraphRelationMaterializer.ReadCapturedSchema(source.Project.Architecture["physicalSchema"]);
+        if (capturedSchema?.FindTable(targetTable) == null)
+            throw new InvalidOperationException("Локальный снимок не содержит схему связей этой таблицы. Обновите снимок перед удалением.");
+        foreach (var relation in capturedSchema.Relations.Where(relation =>
+                     relation.TargetTable.Equals(targetTable, StringComparison.OrdinalIgnoreCase) &&
+                     relation.Kind != DatabaseRelationKind.UnresolvedCandidate))
+        {
+            if (!relation.IsUsableForDeletionProtection)
+                throw new InvalidOperationException($"Связь «{relation.SourceTable} → {targetTable}» не подтверждена. Удаление отменено.");
+            Add(relation.SourceTable, relation.SourceColumns, relation.TargetTable, relation.TargetColumns,
+                relation.RuleId, relation.Kind, relation.Confidence);
+        }
+
+        var graph = new GraphRelationStore(_offlineProject!).Load(strict: true);
         foreach (var manual in graph.ManualRelations ?? new List<GraphRelationDefinition>())
-            Add(manual.Source, manual.SourceColumn, manual.Target, manual.TargetColumn, "project-manual");
+            Add(manual.Source, new[] { manual.SourceColumn }, manual.Target, new[] { manual.TargetColumn }, "project-manual");
 
         foreach (var definition in _architecture.Classes)
         {
@@ -200,7 +230,7 @@ public partial class ProjectModeView
             if (string.IsNullOrWhiteSpace(storage)) continue;
             foreach (var field in _architecture.GetEffectiveFields(definition))
                 if (!string.IsNullOrWhiteSpace(field.LookupTable) && !string.IsNullOrWhiteSpace(field.LookupKeyField))
-                    Add(storage, field.Name, field.LookupTable, field.LookupKeyField, "class-field-lookup");
+                    Add(storage, new[] { field.Name }, field.LookupTable, new[] { field.LookupKeyField }, "class-field-lookup");
         }
 
         var targetLeaf = targetTable.Split('.').Last().Trim('[', ']');
@@ -213,9 +243,9 @@ public partial class ProjectModeView
                 foreach (var sourceSchema in source.GetTables())
                 {
                     if (sourceSchema.TableName.Equals(targetTable, StringComparison.OrdinalIgnoreCase)) continue;
-                    Add(sourceSchema.TableName, "PLC", targetTable, targetColumn, "plc-record");
+                    Add(sourceSchema.TableName, new[] { "PLC" }, targetTable, new[] { targetColumn }, "plc-record");
                     if (sourceSchema.TableName.Split('.').Last().Equals("PLC_CFG", StringComparison.OrdinalIgnoreCase))
-                        Add(sourceSchema.TableName, "PLC_Number", targetTable, targetColumn, "plc-config-number");
+                        Add(sourceSchema.TableName, new[] { "PLC_Number" }, targetTable, new[] { targetColumn }, "plc-config-number");
                 }
             }
         }
@@ -226,7 +256,7 @@ public partial class ProjectModeView
                 foreach (var sourceSchema in source.GetTables())
                 {
                     if (sourceSchema.TableName.Equals(targetTable, StringComparison.OrdinalIgnoreCase)) continue;
-                    Add(sourceSchema.TableName, "Area", targetTable, targetColumn, "area-name");
+                    Add(sourceSchema.TableName, new[] { "Area" }, targetTable, new[] { targetColumn }, "area-name");
                 }
         }
         return result;
@@ -339,7 +369,8 @@ public partial class ProjectModeView
     {
         description = string.Empty;
         var schema = source.GetSchema(dependency.Hit.SourceTable);
-        if (schema == null || !schema.HasStableKey || schema.KeyColumns.Count == 0) return false;
+        if (schema == null || !schema.HasStableKey || schema.KeyColumns.Count == 0 ||
+            !schema.KeyColumns.Intersect(dependency.Relation.SourceColumns, StringComparer.OrdinalIgnoreCase).Any()) return false;
         var projected = (JsonObject)dependency.Record.Values.DeepClone();
         for (var index = 0; index < dependency.Relation.SourceColumns.Count; index++)
             projected[dependency.Relation.SourceColumns[index]] = ProjectKeyCodec.ToNode(values[index]);
@@ -404,12 +435,12 @@ public partial class ProjectModeView
         if (!record.Values.TryGetPropertyValue(column, out var node)) return false;
         var columnSchema = schema.Columns.FirstOrDefault(candidate => candidate.Name.Equals(column, StringComparison.OrdinalIgnoreCase));
         if (node == null) return true;
-        if (columnSchema != null && TryConvertValue(node, columnSchema.DataType, out value)) return true;
+        if (columnSchema != null && TryConvertSnapshotValue(node, columnSchema.DataType, out value)) return true;
         value = node.ToString();
         return true;
     }
 
-    private static bool TryConvertValue(JsonNode? node, string dataType, out object value)
+    internal static bool TryConvertSnapshotValue(JsonNode? node, string dataType, out object value)
     {
         value = DBNull.Value;
         if (node == null) return true;

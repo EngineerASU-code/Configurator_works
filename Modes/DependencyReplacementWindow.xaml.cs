@@ -12,10 +12,12 @@ namespace Configurator;
 public partial class DependencyReplacementWindow : Window
 {
     private readonly List<Row> _rows = new();
+    private readonly bool _requireExistingCandidates;
     public IReadOnlyList<ReferenceReplacement> Replacements { get; private set; } = Array.Empty<ReferenceReplacement>();
 
-    public DependencyReplacementWindow(IEnumerable<DependencyOption> options)
+    public DependencyReplacementWindow(IEnumerable<DependencyOption> options, bool requireExistingCandidates = false)
     {
+        _requireExistingCandidates = requireExistingCandidates;
         InitializeComponent();
         var list = (options ?? Array.Empty<DependencyOption>()).ToList();
         foreach (var option in list)
@@ -125,7 +127,7 @@ public partial class DependencyReplacementWindow : Window
             root.Children.Add(label);
 
             var choices = new List<GroupParameterChoice>();
-            for (var i = 0; i < columns.Count; i++)
+            for (var i = 0; i < Math.Min(columns.Count, 2); i++)
             {
                 var column = columns[i];
                 var combo = CreateParameterCombo(rows, i);
@@ -143,8 +145,6 @@ public partial class DependencyReplacementWindow : Window
                 Grid.SetColumn(wrapper, Math.Min(i + 1, 2));
                 root.Children.Add(wrapper);
 
-                if (i == 1 && columns.Count > 2)
-                    break;
             }
 
             // If there are more than two linked columns, put the remaining editors on a second line.
@@ -155,7 +155,8 @@ public partial class DependencyReplacementWindow : Window
                 var extra = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
                 for (var i = 2; i < columns.Count; i++)
                 {
-                    var choice = choices[i];
+                    var choice = new GroupParameterChoice(columns[i], CreateParameterCombo(rows, i));
+                    choices.Add(choice);
                     var wrapper = new StackPanel { Width = 180, Margin = new Thickness(0, 0, 8, 0) };
                     wrapper.Children.Add(new TextBlock
                     {
@@ -231,11 +232,19 @@ public partial class DependencyReplacementWindow : Window
             selected[i] = value.Value;
         }
 
-        foreach (var row in rows)
+        var matched = rows.Select(row => row.Option.Candidates.FirstOrDefault(candidate =>
+            !candidate.IsConflict && candidate.Values.Count == selected.Length &&
+            candidate.Values.Select((value, index) => EqualsNormalized(value, selected[index])).All(x => x))).ToArray();
+        if (_requireExistingCandidates && matched.Any(candidate => candidate == null))
         {
-            var exact = row.Option.Candidates.FirstOrDefault(candidate =>
-                !candidate.IsConflict && candidate.Values.Count == selected.Length &&
-                candidate.Values.Select((value, index) => EqualsNormalized(value, selected[index])).All(x => x));
+            Configurator.Infrastructure.ModernDialog.Show(
+                "Выбранная комбинация отсутствует среди допустимых замен для части строк.",
+                "Замена ссылок", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        foreach (var (row, exact) in rows.Zip(matched))
+        {
 
             if (exact != null)
             {

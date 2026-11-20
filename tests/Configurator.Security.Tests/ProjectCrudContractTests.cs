@@ -64,4 +64,35 @@ public sealed class ProjectCrudContractTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => source.CreateRecordAsync("dbo.Unknown",
             new Dictionary<string, object?> { ["Id"] = 9 }));
     }
+
+    [Fact]
+    public async Task OfflineCreateWithKeyReturnsGeneratedIdentity()
+    {
+        var project = new ConfiguratorProject
+        {
+            Manifest = new ConfiguratorProjectManifest { Name = "Generated key" },
+            TableSchemas = { new ProjectTableSchema
+            {
+                TableName = "dbo.Items", KeyColumns = { "Id" }, HasStableKey = true,
+                Columns =
+                {
+                    new ProjectColumnSchema { Name = "Id", DataType = "int", IsIdentity = true },
+                    new ProjectColumnSchema { Name = "Name", DataType = "nvarchar" }
+                }
+            } },
+            LocalRecords =
+            {
+                new ProjectRecord { TableName = "dbo.Items", Key = "one", Values = new JsonObject { ["Id"] = 1, ["Name"] = "one" } },
+                new ProjectRecord { TableName = "dbo.Items", Key = "two", Values = new JsonObject { ["Id"] = 4, ["Name"] = "two" } }
+            }
+        };
+        var source = new OfflineProjectDataSource(project);
+        using var session = new ProjectCrudSession(source);
+
+        var key = await session.CreateRecordAndGetKeyAsync("dbo.Items",
+            new Dictionary<string, object?> { ["Name"] = "three" });
+
+        Assert.Equal(5L, key["Id"]);
+        Assert.Equal("5", source.GetRecords("dbo.Items").Single(x => x.Values["Name"]!.ToString() == "three").Values["Id"]!.ToString());
+    }
 }

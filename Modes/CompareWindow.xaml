@@ -1,0 +1,278 @@
+<Window x:Class="Configurator.CompareWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Сравнение проектов"
+        Width="1220" Height="735" MinWidth="900" MinHeight="600"
+        WindowStartupLocation="Manual"
+        Background="{DynamicResource BrushBase}"
+        Foreground="{DynamicResource BrushText}">
+    <Window.Resources>
+        <Style x:Key="CompareResultRowStyle" TargetType="DataGridRow">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource BrushText}"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding StatusText}" Value="ТОЛЬКО A">
+                    <Setter Property="Background" Value="#142D8ED4"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding StatusText}" Value="ТОЛЬКО B">
+                    <Setter Property="Background" Value="#142F9E63"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding StatusText}" Value="ИЗМЕНЕНО">
+                    <Setter Property="Background" Value="#14E8A33D"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding StatusText}" Value="НЕОДНОЗНАЧНО">
+                    <Setter Property="Background" Value="#14D97706"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding StatusText}" Value="НЕ СОПОСТАВИМО">
+                    <Setter Property="Background" Value="#148B5CF6"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding StatusText}" Value="ОШИБКА">
+                    <Setter Property="Background" Value="#14DC2626"/>
+                </DataTrigger>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource BrushSelected}"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <DockPanel Grid.Row="0" Margin="2,0,2,8">
+            <StackPanel>
+                <TextBlock Text="Сравнение проектов" FontSize="25" FontWeight="SemiBold"/>
+            </StackPanel>
+        </DockPanel>
+
+        <Grid Grid.Row="1" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="230"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="Сценарий" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            <ComboBox x:Name="ScenarioBox" Grid.Column="1" SelectionChanged="ScenarioBox_SelectionChanged"/>
+            <Button x:Name="FlipButton" Grid.Column="2" Content="⇄  Поменять стороны"
+                    Click="FlipButton_Click" Style="{StaticResource BtnSecondary}"
+                    Margin="12,0,0,0"/>
+            <Button x:Name="CompareButton" Grid.Column="4" Content="Сравнить"
+                    Click="CompareButton_Click" Style="{StaticResource BtnPrimary}"
+                    MinWidth="116"/>
+        </Grid>
+
+        <Grid Grid.Row="2" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="12"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Border Grid.Column="0" Padding="14" CornerRadius="10" BorderThickness="1"
+                    BorderBrush="{DynamicResource BrushBorder}" Background="{DynamicResource BrushPanel}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                        <TextBlock Text="ПРОЕКТ A" FontWeight="Bold" FontSize="12"/>
+                    <Grid Grid.Row="1" Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="8"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <ComboBox x:Name="OnlineDatabaseA" Grid.ColumnSpan="3"
+                                  SelectionChanged="OnlineDatabase_SelectionChanged"/>
+                        <TextBox x:Name="OfflinePathA" IsReadOnly="True" Visibility="Collapsed"
+                                 VerticalContentAlignment="Center" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+                        <Button x:Name="OpenOfflineA" Grid.Column="2" Content="Выбрать файл…"
+                                AutomationProperties.Name="Выбрать офлайн-проект A"
+                                Visibility="Collapsed" Click="OpenOfflineA_Click"
+                                Style="{StaticResource BtnSecondary}"/>
+                    </Grid>
+                </Grid>
+            </Border>
+            <Border Grid.Column="2" Padding="14" CornerRadius="10" BorderThickness="1"
+                    BorderBrush="{DynamicResource BrushBorder}" Background="{DynamicResource BrushPanel}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                        <TextBlock Text="ПРОЕКТ B" FontWeight="Bold" FontSize="12"/>
+                    <Grid Grid.Row="1" Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="8"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <ComboBox x:Name="OnlineDatabaseB" Grid.ColumnSpan="3"
+                                  SelectionChanged="OnlineDatabase_SelectionChanged"/>
+                        <TextBox x:Name="OfflinePathB" IsReadOnly="True" Visibility="Collapsed"
+                                 VerticalContentAlignment="Center" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+                        <Button x:Name="OpenOfflineB" Grid.Column="2" Content="Выбрать файл…"
+                                AutomationProperties.Name="Выбрать офлайн-проект B"
+                                Visibility="Collapsed" Click="OpenOfflineB_Click"
+                                Style="{StaticResource BtnSecondary}"/>
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <Grid Grid.Row="3" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="180"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock x:Name="ProgressText" VerticalAlignment="Center"
+                       Foreground="{DynamicResource BrushTextSecondary}"
+                       Text="Выберите источники и запустите сравнение."/>
+            <ProgressBar x:Name="ProgressBar" Grid.Column="1" Width="150" Height="5" Margin="0,0,16,0"
+                         IsIndeterminate="True" Visibility="Collapsed"/>
+            <ComboBox x:Name="FilterBox" Grid.Column="2" VerticalAlignment="Center"
+                      SelectionChanged="FilterBox_SelectionChanged"/>
+        </Grid>
+
+        <TabControl x:Name="CompareTabs" Grid.Row="4" SelectionChanged="CompareTabs_SelectionChanged">
+            <TabItem x:Name="ArchitectureTab" Header="Режим 2 — Архитектура">
+                <TabControl x:Name="ArchitectureSections" SelectionChanged="ArchitectureSections_SelectionChanged">
+                    <TabItem x:Name="GraphTab" Header="Граф / Таблицы">
+                        <DataGrid x:Name="GraphGrid" AutoGenerateColumns="False" IsReadOnly="True"
+                                  CanUserAddRows="False" CanUserDeleteRows="False"
+                                  EnableRowVirtualization="True" EnableColumnVirtualization="True"
+                                  ScrollViewer.CanContentScroll="True" RowStyle="{StaticResource CompareResultRowStyle}"
+                                  SelectionChanged="DifferenceGrid_SelectionChanged">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Структура" Binding="{Binding Title}" Width="2*"/>
+                                <DataGridTextColumn Header="Проект A" Binding="{Binding A}" Width="*"/>
+                                <DataGridTextColumn Header="Проект B" Binding="{Binding B}" Width="*"/>
+                                <DataGridTextColumn Header="Статус" Binding="{Binding StatusText}" Width="150"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </TabItem>
+                    <TabItem x:Name="RelationsTab" Header="Связи">
+                        <DataGrid x:Name="RelationsGrid" AutoGenerateColumns="False" IsReadOnly="True"
+                                  CanUserAddRows="False" CanUserDeleteRows="False"
+                                  EnableRowVirtualization="True" EnableColumnVirtualization="True"
+                                  ScrollViewer.CanContentScroll="True" RowStyle="{StaticResource CompareResultRowStyle}"
+                                  SelectionChanged="DifferenceGrid_SelectionChanged">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Связь" Binding="{Binding Title}" Width="2*"/>
+                                <DataGridTextColumn Header="Проект A" Binding="{Binding A}" Width="*"/>
+                                <DataGridTextColumn Header="Проект B" Binding="{Binding B}" Width="*"/>
+                                <DataGridTextColumn Header="Статус" Binding="{Binding StatusText}" Width="150"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </TabItem>
+                    <TabItem x:Name="FieldsTab" Header="Классы и поля">
+                        <DataGrid x:Name="FieldsGrid" AutoGenerateColumns="False" IsReadOnly="True"
+                                  CanUserAddRows="False" CanUserDeleteRows="False"
+                                  EnableRowVirtualization="True" EnableColumnVirtualization="True"
+                                  ScrollViewer.CanContentScroll="True" RowStyle="{StaticResource CompareResultRowStyle}"
+                                  SelectionChanged="DifferenceGrid_SelectionChanged">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Элемент" Binding="{Binding Title}" Width="2*"/>
+                                <DataGridTextColumn Header="Проект A" Binding="{Binding A}" Width="*"/>
+                                <DataGridTextColumn Header="Проект B" Binding="{Binding B}" Width="*"/>
+                                <DataGridTextColumn Header="Статус" Binding="{Binding StatusText}" Width="150"/>
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </TabItem>
+                </TabControl>
+            </TabItem>
+            <TabItem x:Name="ObjectsTab" Header="Режим 3 — Объекты и данные">
+                <DataGrid x:Name="ObjectsGrid" AutoGenerateColumns="False" IsReadOnly="True"
+                          CanUserAddRows="False" CanUserDeleteRows="False"
+                          EnableRowVirtualization="True" EnableColumnVirtualization="True"
+                          ScrollViewer.CanContentScroll="True" RowStyle="{StaticResource CompareResultRowStyle}"
+                          SelectionChanged="DifferenceGrid_SelectionChanged">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Объект / параметр" Binding="{Binding Title}" Width="2*"/>
+                        <DataGridTextColumn Header="Проект A" Binding="{Binding A}" Width="*"/>
+                        <DataGridTemplateColumn Header="B → A" Width="72">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <Button Content="←" Click="TransferBtoA_Click"
+                                            AutomationProperties.Name="{Binding TransferBtoAAccessibilityName}"
+                                            IsEnabled="{Binding CanTransferBtoA}"
+                                            ToolTipService.ShowOnDisabled="True"
+                                            ToolTip="{Binding TransferBtoAReason}"/>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTemplateColumn Header="A → B" Width="72">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <Button Content="→" Click="TransferAtoB_Click"
+                                            AutomationProperties.Name="{Binding TransferAtoBAccessibilityName}"
+                                            IsEnabled="{Binding CanTransferAtoB}"
+                                            ToolTipService.ShowOnDisabled="True"
+                                            ToolTip="{Binding TransferAtoBReason}"/>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTextColumn Header="Проект B" Binding="{Binding B}" Width="*"/>
+                        <DataGridTextColumn Header="Статус" Binding="{Binding StatusText}" Width="150"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </TabItem>
+        </TabControl>
+
+        <Border Grid.Row="5" Margin="0,8,0,0" Padding="10" CornerRadius="7"
+                MinHeight="82" MaxHeight="172"
+                Background="{DynamicResource BrushPanel}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <DockPanel Grid.ColumnSpan="2" Margin="0,0,0,8">
+                    <TextBlock x:Name="DetailStatus" DockPanel.Dock="Right" Margin="12,0,0,0"
+                               Foreground="{DynamicResource BrushTextSecondary}" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="DetailTitle" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
+                               VerticalAlignment="Center" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+                </DockPanel>
+                <Border Grid.Row="1" Grid.Column="0" Margin="0,0,6,0" Padding="8,5"
+                        CornerRadius="5" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                        <TextBlock Text="Проект A" FontWeight="SemiBold" FontSize="11"
+                                   Foreground="{DynamicResource BrushTextSecondary}"/>
+                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                            <TextBlock x:Name="DetailA" Margin="0,3,0,0" TextWrapping="Wrap"/>
+                        </ScrollViewer>
+                    </Grid>
+                </Border>
+                <Border Grid.Row="1" Grid.Column="1" Margin="6,0,0,0" Padding="8,5"
+                        CornerRadius="5" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                        <TextBlock Text="Проект B" FontWeight="SemiBold" FontSize="11"
+                                   Foreground="{DynamicResource BrushTextSecondary}"/>
+                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                            <TextBlock x:Name="DetailB" Margin="0,3,0,0" TextWrapping="Wrap"/>
+                        </ScrollViewer>
+                    </Grid>
+                </Border>
+                <TextBlock x:Name="DetailIssue" Grid.Row="2" Grid.ColumnSpan="2" Margin="0,6,0,0"
+                           Foreground="{DynamicResource BrushTextSecondary}" TextWrapping="Wrap"/>
+            </Grid>
+        </Border>
+
+    </Grid>
+</Window>

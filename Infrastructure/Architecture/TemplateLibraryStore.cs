@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -28,20 +28,23 @@ public sealed class TemplateLibraryStore
         _path = string.Empty;
     }
 
-    public List<ClassDefinition> Load()
+    public List<ClassDefinition> Load(bool strict = false)
     {
         try
         {
             if (_project != null)
             {
-                if (_project.Architecture["classDefinitions"] is not JsonArray localArray) return new List<ClassDefinition>();
+                var localDefinitions = _project.Architecture["classDefinitions"];
+                if (localDefinitions is null) return new List<ClassDefinition>();
+                if (localDefinitions is not JsonArray localArray)
+                    throw new JsonException("Некорректный раздел определений классов.");
                 return localArray.Deserialize<List<ClassDefinition>>() ?? new List<ClassDefinition>();
             }
-            if (!File.Exists(_path)) return new List<ClassDefinition>();
             var json = File.ReadAllText(_path);
-            return JsonSerializer.Deserialize<List<ClassDefinition>>(json) ?? new List<ClassDefinition>();
+            return JsonSerializer.Deserialize<List<ClassDefinition>>(json)
+                ?? throw new JsonException("Библиотека классов содержит NULL вместо списка.");
         }
-        catch
+        catch (Exception ex) when (!strict || ex is FileNotFoundException or DirectoryNotFoundException)
         {
             return new List<ClassDefinition>();
         }

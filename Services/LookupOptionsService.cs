@@ -52,161 +52,18 @@ public sealed class LookupOptionsService
             // Explicit class-field metadata has priority over naming conventions.
             displayHint = displayHint ?? "Name";
         }
-        else switch (fieldName.Trim().ToUpperInvariant())
+        else
         {
-            case "AREA":
-                lookupTable = "dbo.Areas";
-                preferredKey = "AreaName";
-                displayHint = "AreaNameL2";
-                useAreaNameLookup = true;
-                break;
-            case "UNIT":
-                lookupTable = "dbo.Units";
-                preferredKey = "Unit_ID";
-                displayHint = "Name";
-                break;
-            case "PLC":
-                lookupTable = "dbo.PLC";
-                preferredKey = "Record";
-                displayHint = "Name";
-                break;
-            case "CLASS":
-                lookupTable = "dbo.Classes";
-                preferredKey = "Record";
-                displayHint = "Name";
-                break;
-            case "PLCCLASSNUMBER":
-            case "PLCCLASSSNUMBER":
-                // Different project schemas use slightly different spellings for this
-                // lookup table and its key column. Resolve the real table/key below.
-                lookupTable = "dbo.PLCClasssNumbers";
-                preferredKey = "PLCClassNumber";
-                displayHint = "Name";
-                break;
-            case "TYPE":
-                var definition = SystemLookupCatalog.Find(tableName, "Type") ?? SystemLookupCatalog.ForClass(className);
-                lookupTable = definition?.LookupTable;
-                preferredKey = definition?.LookupKeyField;
-                displayHint = "Name";
-                break;
+            LookupOptionRules.ResolveConventionalLookup(tableName, className, fieldName,
+                out lookupTable, out preferredKey, out displayHint, out useAreaNameLookup);
         }
 
         _tableListCache ??= await _db.GetTableListAsync(ct);
-        var tables = _tableListCache;
-        string FullName(DataRow r) => $"{Convert.ToString(r["TABLE_SCHEMA"])}.{Convert.ToString(r["TABLE_NAME"])}";
-        bool Exists(string candidate) => tables.Rows.Cast<DataRow>().Any(r => FullName(r).Equals(candidate, StringComparison.OrdinalIgnoreCase));
-
-        // Older projects use PLC_Types / PLCTypes while the generated lookup rule
-        // names dbo.PLCType. Resolve those known spellings before enforcing the rule.
-        if (fieldName.Equals("Type", StringComparison.OrdinalIgnoreCase)
-            && string.Equals(className, "PLC", StringComparison.OrdinalIgnoreCase)
-            && !Exists(lookupTable))
-        {
-            lookupTable = new[] { "dbo.PLCType", "dbo.PLC_Types", "dbo.PLCTypes", "PLCType", "PLC_Types", "PLCTypes" }
-                .FirstOrDefault(Exists);
-            if (!string.IsNullOrWhiteSpace(lookupTable))
-            {
-                if (!_columnCache.TryGetValue(lookupTable, out var plcTypeColumns))
-                {
-                    plcTypeColumns = await _db.GetTableColumnsAsync(lookupTable, ct);
-                    _columnCache[lookupTable] = plcTypeColumns;
-                }
-                var names = plcTypeColumns.Select(c => c.Name).ToList();
-                preferredKey = new[] { "Record", "Type", "ID", "Id" }
-                    .Select(candidate => names.FirstOrDefault(name => name.Equals(candidate, StringComparison.OrdinalIgnoreCase)))
-                    .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name));
-                displayHint = new[] { "Name", "NameL2", "NameL1", "Description", "TypeName" }
-                    .Select(candidate => names.FirstOrDefault(name => name.Equals(candidate, StringComparison.OrdinalIgnoreCase)))
-                    .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name));
-            }
-        }
-
-        if (!Exists(lookupTable) && isPlcClassNumber)
-        {
-            lookupTable = new[] { "dbo.PLCClasssNumbers", "dbo.PLCClasssNumber", "dbo.PLCClassNumbers", "dbo.PLCClassNumber", "dbo.PLCClasses", "dbo.Classes" }
-                .FirstOrDefault(Exists);
-            preferredKey = "PLCClassNumber";
-        }
-        if (!Exists(lookupTable) && fieldName.Equals("Type", StringComparison.OrdinalIgnoreCase) && configuredRule == null && automaticDiscovery)
-        {
-            // Prefer the class's canonical lookup table, but tolerate common schema
-            // variations (singular/plural and abbreviated names) found in project DBs.
-            var classDefinition = SystemLookupCatalog.Find(tableName, "Type") ?? SystemLookupCatalog.ForClass(className);
-            var canonicalLookup = classDefinition?.LookupTable;
-            if (!string.IsNullOrWhiteSpace(canonicalLookup))
-            {
-                var canonicalShort = ShortName(canonicalLookup);
-                var canonicalStem = canonicalShort.EndsWith("Types", StringComparison.OrdinalIgnoreCase)
-                    ? canonicalShort[..^5]
-                    : canonicalShort.EndsWith("Type", StringComparison.OrdinalIgnoreCase) ? canonicalShort[..^4] : canonicalShort;
-                lookupTable = new[] { canonicalLookup, $"dbo.{canonicalStem}Type", $"dbo.{canonicalStem}Types", $"dbo.{canonicalStem}_Type", $"dbo.{canonicalStem}_Types" }.FirstOrDefault(Exists);
-            }
-            var shortName = tableName?.Split('.').LastOrDefault() ?? "";
-            var stem = shortName;
-            if (shortName.EndsWith("ies", StringComparison.OrdinalIgnoreCase) && shortName.Length > 3)
-                stem = shortName[..^3] + "y";
-            else if (shortName.EndsWith("ses", StringComparison.OrdinalIgnoreCase) && shortName.Length > 3)
-                stem = shortName[..^2];
-            else if (shortName.EndsWith("s", StringComparison.OrdinalIgnoreCase) && shortName.Length > 1)
-                stem = shortName[..^1];
-            var candidates = new[] { $"dbo.{stem}Type", $"dbo.{stem}Types", $"dbo.{shortName}Type", $"dbo.{shortName}Types" };
-            lookupTable = lookupTable ?? candidates.FirstOrDefault(Exists);
-            if (string.IsNullOrWhiteSpace(lookupTable))
-            {
-                var allTypeTables = tables.Rows.Cast<DataRow>().Select(FullName)
-                    .Where(n => n.EndsWith("Type", StringComparison.OrdinalIgnoreCase) || n.EndsWith("Types", StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-                lookupTable = allTypeTables.FirstOrDefault(n =>
-                    ShortName(n).Equals(stem + "Type", StringComparison.OrdinalIgnoreCase) ||
-                    ShortName(n).Equals(stem + "Types", StringComparison.OrdinalIgnoreCase) ||
-                    ShortName(n).Equals(shortName + "Type", StringComparison.OrdinalIgnoreCase) ||
-                    ShortName(n).Equals(shortName + "Types", StringComparison.OrdinalIgnoreCase));
-                if (string.IsNullOrWhiteSpace(lookupTable))
-                {
-                    // Strict auto-discovery against the source table. Strip only the
-                    // Type/Types suffix and compare the complete remaining stem, so
-                    // Valve can match Valves_Type but never Valve2S_Type.
-                    static string NormalizeTypeStem(string value)
-                    {
-                        var normalized = new string((value ?? string.Empty).Where(char.IsLetterOrDigit).ToArray()).ToUpperInvariant();
-                        if (normalized.EndsWith("TYPES", StringComparison.Ordinal)) normalized = normalized[..^5];
-                        else if (normalized.EndsWith("TYPE", StringComparison.Ordinal)) normalized = normalized[..^4];
-                        return normalized;
-                    }
-                    static IEnumerable<string> StemVariants(string value)
-                    {
-                        string stemValue = NormalizeTypeStem(value);
-                        if (!string.IsNullOrWhiteSpace(stemValue)) yield return stemValue;
-                        if (stemValue.EndsWith("S", StringComparison.Ordinal) && stemValue.Length > 1) yield return stemValue[..^1];
-                        if (stemValue.EndsWith("IES", StringComparison.Ordinal) && stemValue.Length > 3) yield return stemValue[..^3] + "Y";
-                    }
-                    var sourceStemCandidates = StemVariants(shortName)
-                        .Concat(StemVariants(className ?? string.Empty))
-                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
-                    lookupTable = allTypeTables.FirstOrDefault(n => sourceStemCandidates.Contains(NormalizeTypeStem(ShortName(n))));
-                }
-                if (string.IsNullOrWhiteSpace(lookupTable))
-                {
-                    // Last-resort schema matching: common legacy databases use names
-                    // such as DiscretInType / AnaOutType that do not start with the
-                    // short class label (DI / AI / AO).
-                    var aliases = className?.Trim().ToUpperInvariant() switch
-                    {
-                        "DI" => new[] { "DiscretInType", "DiscreteInType", "DigitalInputType", "DIType" },
-                        "DO" => new[] { "DiscretOutType", "DiscreteOutType", "DigitalOutputType", "DOType" },
-                        "AI" => new[] { "AnaInType", "AnalogInType", "AnalogInputType", "AIType" },
-                        "AO" => new[] { "AnaOutType", "AnalogOutType", "AnalogOutputType", "AOType" },
-                        "PID" => new[] { "ReglerType", "ReglerTypes", "PIDType" },
-                        "DSV" => new[] { "Valve2SType", "DSVType" },
-                        _ => Array.Empty<string>()
-                    };
-                    lookupTable = allTypeTables.FirstOrDefault(n => aliases.Any(a =>
-                        ShortName(n).Equals(a, StringComparison.OrdinalIgnoreCase)));
-                }
-            }
-        }
-        if (configuredRule != null && !Exists(lookupTable)) return Array.Empty<LookupOption>();
-        if (string.IsNullOrWhiteSpace(lookupTable) || !Exists(lookupTable)) return Array.Empty<LookupOption>();
+        var tables = _tableListCache.Rows.Cast<DataRow>()
+            .Select(row => $"{row["TABLE_SCHEMA"]}.{row["TABLE_NAME"]}").ToArray();
+        lookupTable = LookupOptionRules.ResolveLegacyTable(tables, tableName, className, fieldName, lookupTable,
+            automaticDiscovery, configuredRule != null || !string.IsNullOrWhiteSpace(explicitLookupTable));
+        if (lookupTable == null) return Array.Empty<LookupOption>();
 
         if (!_columnCache.TryGetValue(lookupTable, out var columns))
         {
@@ -217,16 +74,10 @@ public sealed class LookupOptionsService
         if (useAreaNameLookup && !columns.Any(c => c.Name.Equals("AreaName", StringComparison.OrdinalIgnoreCase)))
             return Array.Empty<LookupOption>();
 
-        string key = columns.FirstOrDefault(c => !string.IsNullOrWhiteSpace(preferredKey) && c.Name.Equals(preferredKey, StringComparison.OrdinalIgnoreCase))?.Name
-                     ?? (isPlcClassNumber ? columns.FirstOrDefault(c => c.Name.Equals("PLCClasssNumber", StringComparison.OrdinalIgnoreCase))?.Name : null)
-                     ?? (isPlcClassNumber ? columns.FirstOrDefault(c => c.Name.Equals("ClassNumber", StringComparison.OrdinalIgnoreCase))?.Name : null)
-                     ?? (isPlcClassNumber ? columns.FirstOrDefault(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase))?.Name : null)
-                     ?? columns.FirstOrDefault(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase))?.Name
-                     ?? columns.FirstOrDefault(c => c.Name.Equals("Type", StringComparison.OrdinalIgnoreCase))?.Name
-                     ?? columns.FirstOrDefault(c => c.Name.Equals("ID", StringComparison.OrdinalIgnoreCase))?.Name
-                     ?? columns.FirstOrDefault(c => c.Name.EndsWith("ID", StringComparison.OrdinalIgnoreCase))?.Name
-                     ?? (await _db.GetPrimaryKeyColumnsAsync(lookupTable, ct)).FirstOrDefault()
-                     ?? columns.FirstOrDefault()?.Name;
+        var columnNames = columns.Select(column => column.Name).ToList();
+        var keyAliases = isPlcClassNumber ? new[] { "PLCClasssNumber", "ClassNumber" } : Array.Empty<string>();
+        string key = LookupOptionRules.ResolveKeyField(columnNames,
+            await _db.GetPrimaryKeyColumnsAsync(lookupTable, ct), preferredKey, keyAliases);
         if (string.IsNullOrWhiteSpace(key)) return Array.Empty<LookupOption>();
 
         string cacheKey = lookupTable + "|" + key + "|" + (combineAreaNames ? "area" : displayHint ?? "");
@@ -250,7 +101,7 @@ public sealed class LookupOptionsService
             foreach (DataRow row in data.Rows)
             {
                 if (row[key] == DBNull.Value) continue;
-                string keyText = Convert.ToString(row[key]) ?? "";
+                string keyText = Convert.ToString(row[key], System.Globalization.CultureInfo.InvariantCulture) ?? "";
                 if (string.IsNullOrWhiteSpace(keyText)) continue;
                 var rowColumns = row.Table.Columns.Cast<DataColumn>().Select(column => column.ColumnName).ToArray();
                 string display = LookupOptionDisplayFormatter.Format(rowColumns,
@@ -261,10 +112,7 @@ public sealed class LookupOptionsService
             if (data.Rows.Count < lookupPageSize || options.Count >= maxLookupOptions) break;
         }
 
-        var result = options
-            .GroupBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
-            .Select(g => g.First())
-            .ToList();
+        var result = LookupOptionRules.KeepUnambiguousKeys(options);
         _cache[cacheKey] = result;
         return result;
     }

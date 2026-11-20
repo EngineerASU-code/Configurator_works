@@ -1,4 +1,4 @@
-﻿#nullable enable
+#nullable enable
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -23,10 +23,11 @@ public sealed class ProjectWorkspace : IProjectWorkspace, IDisposable
     private readonly CancellationTokenSource _lifetime = new();
     private int _disposed;
 
-    public ProjectWorkspace(IProjectDataSource reader, IProjectCrudDataSource? writer = null, IProjectArchitectureDataSource? architecture = null)
+    public ProjectWorkspace(IProjectDataSource reader, IProjectCrudDataSource? writer = null,
+        IProjectArchitectureDataSource? architecture = null, bool allowWrite = true)
     {
         _reader = reader ?? throw new ArgumentNullException(nameof(reader));
-        _writer = writer ?? reader as IProjectCrudDataSource;
+        _writer = allowWrite ? writer ?? reader as IProjectCrudDataSource : null;
         _architecture = architecture;
         if (reader is OfflineProjectDataSource offline) offline.ProjectChanged += OnProjectChanged;
     }
@@ -93,7 +94,7 @@ public sealed class ProjectWorkspace : IProjectWorkspace, IDisposable
                 ? rows.OrderByDescending(key, StringComparer.CurrentCultureIgnoreCase)
                 : rows.OrderBy(key, StringComparer.CurrentCultureIgnoreCase);
         }
-        var materialized = rows.ToList();
+        var materialized = rows as IReadOnlyList<ProjectRecord> ?? rows.ToList();
         return new ProjectRecordPage
         {
             Items = materialized.Skip((int)Math.Min(int.MaxValue, (long)(page - 1) * size)).Take(size).ToList(),
@@ -137,6 +138,18 @@ public sealed class ProjectWorkspace : IProjectWorkspace, IDisposable
 
     public async Task UpdateRecordAsync(string tableName, IReadOnlyList<string> keyColumns, IReadOnlyDictionary<string, object?> keyValues, IReadOnlyDictionary<string, object?> values, CancellationToken cancellationToken = default)
     { EnsureWritable(); using var linked = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, cancellationToken); await _writer!.UpdateRecordAsync(tableName, keyColumns, keyValues, values, linked.Token).ConfigureAwait(false); if (!IsOffline) Interlocked.Increment(ref _revision); }
+
+    public async Task UpdateCompareRecordAsync(ProjectTableSchema schema, ProjectRecord expectedRecord,
+        IReadOnlyDictionary<string, object?> keyValues, IReadOnlyDictionary<string, object?> values,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureWritable();
+        if (IsOffline || _writer is not OnlineProjectCrudDataSource online)
+            throw new NotSupportedException("Условное сравнение перед записью поддерживается только для Online-источника.");
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, cancellationToken);
+        await online.UpdateCompareRecordAsync(schema, expectedRecord, keyValues, values, linked.Token).ConfigureAwait(false);
+        Interlocked.Increment(ref _revision);
+    }
 
     public async Task<int> DeleteRecordsAsync(string tableName, IReadOnlyList<string> keyColumns, IReadOnlyList<IReadOnlyDictionary<string, object?>> keyValues, CancellationToken cancellationToken = default)
     { EnsureWritable(); using var linked = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, cancellationToken); var count = await _writer!.DeleteRecordsAsync(tableName, keyColumns, keyValues, linked.Token).ConfigureAwait(false); if (count > 0 && !IsOffline) Interlocked.Increment(ref _revision); return count; }

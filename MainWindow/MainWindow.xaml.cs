@@ -592,6 +592,9 @@ namespace Configurator
 
         private void UserAuthorizationService_Changed(object sender, EventArgs e)
         {
+            if (Dispatcher.CheckAccess()) CloseCompareWindow();
+            else Dispatcher.BeginInvoke(new Action(CloseCompareWindow));
+
             // Login()/EnterGuest() raises Changed synchronously before LoginWindow sets
             // DialogResult and closes. Applying permissions here can call ActivateMode(),
             // which may show ProjectSelectionWindow on top of the still-open login dialog.
@@ -644,6 +647,9 @@ namespace Configurator
             window.OnDatabaseAdded = (dbName) =>
             {
                 string newServer = window.Settings.Server;
+                if (!string.Equals(newServer, _connection.Server, StringComparison.OrdinalIgnoreCase) ||
+                    _connection.User != window.Settings.User || _connection.Password != window.Settings.Password)
+                    CloseCompareWindow();
                 if (!string.IsNullOrEmpty(_connection.Server) && !newServer.Equals(_connection.Server, StringComparison.OrdinalIgnoreCase))
                 {
                     _vms.Clear(); _loadedTreeNodes.Clear(); _connection.ConnectedDatabases.Clear(); _connection.KnownDatabases.Clear(); _failedDatabases.Clear(); ClearActiveTable();

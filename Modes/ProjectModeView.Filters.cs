@@ -118,7 +118,6 @@ public partial class ProjectModeView
     {
         _onlineLookupOptionsService = null;
         _onlineLookupDatabaseKey = string.Empty;
-        _offlineSource?.InvalidateIndex();
 
         await LoadConfigurationValuesAsync(_configurationKind, preferredConfigurationKey);
         await PopulateGlobalFilterListsAsync();

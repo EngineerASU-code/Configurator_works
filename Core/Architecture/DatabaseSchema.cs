@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -23,6 +23,7 @@ public sealed class DatabaseTable
     public List<DatabaseColumn> Columns { get; } = new();
     public List<DatabaseKey> Keys { get; } = new();
     public bool IsComplexEntity { get; init; }
+    public bool CanCompareUpdate { get; init; }
 }
 
 public sealed class DatabaseColumn
@@ -33,6 +34,7 @@ public sealed class DatabaseColumn
     public bool IsNullable { get; init; }
     public bool IsIdentity { get; init; }
     public bool IsComputed { get; init; }
+    public string DefaultDefinition { get; init; }
 }
 
 public sealed class DatabaseKey
