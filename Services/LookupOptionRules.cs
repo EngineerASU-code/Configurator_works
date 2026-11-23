@@ -44,7 +44,8 @@ internal static class LookupOptionRules
             case "PLC": table = "dbo.PLC"; key = "Record"; break;
             case "CLASS": table = "dbo.Classes"; key = "Record"; break;
             case "AREA": table = "dbo.Areas"; key = "AreaName"; display = "AreaNameL2"; useAreaNameLookup = true; break;
-            case "UNIT": table = "dbo.Units"; key = "Unit_ID"; break;
+            case "UNIT":
+            case "UNITS": table = "dbo.Units"; key = "Unit_ID"; break;
             case "PLCCLASSNUMBER":
             case "PLCCLASSSNUMBER": table = "dbo.PLCClasssNumbers"; key = "PLCClassNumber"; break;
             case "TYPE":

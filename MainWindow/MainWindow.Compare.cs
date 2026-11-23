@@ -51,8 +51,7 @@ public partial class MainWindow
         bool canUseOnline = _workspaceModeChosen && !_isOfflineWorkspace && !_offlineSelectionRequired;
         IEnumerable<string> databases = canUseOnline ? GetActiveDatabases() : Array.Empty<string>();
         bool canRequestWrite = (canShowMode3 && (UserAuthorizationService.Has(Permission.ManageTextLists) ||
-            (UserAuthorizationService.Has(Permission.Mode3Manage) &&
-                (UserAuthorizationService.Has(Permission.EditData) || UserAuthorizationService.Has(Permission.AddData))))) ||
+            UserAuthorizationService.Has(Permission.EditData) || UserAuthorizationService.Has(Permission.AddData))) ||
             (canShowMode2 && (UserAuthorizationService.Has(Permission.Mode2Manage) ||
                 UserAuthorizationService.Has(Permission.ManageClasses) || UserAuthorizationService.Has(Permission.ManageRelations) ||
                 UserAuthorizationService.Has(Permission.ManageTextLists)));
@@ -72,8 +71,7 @@ public partial class MainWindow
                     PermissionPolicy.CanEnterMode(UserAuthorizationService.CurrentUser, UserAuthorizationService.CurrentRole, 3)) &&
                     (UserAuthorizationService.Has(Permission.Mode2Manage) || UserAuthorizationService.Has(Permission.ManageTextLists));
             return PermissionPolicy.CanEnterMode(UserAuthorizationService.CurrentUser, UserAuthorizationService.CurrentRole, 3) &&
-                UserAuthorizationService.Has(Permission.Mode3Manage) &&
-                UserAuthorizationService.Has(difference.Column is null ? Permission.AddData : Permission.EditData);
+                UserAuthorizationService.Has(difference.Column is null && difference.Status is (CompareStatus.OnlyA or CompareStatus.OnlyB) ? Permission.AddData : Permission.EditData);
         }
 
         var window = new CompareWindow(

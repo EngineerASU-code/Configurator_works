@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
@@ -215,7 +215,12 @@ public partial class ProjectModeView
         bool areaActive = _configurationKind == ConfigurationKind.Class && areaKey != "*";
         bool active = plcActive || areaActive;
         if (FilterActiveBadge != null) FilterActiveBadge.Visibility = active ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
-        FilterIcon?.SetResourceReference(Shape.FillProperty, active ? "BrushAccent" : "BrushTextSecondary");
+        FilterIcon?.SetResourceReference(Shape.StrokeProperty, active ? "BrushAccent" : "BrushText");
+        if (BtnObjectFilter != null)
+        {
+            BtnObjectFilter.SetResourceReference(System.Windows.Controls.Control.BackgroundProperty, active ? "BrushSelected" : "BrushPanel");
+            BtnObjectFilter.SetResourceReference(System.Windows.Controls.Control.BorderBrushProperty, active ? "BrushAccent" : "BrushBorder");
+        }
         if (BtnObjectFilter != null)
         {
             var activeFilters = new List<string>();

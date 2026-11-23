@@ -1,99 +1,58 @@
-﻿<Window x:Class="Configurator.ThemePickerWindow"
+<Window x:Class="Configurator.ThemePickerWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Тема оформления" Height="540" Width="700"
-        MinWidth="700" MinHeight="540"
-        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
-        Background="{DynamicResource BrushBase}">
-
-    <Grid Margin="24">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-        </Grid.RowDefinitions>
-
-        <TextBlock Grid.Row="0" Text="Выберите тему оформления"
-                   FontSize="16" FontWeight="Bold"
-                   Foreground="{DynamicResource BrushText}"
-                   Margin="0,0,0,20"/>
-
-        <UniformGrid Grid.Row="1" Columns="2" Margin="0,0,0,20">
-
-            <Border x:Name="CardLight" Cursor="Hand" CornerRadius="8" Margin="5"
-                    BorderThickness="2" BorderBrush="#CCCCCC"
-                    MouseLeftButtonDown="CardLight_Click">
-                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
-                    <Border Width="120" Height="70" CornerRadius="6" Margin="0,0,0,12">
-                        <Border Background="#F5F5F5" CornerRadius="6">
-                            <StackPanel Margin="10">
-                                <Rectangle Fill="#2C88CC" Height="8" RadiusX="2" RadiusY="2" Margin="0,0,0,6"/>
-                                <Rectangle Fill="#333333" Height="4" RadiusX="2" RadiusY="2" Margin="0,0,0,4"/>
-                                <Rectangle Fill="#CCCCCC" Height="4" RadiusX="2" RadiusY="2"/>
+        Title="Тема оформления" Width="540" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize" ShowInTaskbar="False"
+        Background="{DynamicResource BrushBase}" Foreground="{DynamicResource BrushText}">
+    <StackPanel Margin="22">
+        <TextBlock Text="Тема оформления" FontSize="22" FontWeight="SemiBold"/>
+        <TextBlock Text="Тема применяется сразу ко всему Configurator." Margin="0,5,0,16"
+                   Foreground="{DynamicResource BrushTextSecondary}"/>
+        <ListBox x:Name="Schemes" SelectionChanged="Scheme_Changed" AutomationProperties.Name="Цветовые схемы"
+                 BorderThickness="0" Background="Transparent" Foreground="{DynamicResource BrushText}"
+                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+            <ListBox.ItemContainerStyle>
+                <Style TargetType="ListBoxItem">
+                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                    <Setter Property="Padding" Value="0"/>
+                    <Setter Property="Margin" Value="0,0,0,6"/>
+                </Style>
+            </ListBox.ItemContainerStyle>
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <Border x:Name="SchemeCard" Padding="13,9" CornerRadius="8" BorderThickness="1"
+                            Background="{DynamicResource BrushPanel}" BorderBrush="{DynamicResource BrushBorder}">
+                        <DockPanel>
+                            <StackPanel x:Name="Swatches" DockPanel.Dock="Right" Orientation="Horizontal" Margin="12,0,0,0">
+                                <Border Width="18" Height="18" BorderThickness="1" BorderBrush="{DynamicResource BrushBorder}" CornerRadius="4">
+                                    <Border.Background><SolidColorBrush Color="{Binding Base}"/></Border.Background>
+                                </Border>
+                                <Border Width="18" Height="18" Margin="4,0,0,0" BorderThickness="1" BorderBrush="{DynamicResource BrushBorder}" CornerRadius="4">
+                                    <Border.Background><SolidColorBrush Color="{Binding Panel}"/></Border.Background>
+                                </Border>
+                                <Border Width="18" Height="18" Margin="4,0,0,0" CornerRadius="4">
+                                    <Border.Background><SolidColorBrush Color="{Binding Accent}"/></Border.Background>
+                                </Border>
                             </StackPanel>
-                        </Border>
+                            <TextBlock x:Name="SelectedLabel" DockPanel.Dock="Right" Text="✓  Активна" Visibility="Hidden"
+                                       Foreground="{DynamicResource BrushTextSecondary}" Margin="8,0,0,0"/>
+                            <TextBlock x:Name="SchemeName" Text="{Binding Name}" FontWeight="SemiBold" Foreground="{DynamicResource BrushText}"/>
+                        </DockPanel>
                     </Border>
-                    <!-- === P2-14: DynamicResource вместо фиксированных цветов === -->
-                    <TextBlock Text="☀️ Светлая" FontSize="14" FontWeight="SemiBold"
-                               Foreground="{DynamicResource BrushText}" HorizontalAlignment="Center"/>
-                    <TextBlock Text="По умолчанию" FontSize="11"
-                               Foreground="{DynamicResource BrushTextSecondary}" HorizontalAlignment="Center"
-                               Margin="0,4,0,0"/>
-                </StackPanel>
-            </Border>
-
-            <Border x:Name="CardDark" Cursor="Hand" CornerRadius="8" Margin="5"
-                    BorderThickness="2" BorderBrush="#444"
-                    MouseLeftButtonDown="CardDark_Click">
-                <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
-                    <Border Width="120" Height="70" CornerRadius="6" Margin="0,0,0,12">
-                        <Border Background="#1E1E1E" CornerRadius="6">
-                            <StackPanel Margin="10">
-                                <Rectangle Fill="#4DA6FF" Height="8" RadiusX="2" RadiusY="2" Margin="0,0,0,6"/>
-                                <Rectangle Fill="#E0E0E0" Height="4" RadiusX="2" RadiusY="2" Margin="0,0,0,4"/>
-                                <Rectangle Fill="#555" Height="4" RadiusX="2" RadiusY="2"/>
-                            </StackPanel>
-                        </Border>
-                    </Border>
-                    <!-- === P2-14: DynamicResource === -->
-                    <TextBlock Text="🌙 Тёмная" FontSize="14" FontWeight="SemiBold"
-                               Foreground="{DynamicResource BrushText}" HorizontalAlignment="Center"/>
-                    <TextBlock Text="Для ночи" FontSize="11"
-                               Foreground="{DynamicResource BrushTextSecondary}" HorizontalAlignment="Center"
-                               Margin="0,4,0,0"/>
-                </StackPanel>
-            </Border>
-        </UniformGrid>
-
-        <DockPanel Grid.Row="2" Margin="5,0,5,14">
-            <Button DockPanel.Dock="Right" x:Name="BtnSaveProjectTheme" Content="Сохранить текущую тему в проект"
-                    Style="{StaticResource BtnSecondary}" Margin="12,0,0,0" Click="BtnSaveProjectTheme_Click"
-                    IsEnabled="False"/>
-            <ListBox x:Name="ProjectThemesList" MinHeight="48" MaxHeight="100" SelectionChanged="ProjectThemesList_SelectionChanged"/>
-        </DockPanel>
-
-        <Grid Grid.Row="3">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="*"/>
-            </Grid.ColumnDefinitions>
-
-            <Button Grid.Column="0" x:Name="BtnReset" Content="По умолчанию"
-                    Style="{StaticResource BtnSecondary}"
-                    MinWidth="180"
-                    Margin="0,0,10,0"
-                    Click="BtnReset_Click"/>
-            <Button Grid.Column="1" x:Name="BtnCustomize" Content="Настроить цвета"
-                    Style="{StaticResource BtnPrimary}"
-                    MinWidth="190"
-                    Margin="0,0,10,0"
-                    Click="BtnCustomize_Click"/>
-            <Button Grid.Column="2" x:Name="BtnClose" Content="Закрыть"
-                    Style="{StaticResource BtnSecondary}"
-                    MinWidth="140"
-                    Click="BtnClose_Click"/>
-        </Grid>
-    </Grid>
+                    <DataTemplate.Triggers>
+                        <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+                            <Setter TargetName="SchemeCard" Property="BorderBrush" Value="{DynamicResource BrushAccent}"/>
+                            <Setter TargetName="SelectedLabel" Property="Visibility" Value="Visible"/>
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding Name}" Value="System">
+                            <Setter TargetName="SchemeName" Property="Text" Value="System · как в Windows"/>
+                            <Setter TargetName="Swatches" Property="Visibility" Value="Hidden"/>
+                        </DataTrigger>
+                    </DataTemplate.Triggers>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+        <Button Content="Закрыть" IsCancel="True" HorizontalAlignment="Right" Margin="0,12,0,0"
+                Padding="18,6" Style="{StaticResource BtnSecondary}"/>
+    </StackPanel>
 </Window>

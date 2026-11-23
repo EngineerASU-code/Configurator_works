@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -44,6 +44,21 @@ public partial class ActionLogWindow : Window
         {
             Configurator.Infrastructure.ModernDialog.Show("Не удалось восстановить операцию: " + Configurator.Infrastructure.UserErrorMessage.Format(ex), "Восстановление", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    private void Clear_Click(object sender, RoutedEventArgs e)
+    {
+        if (!UserAuthorizationService.Require(Permission.RestoreJournal)) return;
+        if (Configurator.Infrastructure.ModernDialog.Show(this,
+            "Удалить историю операций текущего проекта? Возможность отменить эти операции через журнал будет потеряна.",
+            "Очистка журнала", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        try { _journal.Clear(); }
+        catch (Exception ex)
+        {
+            Configurator.Infrastructure.ModernDialog.Show(this, Configurator.Infrastructure.UserErrorMessage.Format(ex),
+                "Не удалось очистить журнал", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        Refresh();
     }
 
     private void Close_Click(object sender, RoutedEventArgs e) => Close();

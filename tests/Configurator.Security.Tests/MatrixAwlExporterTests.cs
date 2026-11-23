@@ -18,6 +18,7 @@ public sealed class MatrixAwlExporterTests
     [InlineData("C", 4)]
     [InlineData("U", 8)]
     [InlineData("B", 16)]
+    [InlineData("V", 32)]
     [InlineData("W", 64)]
     [InlineData("E", 128)]
     public void EncodeCommand_MapsEachLegacyCode(string code, byte expected)
@@ -106,6 +107,23 @@ public sealed class MatrixAwlExporterTests
         Assert.Contains("CMD : ARRAY  [1 .. 1, 1 .. 2 ] OF BYTE ;\r\n", awl);
         Assert.Contains("CMD[1, 1] := B#16#1;\r\n", awl);
         Assert.Contains("CMD[1, 2] := B#16#2;\r\n", awl);
+    }
+
+    [Fact]
+    public void Generate_PreservesSparseCommandAndGroupNumbers()
+    {
+        string awl = MatrixAwlExporter.Generate(new MatrixAwlSnapshot(1, 301, new[] { 1 },
+            new[] { new MatrixAwlCommand(3, 1, 2, 3) },
+            new (int Position, int CommandNumber, string? Code)[] { (1, 3, "V") },
+            new[] { new MatrixAwlDeviceGroup(4, new Dictionary<int, long> { [1] = 101_506 }) }));
+
+        Assert.Contains("Cmd_count : INT  := 3;", awl);
+        Assert.Contains("DelayON[1] := B#16#0;", awl);
+        Assert.Contains("DelayON[3] := B#16#1;", awl);
+        Assert.Contains("CMD[3, 1] := B#16#20;", awl);
+        Assert.Contains("DevList : ARRAY  [1 .. 4, 1 .. 1 ]", awl);
+        Assert.Contains("DevList[1, 1] := L#0;", awl);
+        Assert.Contains("DevList[4, 1] := L#101506;", awl);
     }
 
     [Fact]

@@ -1,4 +1,4 @@
-﻿using Configurator.Core.Projects;
+using Configurator.Core.Projects;
 using Configurator.Themes;
 using System;
 using System.Data;
@@ -200,6 +200,17 @@ namespace Configurator
         private async Task InitializeAsync()
         {
             _rightPanel.TableTitle.Text = "Авторизуйтесь для начала работы";
+            if (SystemParameters.ClientAreaAnimation && Content is UIElement surface)
+            {
+                var fade = new System.Windows.Media.Animation.DoubleAnimation(0.28, 1,
+                    new Duration(TimeSpan.FromMilliseconds(220)))
+                {
+                    FillBehavior = System.Windows.Media.Animation.FillBehavior.Stop
+                };
+                surface.BeginAnimation(UIElement.OpacityProperty, fade);
+                await Task.Delay(220);
+                if (!IsLoaded) return;
+            }
             try
             {
                 _connection.LoadFromFile();
@@ -635,56 +646,9 @@ namespace Configurator
             }
         }
 
-        private async void MenuViewTheme_Click(object sender, RoutedEventArgs e)
+        private void MenuViewTheme_Click(object sender, RoutedEventArgs e)
         {
-            var picker = new ThemePickerWindow { Owner = this };
-            if (_isOfflineWorkspace && _openedLocalProject is { } project)
-            {
-                Action<Configurator.Themes.ThemePreset>? saveTheme = null;
-                bool canSave = (UserAuthorizationService.Has(Permission.Mode2Manage) || UserAuthorizationService.Has(Permission.ManageTextLists)) &&
-                    !string.IsNullOrWhiteSpace(_openedLocalProjectPath) &&
-                    File.Exists(_openedLocalProjectPath) &&
-                    (File.GetAttributes(_openedLocalProjectPath) & (FileAttributes.ReadOnly | FileAttributes.ReparsePoint)) == 0;
-                if (canSave)
-                {
-                    saveTheme = preset =>
-                    {
-                        project.ThemePresets.RemoveAll(item => item.Name.Equals(preset.Name, StringComparison.OrdinalIgnoreCase));
-                        project.ThemePresets.Add(preset.Clone());
-                        _offlineProjectDirty = true;
-                        _offlineAutoSaveTimer.Start();
-                        StatusText.Text = $"Тема «{preset.Name}» сохранена в Offline-проект";
-                    };
-                }
-                picker.SetProjectThemes(project.ThemePresets, saveTheme);
-            }
-            else if (_workspaceModeChosen && !string.IsNullOrWhiteSpace(_connection.Server) && !string.IsNullOrWhiteSpace(_selectedDbName))
-            {
-                var store = new Configurator.Infrastructure.Projects.ProjectCompareSettingsStore(_connection.Server, _selectedDbName);
-                Configurator.Core.Compare.ProjectCompareSettings settings;
-                try { settings = await store.LoadAsync(); }
-                catch (Exception ex)
-                {
-                    Configurator.Infrastructure.ModernDialog.Show(this,
-                        "Не удалось прочитать проектные темы и текстовые списки: " + Configurator.Infrastructure.UserErrorMessage.Format(ex),
-                        "Настройки проекта", MessageBoxButton.OK, MessageBoxImage.Error);
-                    return;
-                }
-                var projectThemes = settings.ThemePresets.ToList();
-                Action<Configurator.Themes.ThemePreset>? saveTheme = null;
-                bool canSave = UserAuthorizationService.Has(Permission.Mode2Manage) || UserAuthorizationService.Has(Permission.ManageTextLists);
-                if (canSave)
-                {
-                    saveTheme = preset =>
-                    {
-                        projectThemes.RemoveAll(item => item.Name.Equals(preset.Name, StringComparison.OrdinalIgnoreCase));
-                        projectThemes.Add(preset.Clone());
-                        _ = SaveOnlineProjectSettingsAsync(store, new Configurator.Core.Compare.ProjectCompareSettings(settings.TextLists, projectThemes));
-                    };
-                }
-                picker.SetProjectThemes(settings.ThemePresets, saveTheme);
-            }
-            picker.ShowDialog();
+            new ThemePickerWindow { Owner = this }.ShowDialog();
         }
 
         private async Task SaveOnlineProjectSettingsAsync(
@@ -1108,51 +1072,6 @@ namespace Configurator
         }
 
         private void MenuFileExit_Click(object sender, RoutedEventArgs e) => Close();
-        private async void MenuHelpLookupSettings_Click(object sender, RoutedEventArgs e)
-        {
-            if (!UserAuthorizationService.Require(Permission.ManageTextLists)) return;
-            Configurator.Core.Projects.ConfiguratorProject project = _openedLocalProject;
-            string projectPath = _openedLocalProjectPath;
-            if (project == null)
-            {
-                var pick = new Microsoft.Win32.OpenFileDialog
-                {
-                    Title = "Выберите .cfgproj, для которого настраиваются справочники",
-                    Filter = "Локальный проект Configurator (*.cfgproj)|*.cfgproj",
-                    CheckFileExists = true, Multiselect = false
-                };
-                if (pick.ShowDialog(this) != true) return;
-                projectPath = pick.FileName;
-                try { project = await _projectPackageService.OpenAsync(projectPath); }
-                catch (Exception ex)
-                {
-                    Configurator.Infrastructure.ModernDialog.Show(this, Configurator.Infrastructure.UserErrorMessage.Format(ex), "Не удалось открыть .cfgproj", MessageBoxButton.OK, MessageBoxImage.Error);
-                    return;
-                }
-            }
-            var window = new LookupGenerationSettingsWindow(project) { Owner = this };
-            if (window.ShowDialog() != true) return;
-            if (_isOfflineWorkspace && ReferenceEquals(project, _openedLocalProject))
-            {
-                _offlineProjectDirty = true;
-                _offlineGridDirty = true;
-                Configurator.Core.Architecture.LookupGenerationSettingsRuntime.Current = Configurator.Infrastructure.Projects.LookupGenerationSettingsStore.Load(project);
-                StatusText.Text = "Настройки генерации справочников изменены · сохраняются в .cfgproj";
-            }
-            else
-            {
-                try
-                {
-                    await _projectPackageService.SaveAsync(projectPath, project, requireExisting: true);
-                    Configurator.Core.Architecture.LookupGenerationSettingsRuntime.Current = Configurator.Infrastructure.Projects.LookupGenerationSettingsStore.Load(project);
-                    StatusText.Text = "Настройки справочников сохранены в выбранный .cfgproj и применены для Online";
-                }
-                catch (Exception ex)
-                {
-                    Configurator.Infrastructure.ModernDialog.Show(this, Configurator.Infrastructure.UserErrorMessage.Format(ex), "Не удалось сохранить настройки", MessageBoxButton.OK, MessageBoxImage.Error);
-                }
-            }
-        }
 
         private void MenuHelpDocs_Click(object sender, RoutedEventArgs e) => Configurator.Infrastructure.ModernDialog.Show("Документация будет добавлена в следующей версии.", "Информация", MessageBoxButton.OK, MessageBoxImage.Information);
     private void TemplateEditor_ActionLogged(string description, string source, string details)

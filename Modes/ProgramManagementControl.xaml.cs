@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Globalization;
@@ -6,12 +6,15 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Data;
+using System.Windows.Input;
 
 namespace Configurator;
 
 public partial class ProgramManagementControl : UserControl
 {
-    private enum ProgramTreeNodeKind { Program, Sequence, StepOccurrence }
+    private enum ProgramTreeNodeKind { Program, Sequence, ProgramParameters, Transitions, StepParameters, StepOccurrence }
 
     private sealed class ProgramTreeNode
     {
@@ -22,6 +25,7 @@ public partial class ProgramManagementControl : UserControl
         public DataRowView TransitionRow { get; init; }
         public DataRowView StepRow { get; init; }
         public TreeViewItem Item { get; set; }
+        public string NavigationPath => Parent == null ? Item.ToolTip?.ToString() ?? "" : $"{Parent.NavigationPath} → {Item.ToolTip}";
         public bool ChildrenLoaded { get; set; }
         public bool IsLoading { get; set; }
     }
@@ -38,7 +42,6 @@ public partial class ProgramManagementControl : UserControl
     {
         ["programs"] = ProgramManagementRepository.ProgramTable,
         ["sequences"] = ProgramManagementRepository.SequenceTable,
-        ["steps"] = ProgramManagementRepository.StepTable,
         ["transitions"] = ProgramManagementRepository.TransitionTable,
         ["programParams"] = ProgramManagementRepository.ParameterTable,
         ["stepParams"] = ProgramManagementRepository.ParameterTable
@@ -48,7 +51,6 @@ public partial class ProgramManagementControl : UserControl
     {
         [ProgramManagementRepository.ProgramTable] = new[] { "PLC", "PLC_Class_Number", "Record" },
         [ProgramManagementRepository.SequenceTable] = new[] { "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Record" },
-        [ProgramManagementRepository.StepTable] = new[] { "PLC", "PLC_Class_Number", "Record" },
         [ProgramManagementRepository.TransitionTable] = new[] { "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Seq_Record", "SeqStep_Number" },
         [ProgramManagementRepository.ParameterTable] = new[] { "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Seq_Record", "Step_Number", "Type", "Record" }
     };
@@ -61,16 +63,25 @@ public partial class ProgramManagementControl : UserControl
     private bool _contextChangePending;
     private bool _syncingTreeSelection;
     private ProgramTreeNode _pendingTreeSelection;
+    private DataRow _conditionStep;
+    private DataView _referencedSteps;
     private readonly Dictionary<string, HashSet<string>> _nonEditableColumns = new(StringComparer.OrdinalIgnoreCase);
 
     public ProgramContext CurrentContext { get; private set; }
     public Func<Task<bool>> BeforeContextChangeAsync { get; set; }
     public event Action<ProgramContext> ContextChanged;
+    public event Action<DataRow> ProgramSaved;
     public event Action<ChangeJournalEntry> ChangeJournalRequested;
 
     public ProgramManagementControl()
     {
         InitializeComponent();
+        RecipesEditor.SetSections("recipes");
+        SoftKeysEditor.SetSections("softkey");
+        MessagesEditor.SetSections("messages");
+        QueuesEditor.SetSections("queues", "queue-selections");
+        foreach (var editor in SupportEditors)
+            editor.ChangeJournalRequested += entry => ChangeJournalRequested?.Invoke(entry);
         Loaded += ProgramManagementControl_Loaded;
         Unloaded += ProgramManagementControl_Unloaded;
     }
@@ -90,8 +101,10 @@ public partial class ProgramManagementControl : UserControl
     private void ApplyEditAuthorization()
     {
         bool canEdit = UserAuthorizationService.Has(Permission.EditData);
-        foreach (var grid in new[] { ProgramsGrid, SequencesGrid, StepsGrid, TransitionsGrid, ProgramParamsGrid, StepParamsGrid })
+        foreach (var grid in new[] { ProgramsGrid, TransitionsGrid })
             if (grid != null) grid.IsReadOnly = !canEdit;
+        if (ConditionsGrid != null) ConditionsGrid.IsReadOnly = !CanEditTransitionConditions();
+        if (ProgramFields != null) RenderProgramFields(ProgramsGrid.SelectedItem as DataRowView);
         UpdateCommandState();
     }
 
@@ -104,8 +117,8 @@ public partial class ProgramManagementControl : UserControl
             foreach (var button in new[]
                 {
                     LoadButton, DiscardChangesButton, AddProgramButton, DeleteProgramButton, SaveProgramsButton,
-                    AddSequenceButton, DeleteSequenceButton, SaveSequencesButton, AddStepButton, SaveStepsButton,
-                    DeleteStepButton, SaveTransitionsButton, SaveProgramParamsButton, SaveStepParamsButton
+                    AddSequenceButton, DeleteSequenceButton, SaveSequencesButton, AddStepButton,
+                    ExportProgramAwlButton, DeleteStepButton, SaveTransitionsButton, SaveProgramParamsButton, SaveStepParamsButton, MoveStepUpButton, MoveStepDownButton
                 })
                 button.IsEnabled = false;
             return;
@@ -118,6 +131,7 @@ public partial class ProgramManagementControl : UserControl
         bool hasSequence = CurrentContext?.SeqRecordValue != null;
 
         LoadButton.IsEnabled = _repository != null;
+        ExportProgramAwlButton.IsEnabled = hasProgram && UserAuthorizationService.Has(Permission.ExportData);
         DiscardChangesButton.IsEnabled = HasPendingEdits();
         AddProgramButton.IsEnabled = _repository != null && canAdd;
         DeleteProgramButton.IsEnabled = hasProgram && ProgramsGrid.SelectedItem != null && canDelete;
@@ -126,44 +140,51 @@ public partial class ProgramManagementControl : UserControl
         DeleteSequenceButton.IsEnabled = hasProgram && SequencesGrid.SelectedItem != null && canDelete;
         SaveSequencesButton.IsEnabled = hasProgram && SequencesGrid.SelectedItem != null && canEdit;
         AddStepButton.IsEnabled = hasSequence && canAdd;
-        SaveStepsButton.IsEnabled = hasSequence && StepsGrid.SelectedItem != null && canEdit;
         DeleteStepButton.IsEnabled = hasSequence && TransitionsGrid.SelectedItem != null && canDelete;
         SaveTransitionsButton.IsEnabled = hasSequence && TransitionsGrid.SelectedItem != null && canEdit;
+        int? selectedStep = TryGetSequenceStepNumber(TransitionsGrid.SelectedItem as DataRowView);
+        var numbers = TransitionsGrid.Items.OfType<DataRowView>().Select(TryGetSequenceStepNumber);
+        MoveStepUpButton.IsEnabled = hasSequence && canEdit && selectedStep.HasValue && numbers.Any(number => number < selectedStep);
+        MoveStepDownButton.IsEnabled = hasSequence && canEdit && selectedStep.HasValue && numbers.Any(number => number > selectedStep);
         SaveProgramParamsButton.IsEnabled = hasProgram && ProgramParamsGrid.SelectedItem != null && canEdit;
         SaveStepParamsButton.IsEnabled = hasSequence && StepParamsGrid.SelectedItem != null && canEdit;
     }
 
-    public async void Configure(string connectionString, object plcValue, object programClassValue)
-        => await ConfigureCoreAsync(connectionString, null, plcValue, programClassValue);
+    private ProgramSupportControl[] SupportEditors => new[] { RecipesEditor, SoftKeysEditor, MessagesEditor, QueuesEditor };
 
-    public async void Configure(Configurator.Core.Projects.OfflineProjectDataSource source, object plcValue, object programClassValue)
-        => await ConfigureCoreAsync(null, source, plcValue, programClassValue);
+    public Task<bool> PrepareToLeaveProgramAsync() => CanChangeContextAsync(allowDiscard: true);
 
-    private async Task ConfigureCoreAsync(string connectionString, Configurator.Core.Projects.OfflineProjectDataSource offline,
-        object plcValue, object programClassValue)
+    public async Task<bool> PrepareSupportForContextChangeAsync()
     {
-        if (_loading || _contextChangePending)
-        {
-            SetStatus("Нельзя сменить контекст до завершения текущего действия.");
-            return;
-        }
-        if (_repository != null && !await CanChangeContextAsync()) return;
+        foreach (var editor in SupportEditors)
+            if (!await editor.PrepareForContextChangeAsync()) return false;
+        return true;
+    }
 
-        _loading = true;
-        foreach (var grid in new[] { ProgramsGrid, SequencesGrid, StepsGrid, TransitionsGrid, ProgramParamsGrid, StepParamsGrid })
-            grid.ItemsSource = null;
-        ProgramTreeView.Items.Clear();
-        CurrentContext = null;
-        PublishContext();
-        ContextText.Text = string.Empty;
+    public void UpdateSupportContext(ProgramContext context)
+    {
+        foreach (var editor in SupportEditors)
+        {
+            if (context == null) editor.ClearContext();
+            else if (_offlineSource != null) editor.Configure(_offlineSource, context);
+            else editor.Configure(_connectionString, context);
+        }
+    }
+
+    public async Task<bool> OpenProgramAsync(string connectionString, Configurator.Core.Projects.OfflineProjectDataSource offline,
+        object plcValue, object programClassValue, object record)
+    {
+        if (_repository != null && ReferenceEquals(_offlineSource, offline) && _connectionString == connectionString &&
+            CurrentContext != null && SameValue(CurrentContext.PlcValue, plcValue) &&
+            SameValue(CurrentContext.ClassNumberValue, programClassValue) && SameValue(CurrentContext.RecordValue, record)) return true;
+        if (_loading || _contextChangePending) return false;
+        if (_repository != null && !await CanChangeContextAsync(allowDiscard: true)) return false;
         _connectionString = connectionString;
         _offlineSource = offline;
         _repository = offline == null ? new ProgramManagementRepository(connectionString) : new ProgramManagementRepository(offline);
         PlcInput.Text = Convert.ToString(plcValue, CultureInfo.InvariantCulture) ?? string.Empty;
         ClassInput.Text = Convert.ToString(programClassValue, CultureInfo.InvariantCulture) ?? string.Empty;
-        _loading = false;
-        UpdateCommandState();
-        await LoadProgramsAsync();
+        return await LoadProgramsAsync(record) && CurrentContext != null;
     }
 
     private async void LoadButton_Click(object sender, RoutedEventArgs e)
@@ -194,7 +215,13 @@ public partial class ProgramManagementControl : UserControl
             return;
         }
 
-        DetailsTabs.SelectedItem = node.Kind == ProgramTreeNodeKind.Sequence ? SequenceDetailsTab : StepDetailsTab;
+        DetailsTabs.SelectedItem = SequenceTab;
+        SequenceTabs.SelectedItem = node.Kind switch
+        {
+            ProgramTreeNodeKind.ProgramParameters => ProgramParamsTab,
+            ProgramTreeNodeKind.StepParameters or ProgramTreeNodeKind.StepOccurrence => StepDetailsTab,
+            _ => SequenceDetailsTab
+        };
         if (!IsCurrentProgram(programRow))
             await SelectProgramAsync(programRow, ProgramsGrid.SelectedItem as DataRowView, false);
         if (!IsCurrentProgram(programRow))
@@ -247,7 +274,7 @@ public partial class ProgramManagementControl : UserControl
                     ? TransitionsGrid.Items.OfType<DataRowView>().ToList()
                     : (await _repository.GetTransitionsAsync(context)).DefaultView.Cast<DataRowView>().ToList();
                 var steps = IsCurrentSequence(node.SequenceRow)
-                    ? StepsGrid.Items.OfType<DataRowView>().ToList()
+                    ? (_referencedSteps?.Cast<DataRowView>() ?? Enumerable.Empty<DataRowView>()).ToList()
                     : (await _repository.GetStepsAsync(context)).DefaultView.Cast<DataRowView>().ToList();
                 PopulateSequenceTreeNode(node, transitions, steps);
             }
@@ -302,6 +329,21 @@ public partial class ProgramManagementControl : UserControl
     private void PopulateSequenceTreeNode(ProgramTreeNode node, IEnumerable<DataRowView> transitions, IEnumerable<DataRowView> steps)
     {
         node.Item.Items.Clear();
+        foreach (var (kind, label) in new[]
+        {
+            (ProgramTreeNodeKind.ProgramParameters, "Параметры программы"),
+            (ProgramTreeNodeKind.Transitions, "Шаги и переходы"),
+            (ProgramTreeNodeKind.StepParameters, "Параметры шага")
+        })
+        {
+            var section = new ProgramTreeNode
+            {
+                Kind = kind, Parent = node, ProgramRow = node.ProgramRow, SequenceRow = node.SequenceRow,
+                ChildrenLoaded = true
+            };
+            section.Item = CreateTreeItem(section, label);
+            node.Item.Items.Add(section.Item);
+        }
         var stepRows = steps.ToList();
         foreach (var transition in transitions.OrderBy(row => TryGetSequenceStepNumber(row) ?? int.MaxValue))
         {
@@ -332,6 +374,7 @@ public partial class ProgramManagementControl : UserControl
     private void RefreshTreeLabels()
     {
         foreach (var item in ProgramTreeView.Items.OfType<TreeViewItem>()) RefreshTreeLabels(item);
+        ProgramTreePath.GetBindingExpression(TextBlock.TextProperty)?.UpdateTarget();
     }
 
     private static void RefreshTreeLabels(TreeViewItem item)
@@ -342,6 +385,9 @@ public partial class ProgramManagementControl : UserControl
             {
                 ProgramTreeNodeKind.Program => FormatProgramTreeLabel(node.ProgramRow.Row),
                 ProgramTreeNodeKind.Sequence => FormatSequenceTreeLabel(node.SequenceRow.Row),
+                ProgramTreeNodeKind.ProgramParameters => "Параметры программы",
+                ProgramTreeNodeKind.Transitions => "Шаги и переходы",
+                ProgramTreeNodeKind.StepParameters => "Параметры шага",
                 _ => FormatStepOccurrenceLabel(node.TransitionRow.Row, node.StepRow?.Row)
             };
             item.Header = new TextBlock { Text = label, TextTrimming = System.Windows.TextTrimming.CharacterEllipsis };
@@ -402,7 +448,7 @@ public partial class ProgramManagementControl : UserControl
             .FirstOrDefault(node => node?.Kind == ProgramTreeNodeKind.Sequence
                 && SameValue(GetValue(node.SequenceRow.Row, "Record"), CurrentContext.SeqRecordValue));
         if (sequenceNode == null) return;
-        PopulateSequenceTreeNode(sequenceNode, TransitionsGrid.Items.OfType<DataRowView>(), StepsGrid.Items.OfType<DataRowView>());
+        PopulateSequenceTreeNode(sequenceNode, TransitionsGrid.Items.OfType<DataRowView>(), (_referencedSteps?.Cast<DataRowView>() ?? Enumerable.Empty<DataRowView>()));
         SyncTreeToContext();
     }
 
@@ -449,11 +495,11 @@ public partial class ProgramManagementControl : UserControl
         try
         {
             TransitionsGrid.SelectedItem = transition;
-            var step = StepsGrid.Items.OfType<DataRowView>().FirstOrDefault(row => SameTransitionStep(transition, row));
-            if (step != null) StepsGrid.SelectedItem = step;
+            ShowTransitionConditions(transition);
         }
         finally { _revertingSelection = false; }
-        DetailsTabs.SelectedItem = StepDetailsTab;
+        DetailsTabs.SelectedItem = SequenceTab;
+        SequenceTabs.SelectedItem = StepDetailsTab;
         if (int.TryParse(Convert.ToString(number, CultureInfo.InvariantCulture), NumberStyles.Integer, CultureInfo.InvariantCulture, out int stepNumber))
             await LoadStepParametersAsync(stepNumber);
         SyncTreeToContext();
@@ -476,7 +522,17 @@ public partial class ProgramManagementControl : UserControl
             {
                 target = sequenceNode.Item;
                 sequenceNode.Item.IsExpanded = true;
-                if (TransitionsGrid.SelectedItem is DataRowView selectedTransition)
+                var requestedSection = _pendingTreeSelection ?? (ProgramTreeView.SelectedItem as TreeViewItem)?.Tag as ProgramTreeNode;
+                if (requestedSection?.Kind is ProgramTreeNodeKind.ProgramParameters
+                        or ProgramTreeNodeKind.Transitions or ProgramTreeNodeKind.StepParameters
+                    && SameValue(GetValue(requestedSection.SequenceRow.Row, "Record"), CurrentContext.SeqRecordValue)
+                    && SameValue(GetValue(requestedSection.ProgramRow.Row, "Record"), CurrentContext.RecordValue))
+                {
+                    var section = sequenceNode.Item.Items.OfType<TreeViewItem>()
+                        .FirstOrDefault(item => (item.Tag as ProgramTreeNode)?.Kind == requestedSection.Kind);
+                    if (section != null) target = section;
+                }
+                else if (TransitionsGrid.SelectedItem is DataRowView selectedTransition)
                 {
                     var stepNode = sequenceNode.Item.Items.OfType<TreeViewItem>()
                         .Select(item => item.Tag as ProgramTreeNode)
@@ -529,7 +585,7 @@ public partial class ProgramManagementControl : UserControl
         bool selectFirst = false;
         ProgramsGrid.ItemsSource = null;
         SequencesGrid.ItemsSource = null;
-        StepsGrid.ItemsSource = null;
+        _referencedSteps = null;
         ClearDetails();
         CurrentContext = null;
         PublishContext();
@@ -537,10 +593,13 @@ public partial class ProgramManagementControl : UserControl
         try
         {
             var table = await _repository.GetProgramsAsync(plc, classNumber);
+            if (selectRecord != null)
+                foreach (DataRow row in table.Select().Where(row => !SameValue(GetValue(row, "Record"), selectRecord)))
+                    table.Rows.Remove(row);
             await BindTableAsync(ProgramsGrid, table);
             RebuildProgramTree();
             SequencesGrid.ItemsSource = null;
-            StepsGrid.ItemsSource = null;
+            _referencedSteps = null;
             ClearDetails();
             CurrentContext = null;
             PublishContext();
@@ -548,7 +607,7 @@ public partial class ProgramManagementControl : UserControl
             if (table.Rows.Count > 0)
             {
                 selectFirst = true;
-                SetStatus($"Загружено программ: {table.Rows.Count}." + FormatJournalWarning(postCommitWarning));
+                SetStatus(postCommitWarning ?? string.Empty);
             }
             else SetStatus("Для выбранных PLC и класса программ нет." + FormatJournalWarning(postCommitWarning));
         }
@@ -576,8 +635,54 @@ public partial class ProgramManagementControl : UserControl
         return true;
     }
 
+    private void ProgramFieldsScroll_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (ProgramFields != null)
+            ProgramFields.Columns = Math.Clamp((int)(e.NewSize.Width / 260), 1, 3);
+    }
+
+    private void RenderProgramFields(DataRowView row)
+    {
+        ProgramFields.Children.Clear();
+        ProgramFieldsScroll?.ScrollToTop();
+        if (row == null) return;
+        bool canEdit = UserAuthorizationService.Has(Permission.EditData);
+        string[][] fields =
+        {
+            new[] { "PLC" }, new[] { "PLC_Class_Number" }, new[] { "Record" }, new[] { "Type" },
+            new[] { "Name_L1", "NameL1" }, new[] { "Name_L2", "NameL2" },
+            new[] { "Description_L1", "DescriptionL1" }, new[] { "Description_L2", "DescriptionL2" },
+            new[] { "FC_Number", "FCNumber" }, new[] { "MainDB_Number", "MainDBNumber" },
+            new[] { "RecipeDB_Number", "RecipeDBNumber" }
+        };
+        foreach (var aliases in fields)
+        {
+            string column = aliases.FirstOrDefault(row.Row.Table.Columns.Contains);
+            if (column == null) continue;
+            bool readOnly = !canEdit || ProtectedContextColumns.Contains(column) ||
+                (_nonEditableColumns.TryGetValue("programs", out var protectedColumns) && protectedColumns.Contains(column));
+            var line = new DockPanel { Margin = new Thickness(4, 0, 8, 8), MinHeight = 52 };
+            var label = new Label { Content = aliases[0], Padding = new Thickness(0, 0, 0, 3) };
+            DockPanel.SetDock(label, Dock.Top);
+            var input = new TextBox { IsReadOnly = readOnly, Padding = new Thickness(6, 4, 6, 4) };
+            label.Target = input;
+            input.SetBinding(TextBox.TextProperty, new System.Windows.Data.Binding($"[{column}]")
+            {
+                Source = row,
+                Mode = readOnly ? System.Windows.Data.BindingMode.OneWay : System.Windows.Data.BindingMode.TwoWay,
+                UpdateSourceTrigger = System.Windows.Data.UpdateSourceTrigger.Explicit,
+                ValidatesOnExceptions = true
+            });
+            input.Tag = column;
+            line.Children.Add(label);
+            line.Children.Add(input);
+            ProgramFields.Children.Add(line);
+        }
+    }
+
     private async void ProgramsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        RenderProgramFields(ProgramsGrid.SelectedItem as DataRowView);
         UpdateCommandState();
         if (_loading || _revertingSelection || _syncingTreeSelection || ProgramsGrid.SelectedItem is not DataRowView row) return;
         await SelectProgramAsync(row, e.RemovedItems.OfType<DataRowView>().FirstOrDefault(), false);
@@ -633,7 +738,8 @@ public partial class ProgramManagementControl : UserControl
             };
             PublishContext();
             ContextText.Text = CurrentContext.ContextText;
-            object requestedSequence = (_pendingTreeSelection?.Kind is ProgramTreeNodeKind.Sequence or ProgramTreeNodeKind.StepOccurrence)
+            object requestedSequence = (_pendingTreeSelection?.Kind is ProgramTreeNodeKind.Sequence or ProgramTreeNodeKind.ProgramParameters
+                or ProgramTreeNodeKind.Transitions or ProgramTreeNodeKind.StepParameters or ProgramTreeNodeKind.StepOccurrence)
                 && SameValue(GetValue(_pendingTreeSelection.ProgramRow.Row, "Record"), CurrentContext.RecordValue)
                 ? GetValue(_pendingTreeSelection.SequenceRow.Row, "Record") : null;
             await LoadSequencesAsync(selectRecord: requestedSequence, contextChangeApproved: true);
@@ -660,7 +766,7 @@ public partial class ProgramManagementControl : UserControl
         _loading = true;
         bool selectFirst = false;
         SequencesGrid.ItemsSource = null;
-        StepsGrid.ItemsSource = null;
+        _referencedSteps = null;
         ClearDetails();
         try
         {
@@ -668,12 +774,12 @@ public partial class ProgramManagementControl : UserControl
             await BindTableAsync(SequencesGrid, table);
             if (FindProgramTreeNode(CurrentContext.RecordValue) is ProgramTreeNode programNode)
                 PopulateProgramTreeNode(programNode, SequencesGrid.Items.OfType<DataRowView>());
-            StepsGrid.ItemsSource = null;
+            _referencedSteps = null;
             ClearDetails();
             if (table.Rows.Count > 0)
             {
                 selectFirst = true;
-                SetStatus($"Загружено последовательностей: {table.Rows.Count}." + FormatJournalWarning(postCommitWarning));
+                SetStatus(postCommitWarning ?? string.Empty);
             }
             else
             {
@@ -774,20 +880,21 @@ public partial class ProgramManagementControl : UserControl
         }
         if (_loading) return false;
         bool?[] enabledBeforeLoad = SetContextGridsEnabled(false);
-        StepsGrid.ItemsSource = null;
+        _referencedSteps = null;
         ClearDetails();
         _loading = true;
         try
         {
-            var steps = await _repository.GetStepsAsync(CurrentContext);
+
             var transitions = await _repository.GetTransitionsAsync(CurrentContext);
             var programParams = await _repository.GetParametersAsync(CurrentContext, 0);
-            await BindTableAsync(StepsGrid, steps);
+
             await BindTableAsync(TransitionsGrid, transitions);
             await BindTableAsync(ProgramParamsGrid, programParams);
             StepParamsGrid.ItemsSource = null;
+            _referencedSteps = (await _repository.GetStepsAsync(CurrentContext)).DefaultView;
             RefreshSequenceTreeFromGrids();
-            SetStatus($"Загружено шагов: {steps.Rows.Count}; переходов: {transitions.Rows.Count}; параметров программы: {programParams.Rows.Count}." + FormatJournalWarning(postCommitWarning));
+            SetStatus(postCommitWarning ?? string.Empty);
         }
         catch (Exception ex)
         {
@@ -805,57 +912,70 @@ public partial class ProgramManagementControl : UserControl
         return true;
     }
 
-    private async void StepsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        UpdateCommandState();
-        if (_loading || _revertingSelection || _contextChangePending || CurrentContext?.SeqRecordValue == null) return;
-        if (StepsGrid.SelectedItem is not DataRowView selectedStep)
-        {
-            if (!CanChangeSelection(StepsGrid, e)) return;
-            StepParamsGrid.ItemsSource = null;
-            UpdateCommandState();
-            return;
-        }
-        if (!CanChangeSelection(StepsGrid, e)) return;
-
-        int? sequenceStepNumber = FindSequenceStepNumber(selectedStep, out bool ambiguous);
-        if (sequenceStepNumber == null)
-        {
-            StepParamsGrid.ItemsSource = null;
-            SetStatus(ambiguous
-                ? "Шаг встречается в последовательности несколько раз. Выберите нужное вхождение во вкладке «Переходы»."
-                : "Для выбранного шага не найден номер в текущей последовательности.");
-            return;
-        }
-        var selectedTransition = TransitionsGrid.Items.OfType<DataRowView>()
-            .FirstOrDefault(row => TryGetSequenceStepNumber(row) == sequenceStepNumber);
-        if (selectedTransition != null)
-        {
-            _revertingSelection = true;
-            try { TransitionsGrid.SelectedItem = selectedTransition; }
-            finally { _revertingSelection = false; }
-            SyncTreeToContext();
-        }
-        await LoadStepParametersAsync(sequenceStepNumber.Value);
-    }
-
     private async void TransitionsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         UpdateCommandState();
         if (_loading || _revertingSelection || _contextChangePending || TransitionsGrid.SelectedItem is not DataRowView row
             || !row.Row.Table.Columns.Contains("SeqStep_Number")) return;
         if (!CanChangeSelection(TransitionsGrid, e)) return;
+        ShowTransitionConditions(row);
         if (!int.TryParse(Convert.ToString(row["SeqStep_Number"], CultureInfo.InvariantCulture),
                 NumberStyles.Integer, CultureInfo.InvariantCulture, out int stepNumber) || stepNumber <= 0) return;
-        var matchingStep = StepsGrid.Items.OfType<DataRowView>().FirstOrDefault(step => SameTransitionStep(row, step));
-        if (matchingStep != null && !ReferenceEquals(StepsGrid.SelectedItem, matchingStep))
-        {
-            _revertingSelection = true;
-            try { StepsGrid.SelectedItem = matchingStep; }
-            finally { _revertingSelection = false; }
-        }
         SyncTreeToContext();
         await LoadStepParametersAsync(stepNumber);
+    }
+
+    private void ShowTransitionConditions(DataRowView transition)
+    {
+        try
+        {
+            _conditionStep = (_referencedSteps?.Cast<DataRowView>() ?? Enumerable.Empty<DataRowView>())
+                .FirstOrDefault(step => SameTransitionStep(transition, step))?.Row;
+            ConditionsGrid.ItemsSource = ProgramTransitionConditions.Create(transition.Row).DefaultView;
+            ConditionsGrid.IsReadOnly = !CanEditTransitionConditions();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or FormatException or OverflowException)
+        {
+            ConditionsGrid.ItemsSource = null;
+            SetStatus("Условия перехода недоступны: " + ex.Message);
+        }
+    }
+
+    private void ConditionsGrid_AutoGeneratingColumn(object sender, DataGridAutoGeneratingColumnEventArgs e)
+    {
+        if (e.PropertyName == "Назначение")
+        {
+            var choices = DestinationChoices().ToList();
+            if (ConditionsGrid.ItemsSource is DataView view)
+                foreach (DataRow row in view.Table.Rows)
+                    if (row[1] is int value && !choices.Any(choice => Equals(choice.Value, value)))
+                        choices.Add(new TransitionDestination(value, $"{value} · сохранённое значение"));
+            e.Column = new DataGridComboBoxColumn
+            {
+                Header = "Назначение", ItemsSource = choices, DisplayMemberPath = nameof(TransitionDestination.Label),
+                SelectedValuePath = nameof(TransitionDestination.Value),
+                SelectedValueBinding = new System.Windows.Data.Binding("[Назначение]")
+            };
+            return;
+        }
+        if (_conditionStep == null || e.PropertyName.Length != 3 || e.PropertyName[0] != 'C') return;
+        string name = Convert.ToString(GetValue(_conditionStep, $"Condition_{e.PropertyName.Substring(1)}_Name_L1"));
+        if (!string.IsNullOrWhiteSpace(name)) e.Column.Header = $"{e.PropertyName} · {name}";
+    }
+
+    private bool CanEditTransitionConditions()
+        => UserAuthorizationService.Has(Permission.EditData) &&
+           (!_nonEditableColumns.TryGetValue("transitions", out var fields) ||
+            !fields.Any(field => field.Equals("TransPrev_CondMask", StringComparison.OrdinalIgnoreCase)
+                || field.Equals("TransNext_CondMask", StringComparison.OrdinalIgnoreCase)
+                || field.StartsWith("TransDest_", StringComparison.OrdinalIgnoreCase)));
+
+    private void ConditionsGrid_BeginningEdit(object sender, DataGridBeginningEditEventArgs e)
+    {
+        if (e.Column.DisplayIndex == 0 ||
+            (e.Column.DisplayIndex == 1 && e.Row.Item is DataRowView row &&
+             (Convert.ToString(row[0]) == "Prev" || Convert.ToString(row[0]) == "Next")))
+            e.Cancel = true;
     }
 
     private void DetailGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -883,7 +1003,7 @@ public partial class ProgramManagementControl : UserControl
     }
 
     private static int? TryGetSequenceStepNumber(DataRowView transition) =>
-        int.TryParse(Convert.ToString(GetValue(transition.Row, "SeqStep_Number"), CultureInfo.InvariantCulture),
+        transition != null && int.TryParse(Convert.ToString(GetValue(transition.Row, "SeqStep_Number"), CultureInfo.InvariantCulture),
             NumberStyles.Integer, CultureInfo.InvariantCulture, out int number) ? number : null;
 
     private async Task LoadStepParametersAsync(int stepNumber)
@@ -896,7 +1016,7 @@ public partial class ProgramManagementControl : UserControl
         {
             var table = await _repository.GetParametersAsync(targetContext, stepNumber);
             await BindTableAsync(StepParamsGrid, table);
-            SetStatus($"Шаг {stepNumber}: загружено параметров {table.Rows.Count}.");
+            SetStatus(string.Empty);
         }
         catch (Exception ex) { SetStatus("Не удалось загрузить параметры шага: " + Configurator.Infrastructure.UserErrorMessage.Format(ex)); }
         finally
@@ -995,8 +1115,7 @@ public partial class ProgramManagementControl : UserControl
         bool?[] enabledBeforeOperation = SetContextGridsEnabled(false);
         try
         {
-            var choices = await _repository.GetStepChoicesAsync(targetContext.PlcValue);
-            var selectedStep = ChooseStep(choices);
+            var selectedStep = ChooseStep(await _repository.GetStepChoicesAsync(targetContext.PlcValue));
             if (selectedStep == null) return;
             var defaults = await _repository.GetStepTextDefaultsAsync(selectedStep.Row);
             var extraFields = await PromptInsertValuesAsync(ProgramManagementRepository.TransitionTable,
@@ -1026,6 +1145,98 @@ public partial class ProgramManagementControl : UserControl
         {
             RestoreContextGridsEnabled(enabledBeforeOperation);
             _contextChangePending = false;
+        }
+    }
+
+    private async void MoveStep_Click(object sender, RoutedEventArgs e)
+    {
+        if (_loading || _contextChangePending ||
+            !UserAuthorizationService.Require(Permission.EditData) ||
+            TransitionsGrid.SelectedItem is not DataRowView selected ||
+            sender is not Button button ||
+            !int.TryParse(Convert.ToString(button.Tag, CultureInfo.InvariantCulture), out int direction)) return;
+        if (!CanDiscardPendingEdits()) return;
+        var context = CopyContext(CurrentContext);
+        var original = ToValues(selected.Row, DataRowVersion.Current);
+        _contextChangePending = true;
+        bool?[] enabled = SetContextGridsEnabled(false);
+        int? movedTo = null;
+        try
+        {
+            movedTo = await _repository.MoveStepAsync(context, original, direction);
+            string warning = RaiseJournal(ProgramManagementRepository.TransitionTable, ChangeJournalOperationKind.Update,
+                original, null, IdentityFor(ProgramManagementRepository.TransitionTable, original),
+                $"Перемещено вхождение шага на номер {movedTo}; изменены связанные ссылки");
+            bool loaded = await LoadSequenceChildrenAsync(afterCommittedChange: true, postCommitWarning: warning);
+            if (loaded)
+            {
+                var row = TransitionsGrid.Items.OfType<DataRowView>()
+                    .FirstOrDefault(item => TryGetSequenceStepNumber(item) == movedTo);
+                if (row != null)
+                {
+                    _revertingSelection = true;
+                    try { TransitionsGrid.SelectedItem = row; }
+                    finally { _revertingSelection = false; }
+                    ShowTransitionConditions(row);
+                    SyncTreeToContext();
+                }
+                SetStatus($"Вхождение перемещено на номер {movedTo}." + FormatJournalWarning(warning));
+            }
+        }
+        catch (Exception ex) { SetStatus("Не удалось переместить вхождение: " + Configurator.Infrastructure.UserErrorMessage.Format(ex)); }
+        finally
+        {
+            RestoreContextGridsEnabled(enabled);
+            _contextChangePending = false;
+        }
+        if (movedTo.HasValue) await LoadStepParametersAsync(movedTo.Value);
+    }
+
+
+    private async void ExportProgramAwl_Click(object sender, RoutedEventArgs e)
+    {
+        if (_loading || _contextChangePending || _repository == null ||
+            CurrentContext?.RecordValue == null || ProgramsGrid.SelectedItem is not DataRowView row ||
+            !UserAuthorizationService.Require(Permission.ExportData)) return;
+        var context = CopyContext(CurrentContext);
+        _contextChangePending = true;
+        ExportProgramAwlButton.IsEnabled = false;
+        string temporaryFile = null;
+        try
+        {
+            string content = await _repository.BuildAwlAsync(context);
+            string name = Convert.ToString(GetValue(row.Row, "Name_L1") ?? GetValue(row.Row, "NameL1")) ?? "";
+            string safeName = string.Concat(name.Select(ch => System.IO.Path.GetInvalidFileNameChars().Contains(ch) ? '_' : ch)).TrimEnd('.', ' ');
+            int record = Convert.ToInt32(context.RecordValue, CultureInfo.InvariantCulture);
+            var dialog = new Microsoft.Win32.SaveFileDialog
+            {
+                Title = "Экспорт сохранённой программы Siemens AWL",
+                Filter = "Siemens AWL (*.AWL)|*.AWL",
+                DefaultExt = ".AWL",
+                AddExtension = true,
+                FileName = $"Program_ {record:D2} - {safeName}.AWL"
+            };
+            if (dialog.ShowDialog(Window.GetWindow(this)) != true) return;
+            temporaryFile = dialog.FileName + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            await System.IO.File.WriteAllTextAsync(temporaryFile, content, new System.Text.UTF8Encoding(false));
+            System.IO.File.Move(temporaryFile, dialog.FileName, overwrite: true);
+            temporaryFile = null;
+            SetStatus($"AWL-файл сохранён: {dialog.FileName}");
+        }
+        catch (Exception ex)
+        {
+            SetStatus("AWL не сохранён: " + Configurator.Infrastructure.UserErrorMessage.Format(ex));
+        }
+        finally
+        {
+            if (temporaryFile != null)
+            {
+                try { System.IO.File.Delete(temporaryFile); }
+                catch (System.IO.IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+            _contextChangePending = false;
+            UpdateCommandState();
         }
     }
 
@@ -1075,7 +1286,7 @@ public partial class ProgramManagementControl : UserControl
         var targetContext = CopyContext(CurrentContext);
         object sequenceRecord = GetValue(row.Row, "Record") ?? GetValue(row.Row, "Seq_Record");
         if (sequenceRecord == null) { SetStatus("В строке последовательности нет Record."); return; }
-        if (MessageBox.Show("Последовательность будет удалена только если у неё нет шагов и связанных параметров, рецептов или выборов очереди. Продолжить?",
+        if (Configurator.Infrastructure.ModernDialog.Show(Window.GetWindow(this), $"Удалить последовательность № {sequenceRecord}? Вместе с ней будут удалены её вхождения шагов и переходы, параметры программы и шага, рецепты и их значения, а также элементы очередей этой последовательности.",
                 "Удаление последовательности", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         if (!await CanChangeContextAsync()) return;
         var deletedSequenceValues = ToValues(row.Row, DataRowVersion.Current);
@@ -1086,9 +1297,9 @@ public partial class ProgramManagementControl : UserControl
             _contextChangePending = true;
             ownsChangeLock = true;
             enabledBeforeOperation = SetContextGridsEnabled(false);
-            await _repository.DeleteSequenceAsync(targetContext, sequenceRecord);
+            var deletedRows = await _repository.DeleteSequenceAsync(targetContext, sequenceRecord, deleteDependents: true);
             string journalWarning = RaiseJournal(ProgramManagementRepository.SequenceTable, ChangeJournalOperationKind.Delete, deletedSequenceValues,
-                null, IdentityFor(ProgramManagementRepository.SequenceTable, deletedSequenceValues), "Удалена последовательность");
+                null, IdentityFor(ProgramManagementRepository.SequenceTable, deletedSequenceValues), "Удалена последовательность со связанными данными", deletedRows);
             bool refreshed = await LoadSequencesAsync(contextChangeApproved: true, afterCommittedChange: true, postCommitWarning: journalWarning);
             if (refreshed) SetStatus($"Последовательность Record={sequenceRecord} удалена." + FormatJournalWarning(journalWarning));
         }
@@ -1222,15 +1433,23 @@ public partial class ProgramManagementControl : UserControl
             SetStatus("Для выбранного PLC справочник Prog_Step пуст.");
             return null;
         }
-        var grid = new DataGrid
+        string Label(DataRowView row)
         {
-            ItemsSource = choices.DefaultView,
-            AutoGenerateColumns = true,
-            IsReadOnly = true,
-            CanUserAddRows = false,
-            CanUserDeleteRows = false,
-            SelectionMode = DataGridSelectionMode.Single,
-            SelectionUnit = DataGridSelectionUnit.FullRow
+            var name = GetValue(row.Row, "Name_L1") ?? GetValue(row.Row, "NameL1") ??
+                GetValue(row.Row, "Name_L2") ?? GetValue(row.Row, "NameL2");
+            return $"{name ?? "Без названия"}  ·  {row["PLC_Class_Number"]}/{row["Record"]}";
+        }
+        var options = choices.DefaultView.Cast<DataRowView>()
+            .Select(row => (Label: Label(row), Row: row))
+            .OrderBy(option => option.Label, StringComparer.CurrentCultureIgnoreCase)
+            .Select(option => new StepChoice(option.Label, option.Row)).ToArray();
+        var list = new ListBox { ItemsSource = options, DisplayMemberPath = nameof(StepChoice.Label), SelectedIndex = 0 };
+        var search = new TextBox { Margin = new Thickness(0, 0, 0, 8), Padding = new Thickness(6) };
+        System.Windows.Automation.AutomationProperties.SetName(search, "Поиск шага");
+        search.TextChanged += (_, _) =>
+        {
+            list.ItemsSource = options.Where(option => option.Label.Contains(search.Text.Trim(), StringComparison.CurrentCultureIgnoreCase));
+            list.SelectedIndex = 0;
         };
         var choose = new Button { Content = "Выбрать шаг", MinWidth = 100, IsDefault = true, Margin = new Thickness(4) };
         var cancel = new Button { Content = "Отмена", MinWidth = 90, IsCancel = true, Margin = new Thickness(4) };
@@ -1240,23 +1459,25 @@ public partial class ProgramManagementControl : UserControl
         var layout = new DockPanel { Margin = new Thickness(10) };
         DockPanel.SetDock(buttons, Dock.Bottom);
         layout.Children.Add(buttons);
-        layout.Children.Add(grid);
+        DockPanel.SetDock(search, Dock.Top);
+        layout.Children.Add(search);
+        layout.Children.Add(list);
         var window = new Window
         {
-            Title = "Выберите шаг из Prog_Step",
+            Title = "Добавить шаг в последовательность",
             Owner = Window.GetWindow(this),
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Width = 900,
+            Width = 620,
             Height = 600,
             Content = layout
         };
-        choose.Click += (_, _) =>
-        {
-            if (grid.SelectedItem == null) return;
-            window.DialogResult = true;
-        };
-        return window.ShowDialog() == true ? grid.SelectedItem as DataRowView : null;
+        choose.Click += (_, _) => { if (list.SelectedItem is StepChoice) window.DialogResult = true; };
+        list.MouseDoubleClick += (_, _) => { if (list.SelectedItem is StepChoice) window.DialogResult = true; };
+        window.Loaded += (_, _) => search.Focus();
+        return window.ShowDialog() == true ? (list.SelectedItem as StepChoice)?.Row : null;
     }
+
+    private sealed record StepChoice(string Label, DataRowView Row);
 
     private static int FindRecordIndex(DataGrid grid, object record)
     {
@@ -1264,7 +1485,7 @@ public partial class ProgramManagementControl : UserControl
         for (int index = 0; index < grid.Items.Count; index++)
         {
             if (grid.Items[index] is DataRowView row && row.Row.Table.Columns.Contains("Record") &&
-                Equals(row["Record"], record)) return index;
+                SameValue(row["Record"], record)) return index;
         }
         return -1;
     }
@@ -1285,7 +1506,7 @@ public partial class ProgramManagementControl : UserControl
 
     private string RaiseJournal(string tableName, ChangeJournalOperationKind kind,
         IReadOnlyDictionary<string, object> before, IReadOnlyDictionary<string, object> after,
-        IReadOnlyDictionary<string, object> identity, string description)
+        IReadOnlyDictionary<string, object> identity, string description, IReadOnlyList<ChangeJournalRowChange> completeChanges = null)
     {
         try
         {
@@ -1312,7 +1533,10 @@ public partial class ProgramManagementControl : UserControl
             Description = description,
             Details = identityText,
             OperationKind = kind,
-            RestoreIncludesAllChanges = false,
+            RestoreIncludesAllChanges = completeChanges != null ||
+                tableName == ProgramManagementRepository.ProgramTable ||
+                (kind == ChangeJournalOperationKind.Update && tableName != ProgramManagementRepository.TransitionTable) ||
+                (kind == ChangeJournalOperationKind.Delete && tableName == ProgramManagementRepository.ParameterTable),
             ProjectType = offline ? "Offline" : "Online",
             ProjectId = offline ? _offlineSource.Project.Manifest?.ProjectId ?? "" : "online:" + builder.DataSource.Trim().ToLowerInvariant() + "/" + builder.InitialCatalog.Trim().ToLowerInvariant(),
             ProjectName = offline ? _offlineSource.Project.Manifest?.Name ?? "" : builder.InitialCatalog,
@@ -1323,7 +1547,7 @@ public partial class ProgramManagementControl : UserControl
             EntityType = tableName,
             EntityIdentity = identityText,
             Result = "Успешно",
-            Changes = new List<ChangeJournalRowChange> { change }
+            Changes = completeChanges?.ToList() ?? new List<ChangeJournalRowChange> { change }
         });
         return null;
         }
@@ -1388,8 +1612,10 @@ public partial class ProgramManagementControl : UserControl
 
     private void RejectGridChanges()
     {
-        foreach (var grid in new[] { ProgramsGrid, SequencesGrid, StepsGrid, TransitionsGrid, ProgramParamsGrid, StepParamsGrid })
+        foreach (var grid in new[] { ProgramsGrid, SequencesGrid, TransitionsGrid, ProgramParamsGrid, StepParamsGrid, ConditionsGrid })
             if (grid.ItemsSource is DataView view) view.Table.RejectChanges();
+        RenderProgramFields(ProgramsGrid.SelectedItem as DataRowView);
+        if (TransitionsGrid.SelectedItem is DataRowView transition) ShowTransitionConditions(transition);
     }
 
     private bool CanChangeSelection(DataGrid grid, SelectionChangedEventArgs e)
@@ -1426,8 +1652,18 @@ public partial class ProgramManagementControl : UserControl
 
     private bool CommitGridEdits()
     {
+        foreach (var input in ProgramFields.Children.OfType<DockPanel>().SelectMany(line => line.Children.OfType<TextBox>()))
+        {
+            if (input.IsReadOnly || input.Tag is not string column) continue;
+            var binding = input.GetBindingExpression(TextBox.TextProperty);
+            if (binding?.DataItem is not DataRowView row ||
+                string.Equals(input.Text, Convert.ToString(row[column], CultureInfo.CurrentCulture), StringComparison.Ordinal))
+                continue;
+            binding.UpdateSource();
+            if (Validation.GetHasError(input)) return false;
+        }
         bool committed = true;
-        foreach (var grid in new[] { ProgramsGrid, SequencesGrid, StepsGrid, TransitionsGrid, ProgramParamsGrid, StepParamsGrid })
+        foreach (var grid in new[] { ProgramsGrid, SequencesGrid, TransitionsGrid, ProgramParamsGrid, StepParamsGrid, ConditionsGrid })
         {
             grid.CommitEdit(DataGridEditingUnit.Cell, true);
             committed &= grid.CommitEdit(DataGridEditingUnit.Row, true);
@@ -1437,7 +1673,7 @@ public partial class ProgramManagementControl : UserControl
 
     private bool?[] SetContextGridsEnabled(bool enabled)
     {
-        var grids = new[] { ProgramsGrid, SequencesGrid, StepsGrid, TransitionsGrid, ProgramParamsGrid, StepParamsGrid };
+        var grids = new[] { ProgramsGrid, SequencesGrid, TransitionsGrid, ProgramParamsGrid, StepParamsGrid, ConditionsGrid };
         var previous = grids.Select(grid => GetLocalIsEnabled(grid))
             .Concat(new[] { GetLocalIsEnabled(PlcInput), GetLocalIsEnabled(ClassInput) }).ToArray();
         foreach (var grid in grids) grid.IsEnabled = enabled;
@@ -1455,7 +1691,7 @@ public partial class ProgramManagementControl : UserControl
     private void RestoreContextGridsEnabled(bool?[] previous)
     {
         if (previous == null) return;
-        var grids = new[] { ProgramsGrid, SequencesGrid, StepsGrid, TransitionsGrid, ProgramParamsGrid, StepParamsGrid };
+        var grids = new[] { ProgramsGrid, SequencesGrid, TransitionsGrid, ProgramParamsGrid, StepParamsGrid, ConditionsGrid };
         for (int index = 0; index < grids.Length && index < previous.Length; index++)
             RestoreLocalIsEnabled(grids[index], previous[index]);
         if (previous.Length > grids.Length) RestoreLocalIsEnabled(PlcInput, previous[grids.Length]);
@@ -1471,23 +1707,217 @@ public partial class ProgramManagementControl : UserControl
 
     private bool HasPendingEdits()
     {
-        foreach (var grid in new[] { ProgramsGrid, SequencesGrid, StepsGrid, TransitionsGrid, ProgramParamsGrid, StepParamsGrid })
-            if (grid.ItemsSource is DataView view && view.Table.Rows.Cast<DataRow>().Any(row => row.RowState is DataRowState.Modified or DataRowState.Added or DataRowState.Deleted))
+        foreach (var grid in new[] { ProgramsGrid, SequencesGrid, TransitionsGrid, ProgramParamsGrid, StepParamsGrid, ConditionsGrid })
+            if (grid.ItemsSource is DataView view && view.Table.Rows.Cast<DataRow>().Any(row => row.RowState is DataRowState.Added or DataRowState.Deleted ||
+                (row.RowState == DataRowState.Modified && row.Table.Columns.Cast<DataColumn>().Any(column =>
+                    !System.Collections.StructuralComparisons.StructuralEqualityComparer.Equals(row[column, DataRowVersion.Original], row[column])))))
                 return true;
         return false;
     }
 
+
+    private async void AddParameter_Click(object sender, RoutedEventArgs e) => await ChangeParameterAsync((Button)sender, true);
+
+    private async void DeleteParameter_Click(object sender, RoutedEventArgs e) => await ChangeParameterAsync((Button)sender, false);
+
+    private async Task ChangeParameterAsync(Button button, bool insert)
+    {
+        if (_loading || _contextChangePending || CurrentContext?.SeqRecordValue == null ||
+            !UserAuthorizationService.Require(insert ? Permission.AddData : Permission.DeleteData) || !CanDiscardPendingEdits()) return;
+        string tag = (string)button.Tag;
+        int? step = tag == "programParams" ? 0 : TryGetSequenceStepNumber(TransitionsGrid.SelectedItem as DataRowView);
+        var selected = FindGrid(tag).SelectedItem as DataRowView;
+        if (!step.HasValue) { SetStatus("Выберите вхождение шага."); return; }
+        if (!insert && selected == null) { SetStatus("Выберите параметр."); return; }
+        var context = CopyContext(CurrentContext);
+        _contextChangePending = true;
+        try
+        {
+            if (insert)
+            {
+                var values = await PromptInsertValuesAsync(ProgramManagementRepository.ParameterTable,
+                    new[] { "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Seq_Record", "Step_Number", "Record" }, "Новый параметр");
+                if (values == null) return;
+                int record = await _repository.AddParameterAsync(context, step.Value, values);
+                values["PLC"] = context.PlcValue;
+                values["PLC_Class_Prog_Number"] = context.ClassNumberValue;
+                values["Prog_Record"] = context.RecordValue;
+                values["Seq_Record"] = context.SeqRecordValue;
+                values["Step_Number"] = step.Value;
+                values["Record"] = record;
+                RaiseJournal(ProgramManagementRepository.ParameterTable, ChangeJournalOperationKind.Insert, null, values,
+                    IdentityFor(ProgramManagementRepository.ParameterTable, values), "Создан параметр");
+            }
+            else
+            {
+                if (MessageBox.Show(Window.GetWindow(this), "Удалить выбранный параметр?", "Параметр",
+                    MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+                var before = ToValues(selected.Row, DataRowVersion.Current);
+                await _repository.DeleteParameterAsync(context, step.Value, GetValue(selected.Row, "Type"), GetValue(selected.Row, "Record"));
+                RaiseJournal(ProgramManagementRepository.ParameterTable, ChangeJournalOperationKind.Delete, before, null,
+                    IdentityFor(ProgramManagementRepository.ParameterTable, before), "Удалён параметр");
+            }
+            await BindTableAsync(FindGrid(tag), await _repository.GetParametersAsync(context, step.Value));
+            SetStatus(insert ? "Параметр создан." : "Параметр удалён.");
+        }
+        catch (Exception ex)
+        {
+            SetStatus(Configurator.Infrastructure.UserErrorMessage.Format(ex));
+        }
+        finally
+        {
+            _contextChangePending = false;
+            UpdateCommandState();
+        }
+    }
+
+    public Task SaveProgramCardAsync()
+    {
+        if (DetailsTabs.SelectedItem == SoftKeysTab) return SoftKeysEditor.SaveCurrentAsync();
+        if (DetailsTabs.SelectedItem == MessagesTab) return MessagesEditor.SaveCurrentAsync();
+        if (DetailsTabs.SelectedItem == QueuesTab) return QueuesEditor.SaveCurrentAsync();
+        if (DetailsTabs.SelectedItem != SequenceTab) return SaveEntityAsync(SaveProgramsButton);
+        if (SequenceTabs.SelectedItem == RecipesTab) return RecipesEditor.SaveCurrentAsync();
+        if (SequenceTabs.SelectedItem == StepDetailsTab) return SaveEntityAsync(SaveStepParamsButton);
+        if (SequenceTabs.SelectedItem == SequenceDetailsTab) return SaveEntityAsync(SaveTransitionsButton);
+        return SaveEntityAsync(SaveProgramParamsButton);
+    }
+
+    private async void EditEntityRow_DoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (_loading || _contextChangePending || !UserAuthorizationService.Has(Permission.EditData) ||
+            sender is not DataGrid grid || e.OriginalSource is not DependencyObject source ||
+            ItemsControl.ContainerFromElement(grid, source) is not DataGridRow { Item: DataRowView selected } ||
+            grid.Tag is not string tag || !_nonEditableColumns.TryGetValue(tag, out var protectedColumns)) return;
+
+        var units = Array.Empty<LookupOption>() as IReadOnlyList<LookupOption>;
+        if (selected.Row.Table.Columns.Contains("Unit"))
+        {
+            var context = CurrentContext;
+            try
+            {
+                var field = new Configurator.Core.Architecture.FieldDefinition
+                { Name = "Unit", LookupTable = "dbo.Units", LookupKeyField = "Unit_ID" };
+                units = _offlineSource != null
+                    ? OfflineLookupOptionsService.Get(_offlineSource.Project, "Program", ProgramManagementRepository.ParameterTable, field)
+                    : await new LookupOptionsService(new DatabaseService(_connectionString)).TryGetAsync(
+                        "Program", ProgramManagementRepository.ParameterTable, "Unit",
+                        explicitLookupTable: field.LookupTable, explicitLookupKeyField: field.LookupKeyField);
+            }
+            catch (Exception ex) { Configurator.Infrastructure.UserErrorMessage.Format(ex); }
+            if (!ReferenceEquals(context, CurrentContext) || !ReferenceEquals(grid.SelectedItem, selected) || _contextChangePending) return;
+        }
+        var draft = selected.Row.Table.Clone();
+        draft.ImportRow(selected.Row);
+        var fields = new UniformGrid { Columns = 3, Margin = new Thickness(6, 8, 6, 12) };
+        var inputs = new List<Control>();
+        foreach (DataColumn column in draft.Columns)
+        {
+            bool readOnly = column.ReadOnly || protectedColumns.Contains(column.ColumnName) ||
+                ProtectedContextColumns.Contains(column.ColumnName) || column.ColumnName is "Record" or "Type";
+            var field = new StackPanel { Margin = new Thickness(6, 4, 6, 4) };
+            Control input;
+            DependencyProperty property;
+            if (!readOnly && column.ColumnName.Equals("Unit", StringComparison.OrdinalIgnoreCase) && units.Count > 0)
+            {
+                var choices = units.ToList();
+                string current = Convert.ToString(selected[column.ColumnName], CultureInfo.InvariantCulture);
+                if (!string.IsNullOrWhiteSpace(current) && !choices.Any(choice => choice.Key == current))
+                    choices.Insert(0, new LookupOption { Key = current, Display = current + " · текущее значение" });
+                if (column.AllowDBNull) choices.Insert(0, new LookupOption { Key = "", Display = "(не задано)" });
+                var combo = new ComboBox { ItemsSource = choices, DisplayMemberPath = nameof(LookupOption.Display), SelectedValuePath = nameof(LookupOption.Key),
+                    SelectedValue = current };
+                combo.SelectionChanged += (_, _) =>
+                {
+                    if (combo.SelectedValue is string key)
+                        draft.Rows[0][column.ColumnName] = key.Length == 0 ? DBNull.Value : key;
+                };
+                input = combo;
+                property = null;
+            }
+            else
+            {
+                input = new TextBox { IsReadOnly = readOnly };
+                property = TextBox.TextProperty;
+            }
+            if (property != null) input.SetBinding(property, new Binding($"[{column.ColumnName}]")
+            {
+                Source = draft.DefaultView[0],
+                Mode = readOnly ? BindingMode.OneWay : BindingMode.TwoWay,
+                UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged,
+                ValidatesOnExceptions = true,
+                TargetNullValue = string.Empty
+            });
+            field.Children.Add(new Label { Content = column.ColumnName, Target = input, Padding = new Thickness(0, 0, 0, 2) });
+            field.Children.Add(input);
+            fields.Children.Add(field);
+            inputs.Add(input);
+        }
+        var save = new Button { Content = "Сохранить", IsDefault = true, Margin = new Thickness(4) };
+        save.SetResourceReference(StyleProperty, "BtnSaveObject");
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        actions.Children.Add(new Button { Content = "Отмена", IsCancel = true, Margin = new Thickness(4) });
+        actions.Children.Add(save);
+        var layout = new DockPanel();
+        DockPanel.SetDock(actions, Dock.Bottom);
+        layout.Children.Add(actions);
+        var scroll = new ScrollViewer
+        {
+            Content = fields, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
+        };
+        scroll.SizeChanged += (_, args) => fields.Columns = Math.Clamp((int)(args.NewSize.Width / 255), 1, 3);
+        layout.Children.Add(scroll);
+        var dialog = new Window
+        {
+            Owner = Window.GetWindow(this), WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Title = tag == "sequences" ? "Изменить последовательность" : "Изменить параметр",
+            Width = Math.Min(1080, SystemParameters.WorkArea.Width),
+            Height = Math.Min(640, SystemParameters.WorkArea.Height),
+            Content = layout
+        };
+        save.Click += (_, _) =>
+        {
+            if (!inputs.Any(Validation.GetHasError)) dialog.DialogResult = true;
+        };
+        e.Handled = true;
+        if (dialog.ShowDialog() != true || draft.Rows[0].RowState != DataRowState.Modified) return;
+        var button = tag == "sequences" ? SaveSequencesButton :
+            tag == "programParams" ? SaveProgramParamsButton : SaveStepParamsButton;
+        await SaveEntityAsync(button, draft.Rows[0]);
+    }
+
     private async void SaveEntityButton_Click(object sender, RoutedEventArgs e)
+        => await SaveEntityAsync((Button)sender);
+
+    private async Task SaveEntityAsync(Button button, DataRow draft = null)
     {
         if (_loading || _contextChangePending) return;
         if (!UserAuthorizationService.Require(Permission.EditData)) return;
-        if (sender is not Button button || !TableByGrid.TryGetValue(Convert.ToString(button.Tag), out string tableName)) return;
+        if (!TableByGrid.TryGetValue(Convert.ToString(button.Tag), out string tableName)) return;
         var grid = FindGrid(button.Tag as string);
         if (grid?.SelectedItem is not DataRowView selected) { SetStatus("Выберите строку для сохранения."); return; }
 
+        if (grid == ProgramsGrid && !CommitGridEdits()) return;
         grid.CommitEdit(DataGridEditingUnit.Cell, true);
         if (!grid.CommitEdit(DataGridEditingUnit.Row, true))
         { SetStatus("Проверьте введённые значения: текущая строка не прошла проверку."); return; }
+        if (tableName == ProgramManagementRepository.TransitionTable && ConditionsGrid.ItemsSource is DataView conditions)
+        {
+            ConditionsGrid.CommitEdit(DataGridEditingUnit.Cell, true);
+            if (!ConditionsGrid.CommitEdit(DataGridEditingUnit.Row, true))
+            { SetStatus("Проверьте введённые условия перехода."); return; }
+            try
+            {
+                var choices = DestinationChoices().Select(choice => choice.Value).ToHashSet();
+                foreach (DataRow condition in conditions.Table.Rows)
+                    if (condition.RowState == DataRowState.Modified &&
+                        !Equals(condition[1, DataRowVersion.Original], condition[1]) && !choices.Contains(condition[1]))
+                        throw new InvalidOperationException("Выберите назначение из текущей последовательности.");
+                ProgramTransitionConditions.Apply(conditions.Table, selected.Row);
+            }
+            catch (Exception ex) { SetStatus("Не удалось применить условия: " + ex.Message); return; }
+        }
         var row = selected.Row;
         if (row.RowState == DataRowState.Added)
         { SetStatus("Создание строк в этом экране пока отключено: схема round-trip для вставки не подтверждена."); return; }
@@ -1495,17 +1925,23 @@ public partial class ProgramManagementControl : UserControl
         { SetStatus("Нет исходной версии строки для безопасного сохранения."); return; }
 
         var original = ToValues(row, DataRowVersion.Original);
-        var updated = ToValues(row, DataRowVersion.Current);
+        var updated = ToValues(draft ?? row, DataRowVersion.Current);
         _contextChangePending = true;
         bool?[] enabledBeforeSave = SetContextGridsEnabled(false);
         try
         {
             await _repository.SaveRowAsync(tableName, original, updated);
+            if (draft != null)
+                foreach (DataColumn column in row.Table.Columns)
+                    if (!Equals(row[column], draft[column.ColumnName])) row[column] = draft[column.ColumnName];
             row.AcceptChanges();
+
+            if (tableName == ProgramManagementRepository.TransitionTable) ShowTransitionConditions(selected);
             RefreshTreeLabels();
             string journalWarning = RaiseJournal(tableName, ChangeJournalOperationKind.Update, original, updated,
                 IdentityFor(tableName, updated), "Изменена запись Program/Step");
             SetStatus("Изменения сохранены. Строка проверена на отсутствие параллельной правки." + FormatJournalWarning(journalWarning));
+            if (tableName == ProgramManagementRepository.ProgramTable) ProgramSaved?.Invoke(row);
         }
         catch (Exception ex) { SetStatus("Не удалось сохранить строку: " + Configurator.Infrastructure.UserErrorMessage.Format(ex)); }
         finally
@@ -1515,10 +1951,41 @@ public partial class ProgramManagementControl : UserControl
         }
     }
 
+    private sealed record TransitionDestination(object Value, string Label);
+
+    private IEnumerable<TransitionDestination> DestinationChoices()
+    {
+        yield return new TransitionDestination(DBNull.Value, "—");
+        yield return new TransitionDestination(0, "0 — без назначения");
+        foreach (var row in TransitionsGrid.Items.OfType<DataRowView>())
+        {
+            if (TryGetSequenceStepNumber(row) is not > 0) continue;
+            int number = TryGetSequenceStepNumber(row).Value;
+            string name = Convert.ToString(GetValue(row.Row, "Name_L1") ?? GetValue(row.Row, "NameL1"));
+            yield return new TransitionDestination(number, string.IsNullOrWhiteSpace(name) ? $"{number}" : $"{number} · {name}");
+        }
+    }
+
     private void EntityGrid_AutoGeneratingColumn(object sender, DataGridAutoGeneratingColumnEventArgs e)
     {
         if (sender is not DataGrid grid) return;
         string gridKey = Convert.ToString(grid.Tag);
+        if (gridKey != "programs" && (e.PropertyName is "PLC" or "PLC_Class_Prog_Number" or "Prog_Record" or "Seq_Record"))
+        {
+            e.Cancel = true;
+            return;
+        }
+        if (gridKey == "transitions" && e.PropertyName.StartsWith("Trans", StringComparison.OrdinalIgnoreCase))
+        {
+            e.Cancel = true; // Destinations and masks are edited together in the conditions grid.
+            return;
+        }
+        if (e.Column is DataGridTextColumn text)
+        {
+            var style = new Style(typeof(TextBlock), text.ElementStyle);
+            style.Setters.Add(new Setter(FrameworkElement.MarginProperty, new Thickness(8, 3, 8, 3)));
+            text.ElementStyle = style;
+        }
         bool parameterType = e.PropertyName.Equals("Type", StringComparison.OrdinalIgnoreCase) &&
             (gridKey.Equals("stepParams", StringComparison.OrdinalIgnoreCase) || gridKey.Equals("programParams", StringComparison.OrdinalIgnoreCase));
         bool protectedColumn = ProtectedContextColumns.Contains(e.PropertyName) || parameterType ||
@@ -1570,7 +2037,6 @@ public partial class ProgramManagementControl : UserControl
     {
         "programs" => ProgramsGrid,
         "sequences" => SequencesGrid,
-        "steps" => StepsGrid,
         "transitions" => TransitionsGrid,
         "programParams" => ProgramParamsGrid,
         "stepParams" => StepParamsGrid,
@@ -1580,6 +2046,7 @@ public partial class ProgramManagementControl : UserControl
     private void ClearDetails()
     {
         TransitionsGrid.ItemsSource = null;
+        ConditionsGrid.ItemsSource = null;
         ProgramParamsGrid.ItemsSource = null;
         StepParamsGrid.ItemsSource = null;
     }

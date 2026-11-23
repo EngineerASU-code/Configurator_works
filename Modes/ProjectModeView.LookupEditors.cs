@@ -1,9 +1,10 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
 using System.IO;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -61,14 +62,9 @@ public partial class ProjectModeView
             FrameworkElement value;
             var currentValue = row.IsNull(column) ? "" : Convert.ToString(row[column]) ?? "";
             if (_configurationKind == ConfigurationKind.Plc && column.ColumnName.Equals("Type", StringComparison.OrdinalIgnoreCase)
-                && plcTypeOptions.Count > 0)
+                && CanUseTypeLookup(plcTypeOptions, currentValue))
             {
                 var options = plcTypeOptions.ToList();
-                if (!string.IsNullOrWhiteSpace(currentValue) && !options.Any(option => option.Key.Equals(currentValue, StringComparison.OrdinalIgnoreCase)))
-                {
-                    options.Add(new LookupOption { Key = currentValue, Display = $"{currentValue} · текущее значение" });
-                    AddLookupWarning(column.ColumnName, $"Type={currentValue}: этого значения нет в справочнике PLC Type.");
-                }
                 if (column.AllowDBNull && !options.Any(option => string.IsNullOrEmpty(option.Key)))
                     options.Insert(0, new LookupOption { Key = "", Display = "(не задано)" });
                 var combo = new ComboBox
@@ -94,8 +90,10 @@ public partial class ProjectModeView
             else
             {
                 if (_configurationKind == ConfigurationKind.Plc && column.ColumnName.Equals("Type", StringComparison.OrdinalIgnoreCase)
-                    && !string.IsNullOrWhiteSpace(currentValue) && plcTypeOptions.Count == 0)
-                    AddLookupWarning(column.ColumnName, $"Type={currentValue}: справочник PLC Type отсутствует или не содержит значений.");
+                    && !string.IsNullOrWhiteSpace(currentValue))
+                    AddLookupWarning(column.ColumnName, plcTypeOptions.Count == 0
+                        ? $"Type={currentValue}: справочник PLC Type отсутствует или не содержит значений."
+                        : $"Type={currentValue}: этого значения нет в справочнике PLC Type.");
                 var box = new TextBox
                 {
                     Text = currentValue,
@@ -279,11 +277,15 @@ public partial class ProjectModeView
             content.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-            int index = 0;
+            var conditionSlots = _selectedClass.Name.Equals("Step", StringComparison.OrdinalIgnoreCase) &&
+                groupEntry.Key.Equals("Conditions", StringComparison.OrdinalIgnoreCase)
+                ? GetStepConditionSlots(group.Select(item => item.Field.Name)) : new Dictionary<string, int>();
+            int index = conditionSlots.Count == 0 ? 0 : ((conditionSlots.Values.Max() / 2) + 1) * 2;
             foreach (var item in group)
             {
-                int row = index / 2;
-                int col = index % 2;
+                int slot = conditionSlots.TryGetValue(item.Field.Name, out int pairedSlot) ? pairedSlot : index++;
+                int row = slot / 2;
+                int col = slot % 2;
                 while (content.RowDefinitions.Count <= row) content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
                 var field = item.Field;
@@ -386,7 +388,9 @@ public partial class ProjectModeView
                     readOnlyArea.SetResourceReference(Control.BorderBrushProperty, "BrushBorder");
                     editor = readOnlyArea;
                 }
-                else if (options.Count > 0 || knownLookupField)
+                else if (field.Name.Equals("Type", StringComparison.OrdinalIgnoreCase)
+                    ? CanUseTypeLookup(options, currentLookupValue)
+                    : options.Count > 0 || knownLookupField)
                 {
                     var combo = new ComboBox
                     {
@@ -447,7 +451,6 @@ public partial class ProjectModeView
                 Grid.SetColumn(rowPanel, col);
                 Grid.SetRow(rowPanel, row);
                 content.Children.Add(rowPanel);
-                index++;
             }
 
             var section = new StackPanel();
@@ -473,11 +476,15 @@ public partial class ProjectModeView
         TxtStatus.Text = $"{(offline ? "Offline · " : string.Empty)}{_selectedClass.Name} · показаны все {actualFields.Count} полей · {(offline ? "значения взяты из локального снимка" : "связанные поля — выпадающие списки")}";
     }
 
+    private static bool CanUseTypeLookup(IReadOnlyList<LookupOption> options, string currentValue) =>
+        options.Count > 0 && (string.IsNullOrWhiteSpace(currentValue) ||
+            options.Any(option => string.Equals(option.Key, currentValue, StringComparison.OrdinalIgnoreCase)));
+
     private void UpdateLookupWarningsButton()
     {
         if (BtnLookupWarnings == null) return;
         BtnLookupWarnings.Visibility = _lookupWarnings.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
-        BtnLookupWarnings.Content = $"⚠ {_lookupWarnings.Count}";
+        BtnLookupWarnings.Content = $"⚠  Предупреждения: {_lookupWarnings.Count}";
         BtnLookupWarnings.ToolTip = _lookupWarnings.Count == 0
             ? null
             : string.Join(Environment.NewLine, _lookupWarnings);
@@ -492,9 +499,30 @@ public partial class ProjectModeView
     private void LookupWarnings_Click(object sender, RoutedEventArgs e)
     {
         if (_lookupWarnings.Count == 0) return;
-        Configurator.Infrastructure.ModernDialog.Show(
-            "В выбранной карточке обнаружены проблемы со справочниками:\n\n" + string.Join("\n", _lookupWarnings),
-            "Проверка связанных значений", MessageBoxButton.OK, MessageBoxImage.Warning);
+        var panel = new DockPanel { Margin = new Thickness(18) };
+        var close = new Button { Content = "Закрыть", IsCancel = true, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 12, 0, 0) };
+        DockPanel.SetDock(close, Dock.Bottom);
+        panel.Children.Add(close);
+        panel.Children.Add(new ScrollViewer
+        {
+            Background = new SolidColorBrush(Color.FromRgb(255, 239, 180)),
+            Content = new TextBlock
+            {
+                Text = string.Join(Environment.NewLine + Environment.NewLine, _lookupWarnings),
+                TextWrapping = TextWrapping.Wrap, Margin = new Thickness(12), LineHeight = 20, Foreground = Brushes.Black
+            },
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+        });
+        var dialog = new Window
+        {
+            Owner = Window.GetWindow(this), Title = "Предупреждения о связанных значениях",
+            Width = Math.Min(820, SystemParameters.WorkArea.Width),
+            Height = Math.Min(440, SystemParameters.WorkArea.Height),
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = panel
+        };
+        dialog.SetResourceReference(Control.BackgroundProperty, "BrushBase");
+        dialog.ShowDialog();
         var fieldName = _lookupWarningFields.FirstOrDefault();
         if (string.IsNullOrWhiteSpace(fieldName)) return;
         Dispatcher.BeginInvoke(new Action(() =>
@@ -531,6 +559,25 @@ public partial class ProjectModeView
             return inferred;
 
         return configured;
+    }
+
+    private static Dictionary<string, int> GetStepConditionSlots(IEnumerable<string> fieldNames)
+    {
+        var pairs = fieldNames.Select(name => (Name: name, Match: Regex.Match(name,
+                @"^Condition_([0-9]{2})_(Name|Description)_?L([12])$", RegexOptions.IgnoreCase)))
+            .Where(field => field.Match.Success)
+            .GroupBy(field => (Kind: field.Match.Groups[2].Value.ToUpperInvariant(), Number: field.Match.Groups[1].Value))
+            .OrderBy(pair => pair.Key.Kind == "NAME" ? 0 : 1)
+            .ThenBy(pair => pair.Key.Number, StringComparer.Ordinal);
+        var slots = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        int row = 0;
+        foreach (var pair in pairs)
+        {
+            foreach (var language in pair.GroupBy(field => field.Match.Groups[3].Value))
+                slots.Add(language.First().Name, row * 2 + (language.Key == "1" ? 0 : 1));
+            row++;
+        }
+        return slots;
     }
 
     private static int ObjectGroupOrder(string group) => group switch

@@ -115,16 +115,15 @@ public sealed class OnlineProjectCrudDataSource : IProjectCrudDataSource, IProje
         await _database.UpdateRowAsync(tableName, keyColumns.ToList(), ToMutableDictionary(keyValues), ToMutableDictionary(values), cancellationToken).ConfigureAwait(false);
     }
 
-    internal Task UpdateCompareRecordAsync(ProjectTableSchema schema, ProjectRecord expectedRecord,
+    internal Task UpdateCompareRecordAsync(ProjectTableSchema schema, ProjectRecord? expectedRecord,
         IReadOnlyDictionary<string, object?> keyValues, IReadOnlyDictionary<string, object?> values,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(schema);
-        ArgumentNullException.ThrowIfNull(expectedRecord);
         if (keyValues == null || schema.KeyColumns.Any(key => !keyValues.ContainsKey(key)))
             throw new InvalidOperationException("Не заданы все значения стабильного ключа.");
-        if (values == null || values.Count != 1)
-            throw new InvalidOperationException("Compare может изменить только одно выбранное поле.");
+        if (values == null || values.Count == 0)
+            throw new InvalidOperationException("Нет выбранных полей для переноса.");
 
         return _database.UpdateCompareRowAsync(schema, expectedRecord, ToMutableDictionary(keyValues),
             ToMutableDictionary(values), cancellationToken);

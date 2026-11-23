@@ -24,6 +24,7 @@ public sealed class DatabaseTable
     public List<DatabaseKey> Keys { get; } = new();
     public bool IsComplexEntity { get; init; }
     public bool CanCompareUpdate { get; init; }
+    public bool CanCompareInsert { get; init; }
 }
 
 public sealed class DatabaseColumn

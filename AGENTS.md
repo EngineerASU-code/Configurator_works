@@ -16,6 +16,6 @@ Windows WPF, C# and .NET 8. Use the .NET 10 SDK for the SLNX solution and the .N
 
 ## Quality checks
 
-Use [Run-Configurator-Tests.ps1](Run-Configurator-Tests.ps1) for filtered or full xUnit runs. Keep SQL credentials and local connection settings outside Git and use a dedicated SQL Server or LocalDB database for integration. Record automated tests, WPF acceptance, and SQL integration separately. Use [initial-setup](.agents/skills/initial-setup/SKILL.md) to establish the local quality checks and [task-review](.agents/skills/task-review/SKILL.md) for final GASS acceptance.
+Use [Run-Configurator-Tests.ps1](Run-Configurator-Tests.ps1) for filtered or full xUnit runs. Keep SQL credentials and local connection settings outside Git and use a dedicated SQL Server or LocalDB database for integration. Record automated tests, WPF acceptance, and SQL integration separately.
 
 Historical Roadmaps and reports describe their recorded snapshot. Compare the Graphify commit with HEAD before using its relationships. Inspect changed and new files in the working tree.

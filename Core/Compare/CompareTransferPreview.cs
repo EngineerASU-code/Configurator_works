@@ -66,8 +66,8 @@ public sealed class CompareTransferPreview
 
         var schema = toTable.Schema;
         if (!target.Workspace.IsOffline &&
-            (toTable.MetadataFingerprint is null || target.PhysicalSchema?.FindTable(schema.TableName)?.CanCompareUpdate != true))
-            return Block("Условия безопасного обновления этой SQL-таблицы не подтверждены.");
+            (toTable.MetadataFingerprint is null || (to is null ? target.PhysicalSchema?.FindTable(schema.TableName)?.CanCompareInsert : target.PhysicalSchema?.FindTable(schema.TableName)?.CanCompareUpdate) != true))
+            return Block("Условия записи в эту SQL-таблицу не подтверждены.");
         if (!schema.HasStableKey || schema.KeyColumns.Count == 0 ||
             !schema.KeyColumns.SequenceEqual(fromTable.Schema.KeyColumns, Names))
             return Block("Не подтверждён стабильный ключ целевой таблицы.");
@@ -104,18 +104,38 @@ public sealed class CompareTransferPreview
                 var oldValue = to.Values.TryGetPropertyValue(column.Name, out var old) ? Display(old) : "отсутствует";
                 fields.Add($"{column.Name}  {oldValue} → {Display(value)}");
             }
+            else if (to is not null)
+            {
+                if (difference.Children is not { Count: > 0 } children)
+                    return Block("У объекта нет изменённых полей.");
+                foreach (var child in children.Where(child => child.Status != CompareStatus.Equal))
+                {
+                    if (child.Column is null || !ReferenceEquals(child.Pair?.RecordA, pair.RecordA) ||
+                        !ReferenceEquals(child.Pair?.RecordB, pair.RecordB))
+                        return Block("Выберите отдельное изменённое поле.");
+                    var fieldPreview = Evaluate(a, b, child, aToB);
+                    if (!fieldPreview.IsAllowed)
+                        return Block($"{child.Column}: {fieldPreview.BlockReason} Выберите отдельное поле.");
+                    foreach (var change in fieldPreview.Values)
+                    {
+                        values.Add(change.Key, change.Value);
+                        fields.Add($"{change.Key}  {Display(to.Values[change.Key])} → {Display(from.Values[change.Key])}");
+                    }
+                }
+                if (values.Count == 0) return Block("У объекта нет изменённых полей.");
+            }
+
             else
             {
-                if (to is not null)
-                    return Block("Выберите отдельный изменённый параметр.");
-                if (!target.Workspace.IsOffline)
-                    return Block("Создание SQL-объектов требует отдельной проверки зависимостей.");
-                if (fromTable.Class.IsSystem || toTable.Class.IsSystem ||
+                bool valve = IsValveTable(schema) &&
+                    Names.Equals(fromTable.Class.Id, "valve") && Names.Equals(toTable.Class.Id, "valve") &&
+                    fromTable.DependencyColumns.All(IsValveLookupColumn) && toTable.DependencyColumns.All(IsValveLookupColumn);
+                if ((!valve && (fromTable.Class.IsSystem || toTable.Class.IsSystem ||
+                    fromTable.Class.Types.Count != 0 || toTable.Class.Types.Count != 0 ||
+                    fromTable.DependencyColumns.Count != 0 || toTable.DependencyColumns.Count != 0)) ||
                     fromTable.Class.StorageMappings.Count != 1 || toTable.Class.StorageMappings.Count != 1 ||
                     fromTable.Class.ComplexTables.Count != 0 || toTable.Class.ComplexTables.Count != 0 ||
-                    fromTable.Class.Types.Count != 0 || toTable.Class.Types.Count != 0 ||
-                    !string.IsNullOrEmpty(fromTable.Class.BaseClassId) || !string.IsNullOrEmpty(toTable.Class.BaseClassId) ||
-                    fromTable.DependencyColumns.Count != 0 || toTable.DependencyColumns.Count != 0)
+                    !string.IsNullOrEmpty(fromTable.Class.BaseClassId) || !string.IsNullOrEmpty(toTable.Class.BaseClassId))
                     return Block("Создание поддерживается для независимого объекта с одной явно сопоставленной таблицей.");
                 var physical = target.PhysicalSchema?.FindTable(schema.TableName);
                 if (physical is null || physical.Keys.Any(key => key.IsUnique && !key.Columns.SequenceEqual(schema.KeyColumns, Names)))
@@ -128,8 +148,9 @@ public sealed class CompareTransferPreview
                         fromColumn is null || !Compatible(column, fromColumn) ||
                         !from.Values.TryGetPropertyValue(fromColumn.Name, out var value) ||
                         (IsManagedField(column.Name) && !Names.Equals(column.Name, "Name") &&
+                         !(valve && IsValveLookupColumn(column.Name)) &&
                          !schema.KeyColumns.Contains(column.Name, Names)))
-                        return Block("Не все значения простого объекта можно сохранить штатным способом.");
+                        return Block($"Поле «{column.Name}» отсутствует, несовместимо или недоступно для записи.");
                     values.Add(column.Name, ToValue(value, column));
                     fields.Add($"{column.Name}  {Display(value)}");
                 }
@@ -146,7 +167,7 @@ public sealed class CompareTransferPreview
         }
 
         var keyLabel = string.Join(", ", keys.Select(key => $"{key.Key}={key.Value}"));
-        var action = to is null ? "Создать объект" : "Перенести выбранный параметр";
+        var action = to is null ? "Добавить объект" : difference.Column is null ? "Изменить поля объекта" : "Изменить выбранное поле";
         var direction = aToB ? "A → B" : "B → A";
         var sourceLabel = source.PackagePath ?? $"Online · {source.Workspace.DisplayName}";
         var targetLabel = target.PackagePath ?? $"Online · {target.Workspace.DisplayName}";
@@ -164,6 +185,26 @@ public sealed class CompareTransferPreview
             KeyValues = keys,
             Values = values
         };
+    }
+
+    internal static bool IsValveTable(ProjectTableSchema schema) =>
+        Names.Equals(schema.TableName, "dbo.Valves") && schema.KeyColumns.Count == 3 &&
+        schema.KeyColumns.Contains("Record", Names) && schema.KeyColumns.Contains("PLC", Names) &&
+        schema.KeyColumns.Contains("PLC_Class_Number", Names);
+
+    private static bool IsValveLookupColumn(string field) =>
+        Names.Equals(field, "PLC") || Names.Equals(field, "PLC_Class_Number") ||
+        Names.Equals(field, "Type") || Names.Equals(field, "Area");
+
+    internal static IEnumerable<(string Table, string[] Columns, object?[] Values)> ValveLookups(
+        IReadOnlyDictionary<string, object?> values)
+    {
+        yield return ("dbo.PLC", ["Record"], [values["PLC"]]);
+        yield return ("dbo.PLC_CFG", ["PLC_Number", "PLC_Class_Number"], [values["PLC"], values["PLC_Class_Number"]]);
+        if (values.TryGetValue("Type", out var type) && type is not null && Convert.ToInt32(type, CultureInfo.InvariantCulture) != 0)
+            yield return ("dbo.Valves_Type", ["Record"], [type]);
+        if (values.TryGetValue("Area", out var areaValue) && areaValue is string area && !string.IsNullOrWhiteSpace(area))
+            yield return ("dbo.Areas", ["AreaName"], [area]);
     }
 
     private static ProjectColumnSchema? FindColumn(ProjectTableSchema schema, string name) =>
@@ -212,6 +253,10 @@ public sealed class CompareTransferPreview
                     if (decimal.Round(number, column.Scale) != number || Math.Abs(number) >= limit) throw new FormatException();
                 }
                 return number;
+            case "real":
+                var real = float.Parse(text, NumberStyles.Float, CultureInfo.InvariantCulture);
+                return float.IsFinite(real) ? real : throw new FormatException();
+            case "varchar":
             case "nvarchar":
                 return scalar.Deserialize<string>();
             default:

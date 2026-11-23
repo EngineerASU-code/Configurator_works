@@ -28,6 +28,12 @@ public sealed class ProgramSupportRepository
     public Task<ProgramSupportTableData> LoadProgramAsync(string tableId, ProgramContext context) =>
         LoadAsync(Find(ProgramSupportCatalog.ProgramTables, tableId), GetProgramScope(Find(ProgramSupportCatalog.ProgramTables, tableId), context));
 
+    public Task<ProgramSupportTableData> LoadRecipeValuesAsync(ProgramContext context, int recipeRecord)
+    {
+        var definition = Find(ProgramSupportCatalog.ProgramTables, "recipe-values");
+        return LoadAsync(definition, GetProgramScope(definition, context), recipeRecord);
+    }
+
     public Task<ProgramSupportTableData> LoadMatrixAsync(string tableId, object plcValue, object matrixClassValue, object? matrixRecord = null)
     {
         var definition = Find(ProgramSupportCatalog.MatrixTables, tableId);
@@ -197,6 +203,8 @@ public sealed class ProgramSupportRepository
         return GetMetadataAsync(connection, null, definition);
     }
 
+    public event Action<ChangeJournalEntry>? ChangeJournalRequested;
+
     public async Task SaveAsync(ProgramSupportTableData tableData, IReadOnlyDictionary<string, object> scope)
     {
         var definition = tableData?.Definition ?? throw new ArgumentNullException(nameof(tableData));
@@ -206,6 +214,7 @@ public sealed class ProgramSupportRepository
         if (_offline != null)
         {
             await SaveOfflineAsync(tableData, scope);
+            PublishJournal(tableData);
             return;
         }
 
@@ -224,6 +233,19 @@ public sealed class ProgramSupportRepository
                 switch (row.RowState)
                 {
                     case DataRowState.Added:
+                        if (definition.Id == "queue-selections")
+                        {
+                            using var parent = new SqlCommand("""
+                                SELECT TOP (1) 1 FROM dbo.Prog_Queue WITH (UPDLOCK,HOLDLOCK)
+                                WHERE PLC=@plc AND PLC_Class_Prog_Number=@class AND Prog_Record=@program AND Record=@queue;
+                                """, connection, transaction);
+                            parent.Parameters.AddWithValue("@plc", scope["PLC"]);
+                            parent.Parameters.AddWithValue("@class", scope["PLC_Class_Prog_Number"]);
+                            parent.Parameters.AddWithValue("@program", scope["Prog_Record"]);
+                            parent.Parameters.AddWithValue("@queue", row["Queue_Record"]);
+                            if (await parent.ExecuteScalarAsync() == null)
+                                throw new InvalidOperationException("Выбранная очередь отсутствует в текущей программе.");
+                        }
                         await InsertAsync(connection, transaction, tableData, row, scope, metadata);
                         break;
                     case DataRowState.Modified:
@@ -241,20 +263,73 @@ public sealed class ProgramSupportRepository
             try { await transaction.RollbackAsync(); } catch { }
             throw;
         }
+        PublishJournal(tableData);
     }
 
-    private async Task<ProgramSupportTableData> LoadAsync(ProgramSupportTableDefinition definition, IReadOnlyDictionary<string, object> scope)
+    private void PublishJournal(ProgramSupportTableData tableData)
     {
-        if (_offline != null) return LoadOffline(definition, scope);
+        if (ChangeJournalRequested == null) return;
+        var definition = tableData.Definition;
+        var changes = new List<ChangeJournalRowChange>();
+        foreach (DataRow row in tableData.Rows.Rows)
+        {
+            var kind = row.RowState switch
+            {
+                DataRowState.Added => ChangeJournalOperationKind.Insert,
+                DataRowState.Modified => ChangeJournalOperationKind.Update,
+                DataRowState.Deleted => ChangeJournalOperationKind.Delete,
+                _ => (ChangeJournalOperationKind?)null
+            };
+            if (kind == null) continue;
+            Dictionary<string, ChangeJournalValue> Values(IEnumerable<string> names, DataRowVersion version) =>
+                names.Where(name => row.HasVersion(version) && row.Table.Columns.Contains(name))
+                    .ToDictionary(name => name, name => ChangeJournalValue.FromObject(row[name, version]), StringComparer.OrdinalIgnoreCase);
+            var columns = row.Table.Columns.Cast<DataColumn>().Select(column => column.ColumnName);
+            changes.Add(new ChangeJournalRowChange
+            {
+                TableName = definition.TableName,
+                Kind = kind.Value,
+                Before = Values(columns, DataRowVersion.Original),
+                After = Values(columns, DataRowVersion.Current),
+                IdentityBefore = Values(definition.KeyColumns, DataRowVersion.Original),
+                IdentityAfter = Values(definition.KeyColumns, DataRowVersion.Current)
+            });
+        }
+        if (changes.Count == 0) return;
+        var sql = _offline == null ? new SqlConnectionStringBuilder(_connectionString) : null;
+        ChangeJournalRequested.Invoke(new ChangeJournalEntry
+        {
+            Mode = 3,
+            ProjectType = sql == null ? "Offline" : "Online",
+            ProjectId = _offline?.Project.Manifest?.ProjectId ?? "",
+            ProjectName = _offline?.Project.Manifest?.Name ?? sql?.InitialCatalog ?? "",
+            Server = sql?.DataSource ?? "",
+            Database = sql?.InitialCatalog ?? "",
+            UserRole = UserAuthorizationService.CurrentRole?.Name ?? "",
+            Category = definition.Caption,
+            Source = definition.TableName,
+            EntityType = definition.TableName,
+            Description = $"{definition.Caption} · записей: {changes.Count}",
+            OperationKind = changes.Count == 1 ? changes[0].Kind : ChangeJournalOperationKind.Composite,
+            RestoreIncludesAllChanges = changes.All(change => change.Kind != ChangeJournalOperationKind.Insert),
+            Changes = changes
+        });
+    }
+
+    private async Task<ProgramSupportTableData> LoadAsync(ProgramSupportTableDefinition definition, IReadOnlyDictionary<string, object> scope, int? recipeRecord = null)
+    {
+        if (_offline != null) return LoadOffline(definition, scope, recipeRecord);
         await using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
         await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection);
         var metadata = await GetMetadataAsync(connection, null, definition);
         ValidateScope(definition, scope, metadata.Columns);
 
         string where = string.Join(" AND ", definition.ScopeColumns.Select((column, index) => $"{Quote(column)}=@s{index}"));
+        if (recipeRecord.HasValue) where += " AND [Recipe_Record]=@recipeRecord";
         string order = definition.KeyColumns.Count == 0 ? "" : " ORDER BY " + string.Join(", ", definition.KeyColumns.Select(Quote));
         using var command = new SqlCommand($"SELECT * FROM {QuoteTable(definition.TableName)} WHERE {where}{order};", connection);
         AddScopeParameters(command, definition, scope);
+        if (recipeRecord.HasValue) command.Parameters.Add("@recipeRecord", SqlDbType.Int).Value = recipeRecord.Value;
         var rows = new DataTable(definition.TableName);
         using (var reader = await command.ExecuteReaderAsync()) rows.Load(reader);
         foreach (DataColumn column in rows.Columns)
@@ -287,7 +362,7 @@ public sealed class ProgramSupportRepository
         };
     }
 
-    private ProgramSupportTableData LoadOffline(ProgramSupportTableDefinition definition, IReadOnlyDictionary<string, object> scope)
+    private ProgramSupportTableData LoadOffline(ProgramSupportTableDefinition definition, IReadOnlyDictionary<string, object> scope, int? recipeRecord)
     {
         var schema = _offline!.GetSchema(definition.TableName)
             ?? throw new InvalidOperationException($"В локальном проекте отсутствует схема «{definition.TableName}».");
@@ -300,6 +375,7 @@ public sealed class ProgramSupportRepository
         {
             if (definition.ScopeColumns.Any(name => !record.Values.TryGetPropertyValue(name, out var value) ||
                 !OfflineEquals(value, scope.TryGetValue(name, out var expected) ? expected : null))) continue;
+            if (recipeRecord.HasValue && !OfflineEquals(record.Values["Recipe_Record"], recipeRecord.Value)) continue;
             var row = rows.NewRow();
             foreach (DataColumn column in rows.Columns)
                 if (record.Values.TryGetPropertyValue(column.ColumnName, out var value))
@@ -337,6 +413,10 @@ public sealed class ProgramSupportRepository
                 if (row.RowState is DataRowState.Unchanged or DataRowState.Detached) continue;
                 if (row.RowState == DataRowState.Added)
                 {
+                    if (definition.Id == "queue-selections" && !_offline.GetRecords("dbo.Prog_Queue").Any(parent =>
+                        OfflineEquals(parent.Values["Record"], row["Queue_Record"]) &&
+                        new[] { "PLC", "PLC_Class_Prog_Number", "Prog_Record" }.All(field => OfflineEquals(parent.Values[field], scope[field]))))
+                        throw new InvalidOperationException("Выбранная очередь отсутствует в текущей программе.");
                     var values = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
                     foreach (var pair in scope) values[pair.Key] = pair.Value;
                     foreach (DataColumn column in row.Table.Columns)
@@ -347,7 +427,7 @@ public sealed class ProgramSupportRepository
                             || definition.KeyColumns.Contains(column.ColumnName, StringComparer.OrdinalIgnoreCase)
                             || definition.EditableColumns.Contains(column.ColumnName, StringComparer.OrdinalIgnoreCase)
                             || definition.ProtectedColumns.Contains(column.ColumnName, StringComparer.OrdinalIgnoreCase);
-                        if (!included) continue;
+                        if (!included || (row[column] == DBNull.Value && metadata.HasDefault)) continue;
                         values[column.ColumnName] = row[column] == DBNull.Value ? null : row[column];
                     }
                     await ((IProjectCreateWithKeyDataSource)_offline).CreateRecordAndGetKeyAsync(schema.TableName, values);

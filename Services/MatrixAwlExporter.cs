@@ -14,8 +14,12 @@ public static class MatrixAwlExporter
         ['A'] = 1, ['R'] = 1, ['N'] = 1,
         ['D'] = 2, ['P'] = 2, ['F'] = 2,
         ['L'] = 4, ['C'] = 4,
-        ['U'] = 8, ['B'] = 16, ['W'] = 64, ['E'] = 128
+        ['U'] = 8, ['B'] = 16, ['V'] = 32, ['W'] = 64, ['E'] = 128
     };
+
+    public static IReadOnlyList<string> CommandOptions { get; } = new[] { string.Empty }
+        .Concat(CommandBits.Keys.Select(code => code.ToString()))
+        .Concat(new[] { "DL", "DU", "DW", "DE" }).ToArray();
 
     public static string Generate(MatrixAwlSnapshot snapshot)
     {
@@ -31,10 +35,10 @@ public static class MatrixAwlExporter
         int positionCount = positions[^1];
 
         var commands = snapshot.Commands.OrderBy(x => x.Number).ToArray();
-        if (commands.Any(x => x.Number < 0) || commands.Select(x => x.Number).Distinct().Count() != commands.Length)
-            throw new InvalidOperationException("Номера команд должны быть уникальными и неотрицательными.");
-        var commandIndexes = commands.Select((command, index) => (command.Number, Index: index + 1))
-            .ToDictionary(x => x.Number, x => x.Index);
+        if (commands.Any(x => x.Number <= 0) || commands.Select(x => x.Number).Distinct().Count() != commands.Length)
+            throw new InvalidOperationException("Номера команд должны быть уникальными и положительными.");
+        int commandCount = commands.Length == 0 ? 0 : commands[^1].Number;
+        var commandIndexes = commands.ToDictionary(x => x.Number, x => x.Number);
         var positionSet = positions.ToHashSet();
         var encodedCells = new Dictionary<(int Command, int Position), byte>();
         foreach (var cell in snapshot.CommandCells)
@@ -46,8 +50,10 @@ public static class MatrixAwlExporter
         }
 
         var groups = snapshot.DeviceGroups.OrderBy(x => x.Number).ToArray();
-        if (groups.Any(x => x.Number < 0) || groups.Select(x => x.Number).Distinct().Count() != groups.Length)
-            throw new InvalidOperationException("Номера групп устройств должны быть уникальными и неотрицательными.");
+        if (groups.Any(x => x.Number <= 0) || groups.Select(x => x.Number).Distinct().Count() != groups.Length)
+            throw new InvalidOperationException("Номера групп устройств должны быть уникальными и положительными.");
+        int groupCount = groups.Length == 0 ? 0 : groups[^1].Number;
+        var groupsByNumber = groups.ToDictionary(group => group.Number);
         foreach (var group in groups)
         {
             if (group.DevicesByPosition.Keys.Any(position => !positionSet.Contains(position)))
@@ -56,14 +62,21 @@ public static class MatrixAwlExporter
                 throw new InvalidOperationException($"Группа устройств {group.Number} содержит ссылку вне диапазона DINT.");
         }
 
-        byte[] delayOn = commands.Select(x => ToByte(x.DelayOn, "DelayON", x.Number)).ToArray();
-        byte[] delayOff = commands.Select(x => ToByte(x.DelayOff, "DelayOFF", x.Number)).ToArray();
-        byte[] condition = commands.Select(x => ToByte(x.Condition, "Condition", x.Number)).ToArray();
+        byte[] delayOn = new byte[commandCount];
+        byte[] delayOff = new byte[commandCount];
+        byte[] condition = new byte[commandCount];
+        foreach (var command in commands)
+        {
+            delayOn[command.Number - 1] = ToByte(command.DelayOn, "DelayON", command.Number);
+            delayOff[command.Number - 1] = ToByte(command.DelayOff, "DelayOFF", command.Number);
+            condition[command.Number - 1] = ToByte(command.Condition, "Condition", command.Number);
+        }
         var output = new StringBuilder();
         void Line(string value = "") => output.Append(value).Append("\r\n");
         string Number(int value) => value.ToString(CultureInfo.InvariantCulture);
         string ByteValue(byte value) => $"B#16#{value:X}";
-        long DeviceValue(MatrixAwlDeviceGroup group, int position) => group.DevicesByPosition.TryGetValue(position, out long value) ? value : 0;
+        long DeviceValue(int group, int position) => groupsByNumber.TryGetValue(group, out var item)
+            && item.DevicesByPosition.TryGetValue(position, out long value) ? value : 0;
 
         Line($"DATA_BLOCK DB{Number(snapshot.DbNumber)}");
         Line($"TITLE = Matrix_{Number(snapshot.Record)}");
@@ -75,32 +88,32 @@ public static class MatrixAwlExporter
         Line("NON_RETAIN");
         Line("  STRUCT");
         Line($"   Pos_count : INT  := {Number(positionCount)};");
-        Line($"   Cmd_count : INT  := {Number(commands.Length)};");
+        Line($"   Cmd_count : INT  := {Number(commandCount)};");
         Line("   spare1 : INT  := 0;");
         Line("   spare2 : DINT := L#0;");
-        Line($"   DelayON : ARRAY  [1 .. {Number(commands.Length)} ] OF BYTE ;");
-        Line($"   DelayOFF : ARRAY  [1 .. {Number(commands.Length)} ] OF BYTE ;");
-        Line($"   Condition : ARRAY  [1 .. {Number(commands.Length)} ] OF BYTE ;");
-        Line($"   CMD : ARRAY  [1 .. {Number(commands.Length)}, 1 .. {Number(positionCount)} ] OF BYTE ;");
-        Line($"   DevList : ARRAY  [1 .. {Number(groups.Length)}, 1 .. {Number(positionCount)} ] OF DINT ;");
+        Line($"   DelayON : ARRAY  [1 .. {Number(commandCount)} ] OF BYTE ;");
+        Line($"   DelayOFF : ARRAY  [1 .. {Number(commandCount)} ] OF BYTE ;");
+        Line($"   Condition : ARRAY  [1 .. {Number(commandCount)} ] OF BYTE ;");
+        Line($"   CMD : ARRAY  [1 .. {Number(commandCount)}, 1 .. {Number(positionCount)} ] OF BYTE ;");
+        Line($"   DevList : ARRAY  [1 .. {Number(groupCount)}, 1 .. {Number(positionCount)} ] OF DINT ;");
         Line("  END_STRUCT ;");
         Line("BEGIN");
         Line($"   Pos_count := {Number(positionCount)};");
-        Line($"   Cmd_count := {Number(commands.Length)};");
+        Line($"   Cmd_count := {Number(commandCount)};");
         Line("   spare1 := 0;");
         Line("   spare2 := L#0;");
-        for (int i = 0; i < commands.Length; i++)
+        for (int i = 0; i < commandCount; i++)
             Line($"   DelayON[{Number(i + 1)}] := {ByteValue(delayOn[i])};");
-        for (int i = 0; i < commands.Length; i++)
+        for (int i = 0; i < commandCount; i++)
             Line($"   DelayOFF[{Number(i + 1)}] := {ByteValue(delayOff[i])};");
-        for (int i = 0; i < commands.Length; i++)
+        for (int i = 0; i < commandCount; i++)
             Line($"   Condition[{Number(i + 1)}] := {ByteValue(condition[i])};");
-        for (int command = 1; command <= commands.Length; command++)
+        for (int command = 1; command <= commandCount; command++)
             for (int position = 1; position <= positionCount; position++)
                 Line($"   CMD[{Number(command)}, {Number(position)}] := {ByteValue(encodedCells.GetValueOrDefault((command, position)))};");
-        for (int group = 0; group < groups.Length; group++)
+        for (int group = 1; group <= groupCount; group++)
             for (int position = 1; position <= positionCount; position++)
-                Line($"   DevList[{Number(group + 1)}, {Number(position)}] := L#{checked(DeviceValue(groups[group], position)).ToString(CultureInfo.InvariantCulture)};");
+                Line($"   DevList[{Number(group)}, {Number(position)}] := L#{checked(DeviceValue(group, position)).ToString(CultureInfo.InvariantCulture)};");
         Line("END_DATA_BLOCK");
         return output.ToString();
     }
@@ -112,7 +125,7 @@ public static class MatrixAwlExporter
         {
             char normalized = char.ToUpperInvariant(letter);
             if (!CommandBits.TryGetValue(normalized, out byte bit))
-                throw new InvalidOperationException($"Неизвестный код команды «{letter}». Допустимы A/R/N, D/P/F, L/C, U, B, W, E.");
+                throw new InvalidOperationException($"Неизвестный код команды «{letter}». Допустимы A/R/N, D/P/F, L/C, U, B, V, W, E.");
             result |= bit;
         }
         return result;

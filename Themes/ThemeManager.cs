@@ -1,4 +1,5 @@
-﻿using Configurator;
+using Configurator;
+using Microsoft.Win32;
 using System.Windows;
 using System.Windows.Media;
 
@@ -8,46 +9,57 @@ namespace Configurator.Themes
     {
         public static ThemePreset CurrentPreset { get; set; } = new ThemePreset();
 
-        // Стандартные пресеты
-        public static readonly ThemePreset DefaultLight = new ThemePreset
-        {
-            Name = "Светлая",
-            Base = Color.FromRgb(245, 247, 250),
-            Panel = Color.FromRgb(255, 255, 255),
-            Border = Color.FromRgb(217, 222, 231),
-            Text = Color.FromRgb(31, 41, 55),
-            Accent = Color.FromRgb(52, 120, 246),
-            Hover = Color.FromRgb(240, 244, 250),
-            Selected = Color.FromRgb(231, 240, 255),
-            ComboBoxBackground = Color.FromRgb(255,255,255), ComboBoxForeground = Color.FromRgb(31,41,55), ComboBoxBorder = Color.FromRgb(217,222,231),
-            ComboBoxPopupBackground = Color.FromRgb(255,255,255), ComboBoxPopupForeground = Color.FromRgb(31,41,55),
-            ComboBoxItemHoverBackground = Color.FromRgb(240,244,250), ComboBoxItemHoverForeground = Color.FromRgb(31,41,55),
-            ComboBoxItemSelectedBackground = Color.FromRgb(231,240,255), ComboBoxItemSelectedForeground = Color.FromRgb(31,41,55),
-            ComboBoxBorderHover = Color.FromRgb(52,120,246), ComboBoxBorderFocus = Color.FromRgb(52,120,246),
-            ComboBoxDisabledBackground = Color.FromRgb(235,237,241), ComboBoxDisabledForeground = Color.FromRgb(120,125,135)
-        };
+        // Workbench palettes from microsoft/vscode, extensions/theme-defaults/themes.
+        public static readonly ThemePreset DefaultLight = Palette("Light", "#F8F8F8", "#FFFFFF", "#E5E5E5", "#3B3B3B", "#005FB8", "#F2F2F2", "#E8E8E8");
+        public static readonly ThemePreset DefaultDark = Palette("Dark", "#181818", "#1F1F1F", "#2B2B2B", "#CCCCCC", "#0078D4", "#2A2D2E", "#37373D");
 
-        public static readonly ThemePreset DefaultDark = new ThemePreset
+        private static readonly ThemePreset SystemTheme = new() { Name = "System" };
+
+        public static IReadOnlyList<ThemePreset> BuiltIn { get; } = Array.AsReadOnly(new[]
         {
-            Name = "Тёмная",
-            Base = Color.FromRgb(41, 45, 51),
-            Panel = Color.FromRgb(53, 59, 68),
-            Border = Color.FromRgb(80, 89, 101),
-            Text = Color.FromRgb(240, 242, 245),
-            Accent = Color.FromRgb(109, 158, 255),
-            Hover = Color.FromRgb(66, 74, 85),
-            Selected = Color.FromRgb(52, 79, 120),
-            ComboBoxBackground = Color.FromRgb(48,54,63), ComboBoxForeground = Color.FromRgb(245,247,250), ComboBoxBorder = Color.FromRgb(92,101,114),
-            ComboBoxPopupBackground = Color.FromRgb(48,54,63), ComboBoxPopupForeground = Color.FromRgb(245,247,250),
-            ComboBoxItemHoverBackground = Color.FromRgb(70,82,99), ComboBoxItemHoverForeground = Color.FromRgb(255,255,255),
-            ComboBoxItemSelectedBackground = Color.FromRgb(55,91,140), ComboBoxItemSelectedForeground = Color.FromRgb(255,255,255),
-            ComboBoxBorderHover = Color.FromRgb(109,158,255), ComboBoxBorderFocus = Color.FromRgb(109,158,255),
-            ComboBoxDisabledBackground = Color.FromRgb(62,67,76), ComboBoxDisabledForeground = Color.FromRgb(170,176,185)
-        };
+            SystemTheme, DefaultLight, DefaultDark,
+            Palette("Abyss", "#10192C", "#000C18", "#2B3F60", "#C0D2F2", "#25589C", "#162540", "#26395E"),
+            Palette("Solarized Light", "#EEE8D5", "#FDF6E3", "#C9C2AE", "#43565C", "#007D77", "#E8E3D0", "#D9E6D8")
+        });
+
+        private static ThemePreset ResolveSystemPalette()
+        {
+            try
+            {
+                var value = Registry.GetValue(
+                    @"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+                    "AppsUseLightTheme", 1);
+                return value is 0 ? DefaultDark : DefaultLight;
+            }
+            catch (System.Security.SecurityException) { return DefaultLight; }
+            catch (UnauthorizedAccessException) { return DefaultLight; }
+        }
+
+        private static ThemePreset Palette(string name, string surface, string panel, string border, string text,
+            string accent, string hover, string selected)
+        {
+            Color C(string hex) => (Color)ColorConverter.ConvertFromString(hex);
+            return new ThemePreset
+            {
+                Name = name, Base = C(surface), Panel = C(panel), Border = C(border), Text = C(text),
+                Accent = C(accent), Hover = C(hover), Selected = C(selected),
+                ComboBoxBackground = C(panel), ComboBoxForeground = C(text), ComboBoxBorder = C(border),
+                ComboBoxPopupBackground = C(panel), ComboBoxPopupForeground = C(text),
+                ComboBoxItemHoverBackground = C(hover), ComboBoxItemHoverForeground = C(text),
+                ComboBoxItemSelectedBackground = C(selected), ComboBoxItemSelectedForeground = C(text),
+                ComboBoxBorderHover = C(accent), ComboBoxBorderFocus = C(accent),
+                ComboBoxDisabledBackground = C(surface), ComboBoxDisabledForeground = C(text)
+            };
+        }
 
         public static void ApplyTheme(ThemePreset preset)
         {
             CurrentPreset = preset;
+            ApplyPalette(preset == SystemTheme ? ResolveSystemPalette() : preset, preset.Name);
+        }
+
+        private static void ApplyPalette(ThemePreset preset, string schemeName)
+        {
 
             var res = global::System.Windows.Application.Current.Resources;
 
@@ -64,7 +76,7 @@ namespace Configurator.Themes
             res["BrushPanel"] = new SolidColorBrush(preset.Panel);
             res["BrushBorder"] = new SolidColorBrush(preset.Border);
             res["BrushText"] = new SolidColorBrush(preset.Text);
-            res["BrushTextSecondary"] = new SolidColorBrush(Color.FromArgb(preset.Text.A, (byte)(preset.Text.R * 0.62), (byte)(preset.Text.G * 0.62), (byte)(preset.Text.B * 0.62)));
+            res["BrushTextSecondary"] = new SolidColorBrush(Color.FromRgb((byte)(preset.Text.R * 0.85 + preset.Base.R * 0.15), (byte)(preset.Text.G * 0.85 + preset.Base.G * 0.15), (byte)(preset.Text.B * 0.85 + preset.Base.B * 0.15)));
             res["BrushAccent"] = new SolidColorBrush(preset.Accent);
             res["BrushHover"] = new SolidColorBrush(preset.Hover);
             res["BrushSelected"] = new SolidColorBrush(preset.Selected);
@@ -84,7 +96,7 @@ namespace Configurator.Themes
 
             // Сохраняем полный пресет
             var settings = AppSettings.Load();
-            settings.LastThemeName = preset.Name;
+            settings.LastThemeName = schemeName;
             settings.Base = AppSettings.ColorToHex(preset.Base);
             settings.Panel = AppSettings.ColorToHex(preset.Panel);
             settings.Border = AppSettings.ColorToHex(preset.Border);
@@ -121,42 +133,25 @@ namespace Configurator.Themes
 
         public static void InitializeDefault()
         {
-            var settings = AppSettings.Load();
+            string name = AppSettings.Load().LastThemeName;
+            var preset = BuiltIn.FirstOrDefault(theme => string.Equals(theme.Name, name, StringComparison.OrdinalIgnoreCase));
+            ApplyTheme(preset ?? (name switch
+            {
+                "Тёмная" or "Dark Modern" or "Dark+" or "High Contrast Dark" => DefaultDark,
+                "Светлая" or "Light Modern" or "Light+" or "High Contrast Light" => DefaultLight,
+                _ => SystemTheme
+            }));
+            SystemEvents.UserPreferenceChanged += OnSystemPreferenceChanged;
+        }
 
-            // Если есть сохранённые цвета — загружаем полный пресет
-            if (!string.IsNullOrEmpty(settings.LastThemeName))
+        private static void OnSystemPreferenceChanged(object sender, UserPreferenceChangedEventArgs args)
+        {
+            if (args.Category is not (UserPreferenceCategory.General or UserPreferenceCategory.Color or UserPreferenceCategory.VisualStyle)) return;
+            var application = global::System.Windows.Application.Current;
+            application?.Dispatcher.BeginInvoke(new Action(() =>
             {
-                bool darkTheme = settings.LastThemeName.Equals("Тёмная", System.StringComparison.OrdinalIgnoreCase);
-                // Existing installations persist the old near-black palette. Upgrade that exact
-                // built-in palette to the new medium-dark preset, while preserving custom themes.
-                if (darkTheme && string.Equals(settings.Base, "#17191D", System.StringComparison.OrdinalIgnoreCase))
-                {
-                    ApplyTheme(DefaultDark);
-                    return;
-                }
-                var defaults = darkTheme ? DefaultDark : DefaultLight;
-                ApplyTheme(new ThemePreset
-                {
-                    Name = settings.LastThemeName,
-                    Base = AppSettings.HexToColor(settings.Base),
-                    Panel = AppSettings.HexToColor(settings.Panel),
-                    Border = AppSettings.HexToColor(settings.Border),
-                    Text = AppSettings.HexToColor(settings.Text),
-                    Accent = AppSettings.HexToColor(settings.Accent),
-                    Hover = AppSettings.HexToColor(settings.Hover),
-                    Selected = AppSettings.HexToColor(settings.Selected),
-                    ComboBoxBackground = AppSettings.HexToColor(settings.ComboBoxBackground), ComboBoxForeground = AppSettings.HexToColor(settings.ComboBoxForeground), ComboBoxBorder = AppSettings.HexToColor(settings.ComboBoxBorder),
-                    ComboBoxPopupBackground = AppSettings.HexToColor(settings.ComboBoxPopupBackground), ComboBoxPopupForeground = AppSettings.HexToColor(settings.ComboBoxPopupForeground),
-                    ComboBoxItemHoverBackground = AppSettings.HexToColor(settings.ComboBoxItemHoverBackground), ComboBoxItemHoverForeground = AppSettings.HexToColor(settings.ComboBoxItemHoverForeground),
-                    ComboBoxItemSelectedBackground = AppSettings.HexToColor(settings.ComboBoxItemSelectedBackground), ComboBoxItemSelectedForeground = AppSettings.HexToColor(settings.ComboBoxItemSelectedForeground),
-                    ComboBoxBorderHover = AppSettings.HexToColor(settings.ComboBoxBorderHover), ComboBoxBorderFocus = AppSettings.HexToColor(settings.ComboBoxBorderFocus),
-                    ComboBoxDisabledBackground = AppSettings.HexToColor(settings.ComboBoxDisabledBackground), ComboBoxDisabledForeground = AppSettings.HexToColor(settings.ComboBoxDisabledForeground)
-                });
-            }
-            else
-            {
-                ApplyTheme(DefaultLight);
-            }
+                if (CurrentPreset == SystemTheme) ApplyPalette(ResolveSystemPalette(), SystemTheme.Name);
+            }));
         }
     }
 }

@@ -347,6 +347,31 @@ public sealed class ChangeJournalService
         }
     }
 
+    public void Clear()
+    {
+        lock (_sync)
+        {
+            if (_offlineProject != null)
+            {
+                GetOfflineJournal(_offlineProject, false).Clear();
+                _offlineChanged?.Invoke();
+            }
+            else
+            {
+                foreach (var file in Directory.EnumerateFiles(_rootDirectory, "*.json", SearchOption.TopDirectoryOnly))
+                {
+                    ChangeJournalEntry entry;
+                    try { entry = JsonConvert.DeserializeObject<ChangeJournalEntry>(File.ReadAllText(file)); }
+                    catch (JsonException) { continue; }
+                    if (!string.IsNullOrEmpty(_contextProjectId) &&
+                        string.Equals(entry?.ProjectId, _contextProjectId, StringComparison.OrdinalIgnoreCase))
+                        File.Delete(file);
+                }
+            }
+        }
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
     public IReadOnlyList<ChangeJournalEntry> LoadRecent(int maxCount = 500)
     {
         try

@@ -83,16 +83,16 @@ public static class ProgramSupportCatalog
         new ProgramSupportTableDefinition("queues", "Очереди", "dbo.Prog_Queue",
             new[] { "Record", "PLC", "PLC_Class_Prog_Number", "Prog_Record" }, ProgramScope,
             new[] { "Type", "Name_L1", "Name_L2", "Description_L1", "Description_L2", "Use_Param1", "Use_Param2", "Use_Param3", "Use_Param4", "Param1_Name_L1", "Param1_Name_L2", "Param1_Type", "Param1_Unit", "Param1_SubType", "Param1_Max", "Param1_Min", "Param2_Name_L1", "Param2_Name_L2", "Param2_Type", "Param2_Unit", "Param2_SubType", "Param2_Max", "Param2_Min", "Param3_Name_L1", "Param3_Name_L2", "Param3_Type", "Param3_Unit", "Param3_SubType", "Param3_Max", "Param3_Min", "Param4_Name_L1", "Param4_Name_L2", "Param4_Type", "Param4_Unit", "Param4_SubType", "Param4_Max", "Param4_Min", "Use_Recipe", "Item_Count", "Use_Matrix" },
-            new[] { "PLC_Class_Matrix_Number", "Matrix_Record" }, AllowInsert: false),
+            new[] { "PLC_Class_Matrix_Number", "Matrix_Record" }, AllowInsert: true),
         new ProgramSupportTableDefinition("queue-selections", "Элементы очередей", "dbo.Prog_QueueSelections",
             new[] { "Record", "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Seq_Record", "Queue_Record" }, SequenceScope,
-            new[] { "Param1", "Param2", "Param3", "Param4" }, new[] { "Queue_Record", "PLC_Class_Status_Number", "Status_Record", "PLC_Class_Matrix_Number", "Matrix_Record", "Recipe", "Matrix_DeviceList" }, AllowInsert: false),
+            new[] { "Param1", "Param2", "Param3", "Param4" }, new[] { "Queue_Record", "PLC_Class_Status_Number", "Status_Record", "PLC_Class_Matrix_Number", "Matrix_Record", "Recipe", "Matrix_DeviceList" }, AllowInsert: true),
         new ProgramSupportTableDefinition("softkey", "SoftKey", "dbo.Prog_Softkey",
             new[] { "Record", "PLC", "PLC_Class_Prog_Number", "Prog_Record" }, ProgramScope,
             new[] { "Name_L1", "Name_L2", "Description_L1", "Description_L2" }, Array.Empty<string>(), AllowInsert: true),
         new ProgramSupportTableDefinition("messages", "Сообщения", "dbo.Prog_Msg",
-            Array.Empty<string>(), ProgramScope, Array.Empty<string>(), Array.Empty<string>(), true, false, false,
-            "Таблица не имеет подтверждённого уникального ключа; доступен только просмотр.")
+            new[] { "Record", "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Type" }, ProgramScope,
+            new[] { "Text_L1", "Text_L2" }, Array.Empty<string>(), AllowInsert: true)
     };
 
     public static IReadOnlyList<ProgramSupportTableDefinition> MatrixTables { get; } = new[]

@@ -60,6 +60,49 @@ public sealed class CompareTransferPreviewTests
         Assert.False(CompareTransferPreview.Evaluate(a, b, withDependencies, aToB: true).IsAllowed);
     }
 
+    [Fact]
+    public async Task MissingValveOffersOnlyTheDirectionWithASourceRecord()
+    {
+        using var files = new CompareTestDirectory();
+        var (a, b) = await OpenPairAsync(files);
+        using var workspaceA = (IDisposable)a.Workspace;
+        using var workspaceB = (IDisposable)b.Workspace;
+        var schema = new ProjectTableSchema
+        {
+            TableName = "dbo.Valves", HasStableKey = true,
+            KeyColumns = { "Record", "PLC", "PLC_Class_Number" },
+            Columns =
+            {
+                new ProjectColumnSchema { Name = "Record", DataType = "int" },
+                new ProjectColumnSchema { Name = "PLC", DataType = "int" },
+                new ProjectColumnSchema { Name = "PLC_Class_Number", DataType = "int" },
+                new ProjectColumnSchema { Name = "Type", DataType = "int" },
+                new ProjectColumnSchema { Name = "Area", DataType = "varchar", MaxLength = 10 },
+                new ProjectColumnSchema { Name = "MS_X", DataType = "real" }
+            }
+        };
+        var definition = new ClassDefinition { Id = "valve", Name = "Valve", IsSystem = true, Available = true };
+        definition.StorageMappings.Add(new StorageMapping { TableName = schema.TableName });
+        var table = new CompareTable(schema, definition,
+            new HashSet<string> { "PLC", "PLC_Class_Number", "Type", "Area" }, false);
+        var record = new ProjectRecord
+        {
+            TableName = schema.TableName, Key = "[2,8,1]",
+            Values = new JsonObject
+            {
+                ["Record"] = 2, ["PLC"] = 8, ["PLC_Class_Number"] = 1, ["Type"] = 0, ["Area"] = "077", ["MS_X"] = 1.25
+            }
+        };
+        a.PhysicalSchema!.Tables.Add(new DatabaseTable { Name = "Valves" });
+        var row = new CompareDifference("Valve", null, "Valve", CompareStatus.OnlyB,
+            Pair: new CompareRecordPair(table, table, null, record));
+
+        var preview = CompareTransferPreview.Evaluate(a, b, row, aToB: false);
+        Assert.True(preview.IsAllowed, preview.BlockReason);
+        Assert.Contains("Добавить объект", preview.Description);
+        Assert.False(CompareTransferPreview.Evaluate(a, b, row, aToB: true).IsAllowed);
+    }
+
     internal static async Task<(CompareSource A, CompareSource B)> OpenPairAsync(
         CompareTestDirectory files, bool includeNewObject = false)
     {

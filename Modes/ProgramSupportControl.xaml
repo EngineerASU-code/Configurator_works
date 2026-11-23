@@ -6,27 +6,41 @@
             <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
         <Grid Grid.Row="0" Margin="0,0,0,8">
-            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="300"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-            <TextBlock Text="Раздел" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="{DynamicResource BrushTextSecondary}"/>
-            <ComboBox x:Name="SectionBox" Grid.Column="1" Height="38" Padding="8,2" SelectedValuePath="Id" SelectionChanged="SectionBox_SelectionChanged">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <TextBlock x:Name="SectionLabel" Text="Раздел" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="{DynamicResource BrushTextSecondary}"/>
+            <ComboBox x:Name="SectionBox" Grid.Column="1" Width="300" Height="38" Padding="8,2" SelectedValuePath="Id" SelectionChanged="SectionBox_SelectionChanged">
                 <ComboBox.ItemTemplate>
                     <DataTemplate>
                         <TextBlock Text="{Binding Caption}" />
                     </DataTemplate>
                 </ComboBox.ItemTemplate>
             </ComboBox>
-            <TextBlock x:Name="ContextText" Grid.Column="2" Margin="16,0,0,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource BrushTextSecondary}"/>
+            <TextBlock x:Name="ContextText" Grid.Column="2" Margin="8,0,0,0" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource BrushTextSecondary}"/>
         </Grid>
-        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
-            <Button x:Name="AddButton" Content="＋ Добавить" Width="120" Height="38" Style="{StaticResource BtnPrimary}" Click="Add_Click"/>
-            <Button x:Name="DeleteButton" Content="Удалить строку" Width="140" Height="38" Margin="8,0,0,0" Style="{StaticResource BtnSecondary}" Click="Delete_Click"/>
-            <Button x:Name="SaveButton" Content="Сохранить" Width="120" Height="38" Margin="8,0,0,0" Style="{StaticResource BtnSaveObject}" Click="Save_Click"/>
-            <Button x:Name="RefreshButton" Content="Обновить" Width="110" Height="38" Margin="8,0,0,0" Style="{StaticResource BtnSecondary}" Click="Refresh_Click"/>
-        </StackPanel>
-        <DataGrid x:Name="RowsGrid" Grid.Row="2" AutoGenerateColumns="True" CanUserAddRows="False" CanUserDeleteRows="False"
+        <WrapPanel Grid.Row="1" Margin="0,0,0,8">
+            <Button Width="190" Height="36" Padding="4,0" x:Name="AddButton" Content="＋ Добавить" Style="{StaticResource BtnPrimary}" Click="Add_Click"/>
+            <Button Width="190" Height="36" Padding="4,0" x:Name="DeleteButton" Content="Удалить строку" Margin="8,0,0,0" Style="{StaticResource BtnSecondary}" Click="Delete_Click"/>
+            <Button Width="190" Height="36" Padding="4,0" x:Name="SaveButton" Content="Сохранить" Margin="8,0,0,0" Style="{StaticResource BtnSaveObject}" Click="Save_Click"/>
+            <Button Width="190" Height="36" Padding="4,0" x:Name="RefreshButton" Content="Перечитать" ToolTip="Заново загрузить раздел из проекта" Margin="8,0,0,0" Style="{StaticResource BtnSecondary}" Click="Refresh_Click"/>
+            <Button Width="190" Height="36" Padding="4,0" x:Name="ToggleRecipeButton" Visibility="Collapsed" Content="Использование в рецепте" ToolTip="Переключить использование выбранного параметра в рецепте"
+                    Margin="8,0,0,0" Style="{StaticResource BtnSecondary}" Click="ToggleRecipe_Click"/>
+        </WrapPanel>
+                <Grid Grid.Row="2">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition x:Name="RecordsHeight" Height="*"/>
+                <RowDefinition x:Name="RecipeDetailsHeight" Height="0"/>
+            </Grid.RowDefinitions>
+            <ComboBox x:Name="RecipePicker" Visibility="Collapsed" Margin="0,0,0,8"
+                      AutomationProperties.Name="Рецепт" SelectionChanged="RecipePicker_SelectionChanged">
+                <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding [Name_L1]}"/></DataTemplate></ComboBox.ItemTemplate>
+            </ComboBox>
+            <DataGrid x:Name="RowsGrid" Grid.Row="1" AutoGenerateColumns="True" CanUserAddRows="False" CanUserDeleteRows="False"
                   IsReadOnly="False" SelectionMode="Single" SelectionUnit="FullRow" AutoGeneratingColumn="RowsGrid_AutoGeneratingColumn"
-                  BeginningEdit="RowsGrid_BeginningEdit" RowEditEnding="RowsGrid_RowEditEnding" SelectionChanged="RowsGrid_SelectionChanged"
+                  MouseDoubleClick="RowsGrid_DoubleClick" BeginningEdit="RowsGrid_BeginningEdit" RowEditEnding="RowsGrid_RowEditEnding" SelectionChanged="RowsGrid_SelectionChanged"
                   HeadersVisibility="Column" EnableRowVirtualization="True"/>
+            <GroupBox x:Name="RecipeDetailsGroup" Grid.Row="2" Header="Параметры рецепта" Visibility="Collapsed" Margin="0,8,0,0"/>
+        </Grid>
         <TextBlock x:Name="StatusText" Grid.Row="3" Margin="0,8,0,0" TextWrapping="Wrap" Foreground="{DynamicResource BrushTextSecondary}"/>
     </Grid>
 </UserControl>

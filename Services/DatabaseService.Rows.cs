@@ -142,27 +142,29 @@ namespace Configurator
                 }
             }
 
-            public async Task UpdateCompareRowAsync(ProjectTableSchema expectedSchema, ProjectRecord expectedRecord,
+            public async Task UpdateCompareRowAsync(ProjectTableSchema expectedSchema, ProjectRecord? expectedRecord,
                 Dictionary<string, object> keyValues, Dictionary<string, object> values, CancellationToken ct = default)
             {
-                if (expectedSchema == null || expectedRecord == null)
-                    throw new ArgumentNullException(expectedSchema == null ? nameof(expectedSchema) : nameof(expectedRecord));
+                ArgumentNullException.ThrowIfNull(expectedSchema);
+                bool insert = expectedRecord == null;
                 if (!expectedSchema.HasStableKey || expectedSchema.KeyColumns.Count == 0 ||
                     keyValues == null || expectedSchema.KeyColumns.Any(key => !keyValues.ContainsKey(key)))
                     throw new InvalidOperationException("Не подтвержден устойчивый ключ целевой записи.");
-                if (values == null || values.Count != 1)
-                    throw new InvalidOperationException("Можно изменить только одно выбранное поле.");
+                if (values == null || values.Count == 0)
+                    throw new InvalidOperationException("Нет выбранных полей для переноса.");
 
                 var (schemaName, bareTableName) = ParseTableName(expectedSchema.TableName);
                 var quotedName = QuoteTableName(expectedSchema.TableName);
-                string changedColumn = values.Keys.Single();
-                var changedMetadata = expectedSchema.Columns.FirstOrDefault(column =>
-                    column.Name.Equals(changedColumn, StringComparison.OrdinalIgnoreCase));
-                if (changedMetadata == null || changedMetadata.IsIdentity || changedMetadata.IsComputed || changedMetadata.IsReadOnly ||
-                    expectedSchema.KeyColumns.Contains(changedMetadata.Name, StringComparer.OrdinalIgnoreCase))
-                    throw new InvalidOperationException("Выбранное поле отсутствует, является ключом или доступно только для чтения.");
-                if (expectedRecord.Values.Count != expectedSchema.Columns.Count ||
-                    !expectedRecord.TableName.Equals(expectedSchema.TableName, StringComparison.OrdinalIgnoreCase))
+                var changedColumns = values.Keys.ToArray();
+                foreach (string changedColumn in changedColumns)
+                {
+                    var metadata = expectedSchema.Columns.FirstOrDefault(column => column.Name.Equals(changedColumn, StringComparison.OrdinalIgnoreCase));
+                    if (metadata == null || metadata.IsIdentity || metadata.IsComputed || metadata.IsReadOnly ||
+                        (!insert && expectedSchema.KeyColumns.Contains(metadata.Name, StringComparer.OrdinalIgnoreCase)))
+                        throw new InvalidOperationException($"Поле «{changedColumn}» отсутствует, является ключом или доступно только для чтения.");
+                }
+                if (!insert && (expectedRecord!.Values.Count != expectedSchema.Columns.Count ||
+                    !expectedRecord.TableName.Equals(expectedSchema.TableName, StringComparison.OrdinalIgnoreCase)))
                     throw new InvalidOperationException("Сохранённое состояние Compare не содержит полную целевую запись.");
 
                 using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
@@ -194,16 +196,34 @@ namespace Configurator
                         }
                     }
 
-                    if (actualRows.Count != 1 || !CompareRecordValues(expectedRecord.Values, actualRows[0], columns))
+                    if (insert ? actualRows.Count != 0 : actualRows.Count != 1 || !CompareRecordValues(expectedRecord!.Values, actualRows[0], columns))
                         throw new InvalidOperationException("Целевая запись изменилась или стала неоднозначной после сравнения. Повторите сравнение.");
 
-                    await EnsureCompareWriteStillSafeAsync(connection, transaction, schemaName, bareTableName,
-                        changedMetadata.Name, ct);
+                    foreach (string changedColumn in changedColumns)
+                        await EnsureCompareWriteStillSafeAsync(connection, transaction, schemaName, bareTableName, changedColumn, insert, ct);
 
-                    var updateSql = $"UPDATE {quotedName} SET {QuoteIdentifier(changedMetadata.Name)} = @value WHERE {string.Join(" AND ", expectedSchema.KeyColumns.Select((key, index) => $"{QuoteIdentifier(key)} = @key{index}"))}";
+                    if (insert && CompareTransferPreview.IsValveTable(expectedSchema))
+                    {
+                        foreach (var (table, fields, lookupValues) in CompareTransferPreview.ValveLookups(values))
+                        {
+                            var lookupWhere = string.Join(" AND ", fields.Select((field, index) => $"{QuoteIdentifier(field)} = @lookup{index}"));
+                            var lookupSql = $"SELECT TOP (1) 1 FROM {QuoteTableName(table)} WHERE {lookupWhere}";
+                            await using var lookup = new SqlCommand(lookupSql, connection, transaction);
+                            for (int index = 0; index < fields.Length; index++)
+                                lookup.Parameters.AddWithValue($"@lookup{index}", lookupValues[index] ?? DBNull.Value);
+                            if (await lookup.ExecuteScalarAsync(ct) is null)
+                                throw new InvalidOperationException($"Для клапана отсутствует связанная запись в {table}.");
+                        }
+                    }
+
+                    var assignments = string.Join(", ", changedColumns.Select((column, index) => $"{QuoteIdentifier(column)} = @value{index}"));
+                    var updateSql = $"UPDATE {quotedName} SET {assignments} WHERE {string.Join(" AND ", expectedSchema.KeyColumns.Select((key, index) => $"{QuoteIdentifier(key)} = @key{index}"))}";
+                    if (insert)
+                        updateSql = $"INSERT INTO {quotedName} ({string.Join(", ", changedColumns.Select(QuoteIdentifier))}) VALUES ({string.Join(", ", changedColumns.Select((_, index) => $"@value{index}"))})";
                     await using (var updateCommand = new SqlCommand(updateSql, connection, transaction))
                     {
-                        updateCommand.Parameters.AddWithValue("@value", values[changedColumn] ?? DBNull.Value);
+                        for (int i = 0; i < changedColumns.Length; i++)
+                            updateCommand.Parameters.AddWithValue($"@value{i}", values[changedColumns[i]] ?? DBNull.Value);
                         for (int i = 0; i < expectedSchema.KeyColumns.Count; i++)
                             updateCommand.Parameters.AddWithValue($"@key{i}", keyValues[expectedSchema.KeyColumns[i]] ?? DBNull.Value);
                         var affected = await updateCommand.ExecuteNonQueryAsync(ct);
@@ -221,11 +241,11 @@ namespace Configurator
             }
 
             private static async Task EnsureCompareWriteStillSafeAsync(SqlConnection connection, SqlTransaction transaction,
-                string schemaName, string tableName, string columnName, CancellationToken ct)
+                string schemaName, string tableName, string columnName, bool insert, CancellationToken ct)
             {
                 const string sql = @"
 SELECT CASE WHEN HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'VIEW DEFINITION')=1
-                 AND HAS_PERMS_BY_NAME(QUOTENAME(s.name)+'.'+QUOTENAME(t.name), 'OBJECT', 'UPDATE')=1
+                 AND HAS_PERMS_BY_NAME(QUOTENAME(s.name)+'.'+QUOTENAME(t.name), 'OBJECT', @permission)=1
                  AND DATABASEPROPERTYEX(DB_NAME(), 'Updateability')='READ_WRITE'
                  AND NOT EXISTS (SELECT 1 FROM sys.triggers tr WHERE tr.parent_id=t.object_id AND tr.is_disabled=0)
             THEN 1 ELSE 0 END AS can_update,
@@ -243,6 +263,7 @@ WHERE s.name=@schema AND t.name=@table AND c.name=@column";
                 command.Parameters.Add("@schema", SqlDbType.NVarChar, 128).Value = schemaName;
                 command.Parameters.Add("@table", SqlDbType.NVarChar, 128).Value = tableName;
                 command.Parameters.Add("@column", SqlDbType.NVarChar, 128).Value = columnName;
+                command.Parameters.Add("@permission", SqlDbType.NVarChar, 16).Value = insert ? "INSERT" : "UPDATE";
                 await using var reader = await command.ExecuteReaderAsync(ct);
                 if (!await reader.ReadAsync(ct) || reader.GetInt32(0) != 1)
                     throw new InvalidOperationException("Не подтверждены права записи, доступ к метаданным или отсутствие активных триггеров.");

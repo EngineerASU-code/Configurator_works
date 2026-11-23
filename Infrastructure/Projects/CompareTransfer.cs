@@ -242,12 +242,10 @@ public static class CompareTransfer
     private static async Task ApplyOnlineAsync(CompareTransferPreview preview, bool createsObject,
         bool checkUserPermission, CancellationToken cancellationToken)
     {
-        if (createsObject)
-            throw new CompareTransferException("Создание объектов в живой базе не поддерживается.");
-        if (preview.ExpectedRecord is null || preview.TargetSchema is null)
+        if ((!createsObject && preview.ExpectedRecord is null) || preview.TargetSchema is null)
             throw new CompareTransferException("Не удалось проверить целевую запись. Повторите сравнение.");
-        if (preview.Values.Count != 1)
-            throw new CompareTransferException("Можно изменить только одно выбранное поле.");
+        if (preview.Values.Count == 0)
+            throw new CompareTransferException("Нет выбранных полей для переноса.");
         if (preview.TargetMetadataFingerprint is null)
             throw new CompareTransferException("Не удалось подтвердить текущие классы и логические связи. Повторите сравнение.");
 
@@ -275,7 +273,8 @@ public static class CompareTransfer
     private static void EnsureUserPermission(bool createsObject)
     {
         var permission = createsObject ? Permission.AddData : Permission.EditData;
-        if (!UserAuthorizationService.Has(Permission.Mode3Manage) || !UserAuthorizationService.Has(permission))
+        if (!PermissionPolicy.CanEnterMode(UserAuthorizationService.CurrentUser, UserAuthorizationService.CurrentRole, 3) ||
+            !UserAuthorizationService.Has(permission))
             throw new CompareTransferException("У текущего пользователя нет разрешения на выбранное действие.");
     }
 
@@ -294,6 +293,16 @@ public static class CompareTransfer
                 throw new CompareTransferException("Ключ объекта уже существует в целевом локальном проекте. Повторите сравнение.");
 
             EnsureNameIsAvailable(dataSource.GetRecords(schema.TableName), preview.Values);
+            if (CompareTransferPreview.IsValveTable(schema))
+            {
+                foreach (var (table, fields, values) in CompareTransferPreview.ValveLookups(preview.Values))
+                {
+                    if (!dataSource.GetRecords(table).Any(record => fields.Select((field, index) =>
+                        record.Values.TryGetPropertyValue(field, out var value) &&
+                        CompareValues.Compare(value, ProjectKeyCodec.ToNode(values[index]), null, null) == CompareStatus.Equal).All(equal => equal)))
+                        throw new CompareTransferException($"Для клапана отсутствует связанная запись в {table}.");
+                }
+            }
             return;
         }
 

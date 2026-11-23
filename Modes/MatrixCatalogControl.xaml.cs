@@ -1,4 +1,4 @@
-﻿#nullable enable
+#nullable enable
 using System;
 using System.Data;
 using System.Linq;
@@ -22,6 +22,7 @@ public partial class MatrixCatalogControl : UserControl
     private object? _plcValue;
     private object? _matrixClassValue;
     private ProgramSupportRepository? _repository;
+    public event Action<ChangeJournalEntry>? ChangeJournalRequested;
     private OfflineProjectDataSource? _offlineSource;
     private ProgramSupportTableData? _tableData;
     private IReadOnlyList<MatrixDeviceClassOption> _deviceClasses = Array.Empty<MatrixDeviceClassOption>();
@@ -63,8 +64,17 @@ public partial class MatrixCatalogControl : UserControl
         IEnumerable<MatrixDeviceClassOption>? deviceClasses = null)
         => await ConfigureCoreAsync(null, source, plcValue, matrixClassNumberValue, deviceClasses);
 
+    private bool _embedded;
+
+    public Task OpenMatrixAsync(string? connection, OfflineProjectDataSource? offline, object plc, object cls,
+        object record, string name, IEnumerable<MatrixDeviceClassOption> classes)
+    {
+        _embedded = true;
+        return ConfigureCoreAsync(connection, offline, plc, cls, classes, record, name);
+    }
+
     private async Task ConfigureCoreAsync(string? connectionString, OfflineProjectDataSource? offline, object plcValue,
-        object matrixClassNumberValue, IEnumerable<MatrixDeviceClassOption>? deviceClasses)
+        object matrixClassNumberValue, IEnumerable<MatrixDeviceClassOption>? deviceClasses, object? selectedRecord = null, string? matrixName = null)
     {
         if (!CommitGridEdits())
         {
@@ -85,6 +95,7 @@ public partial class MatrixCatalogControl : UserControl
         if (deviceClasses != null) _deviceClasses = deviceClasses.ToArray();
         _repository = offline != null ? new ProgramSupportRepository(offline)
             : string.IsNullOrWhiteSpace(connectionString) ? null : new ProgramSupportRepository(connectionString);
+        if (_repository != null) _repository.ChangeJournalRequested += entry => ChangeJournalRequested?.Invoke(entry);
         _tableData = null;
         _commandMapView = null;
         _commandMapColumns.Clear();
@@ -104,7 +115,19 @@ public partial class MatrixCatalogControl : UserControl
         SetBusy(false);
         SetActions(false, false, false);
         PlcInput.Text = Convert.ToString(plcValue, CultureInfo.InvariantCulture) ?? string.Empty;
-        ContextText.Text = $"PLC={plcValue ?? "?"}  ·  Matrix class={matrixClassNumberValue ?? "?"}";
+        ContextText.Text = matrixName ?? $"PLC={plcValue ?? "?"}  ·  Matrix class={matrixClassNumberValue ?? "?"}";
+        if (selectedRecord != null)
+        {
+            _suppressSelectionEvents = true;
+            MatrixRecordBox.ItemsSource = new[] { new MatrixRecordOption { Record = Convert.ToInt32(selectedRecord), Caption = selectedRecord.ToString()! } };
+            MatrixRecordBox.SelectedIndex = 0;
+            _appliedMatrixRecord = MatrixRecordBox.SelectedValue;
+            SectionBox.SelectedValue = "matrix-command-list";
+            _appliedSectionId = "matrix-command-list";
+            _suppressSelectionEvents = false;
+            await LoadSelectedAsync(_appliedSectionId, _appliedMatrixRecord);
+            return;
+        }
         if (await LoadMatrixRecordsAsync(contextVersion) && contextVersion == _contextVersion)
         {
             string? section = SectionBox.SelectedValue as string;
@@ -136,10 +159,10 @@ public partial class MatrixCatalogControl : UserControl
     private async System.Threading.Tasks.Task<bool> PrepareForContextChangeCoreAsync()
     {
         if (!HasPendingChanges()) return true;
-        var choice = MessageBox.Show(Window.GetWindow(this),
+        var choice = Configurator.Infrastructure.ModernDialog.Show(Window.GetWindow(this),
             "В текущем разделе Matrix есть несохранённые изменения. Сохранить их перед переключением?",
             "Несохранённые изменения", MessageBoxButton.YesNoCancel, MessageBoxImage.Warning);
-        if (choice == MessageBoxResult.Cancel) return false;
+        if (choice is MessageBoxResult.Cancel or MessageBoxResult.None) return false;
         if (choice == MessageBoxResult.Yes) return await SavePendingChangesAsync();
 
         _tableData!.Rows.RejectChanges();
@@ -149,6 +172,7 @@ public partial class MatrixCatalogControl : UserControl
 
     private async System.Threading.Tasks.Task<bool> LoadMatrixRecordsAsync(int contextVersion)
     {
+        if (_embedded) return contextVersion == _contextVersion;
         int loadVersion = ++_loadVersion;
         var repository = _repository;
         var plcValue = _plcValue;
@@ -211,8 +235,44 @@ public partial class MatrixCatalogControl : UserControl
         }
     }
 
+    private bool _syncingSectionTabs;
+
+    private void MatrixTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_syncingSectionTabs || _busy || SectionBox == null ||
+            MatrixTabs?.SelectedItem is not TabItem selected) return;
+        if (selected.Content is TabControl children && children.SelectedItem is TabItem child)
+            selected = child;
+        if (selected.Tag is string section) SectionBox.SelectedValue = section;
+    }
+
+    private void SyncSectionTabs()
+    {
+        if (SectionBox.SelectedValue is not string section) return;
+        _syncingSectionTabs = true;
+        try
+        {
+            foreach (var parent in MatrixTabs.Items.OfType<TabItem>())
+            {
+                if (parent.Content is TabControl children)
+                {
+                    var child = children.Items.OfType<TabItem>().FirstOrDefault(item => Equals(item.Tag, section));
+                    if (child == null) continue;
+                    MatrixTabs.SelectedItem = parent;
+                    children.SelectedItem = child;
+                    break;
+                }
+                if (!Equals(parent.Tag, section)) continue;
+                MatrixTabs.SelectedItem = parent;
+                break;
+            }
+        }
+        finally { _syncingSectionTabs = false; }
+    }
+
     private async void SectionBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        SyncSectionTabs();
         if (_suppressSelectionEvents) return;
         string? requested = SectionBox.SelectedValue as string;
         if (requested == _appliedSectionId) return;
@@ -865,7 +925,7 @@ public partial class MatrixCatalogControl : UserControl
     private void UpdateMatrixRecordVisibility()
     {
         var visibility = IsMatrixChildSelected() ? Visibility.Visible : Visibility.Collapsed;
-        MatrixRecordLabel.Visibility = MatrixRecordBox.Visibility = visibility;
+        MatrixRecordLabel.Visibility = MatrixRecordBox.Visibility = _embedded ? Visibility.Collapsed : visibility;
         bool showGroup = (SectionBox.SelectedValue as string) == "matrix-devices";
         DeviceGroupLabel.Visibility = DeviceGroupBox.Visibility = showGroup ? Visibility.Visible : Visibility.Collapsed;
         PositionLabel.Visibility = DevicePLCLabel.Visibility = DeviceObjectLabel.Visibility = showGroup ? Visibility.Visible : Visibility.Collapsed;
@@ -1111,7 +1171,8 @@ public partial class MatrixCatalogControl : UserControl
                 }
                 if (source != null)
                 {
-                    source["Cmd"] = value;
+                    if (!string.Equals(Convert.ToString(source["Cmd"], CultureInfo.InvariantCulture), value, StringComparison.Ordinal))
+                        source["Cmd"] = value;
                     continue;
                 }
                 if (string.IsNullOrWhiteSpace(value)) continue;
@@ -1292,6 +1353,14 @@ public partial class MatrixCatalogControl : UserControl
     {
         if (_tableData == null) { e.Column.IsReadOnly = true; return; }
         string name = e.PropertyName;
+        if (e.Column is DataGridTextColumn textColumn)
+        {
+            var textStyle = new Style(typeof(TextBlock), textColumn.ElementStyle);
+            textStyle.Setters.Add(new Setter(FrameworkElement.MarginProperty, new Thickness(8, 2, 8, 2)));
+            textColumn.ElementStyle = textStyle;
+            if (name.Replace("_", "").StartsWith("NameL", StringComparison.OrdinalIgnoreCase))
+                textColumn.MinWidth = 150;
+        }
         if (_commandMapView != null && _tableData.Definition.Id == "matrix-commands")
         {
             if (name == "Position")
@@ -1302,7 +1371,17 @@ public partial class MatrixCatalogControl : UserControl
             }
             else if (_commandMapColumns.TryGetValue(name, out int commandNumber))
             {
-                e.Column.Header = $"Cmd {commandNumber}";
+                e.Column = new DataGridComboBoxColumn
+                {
+                    Header = $"Cmd {commandNumber}",
+                    ItemsSource = MatrixAwlExporter.CommandOptions.Concat(_commandMapView.Rows.Cast<DataRow>()
+                        .Select(row => Convert.ToString(row[name], CultureInfo.InvariantCulture) ?? string.Empty)).Distinct().ToArray(),
+                    SelectedItemBinding = new Binding($"[{name}]")
+                    {
+                        Mode = BindingMode.TwoWay,
+                        UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged
+                    }
+                };
                 e.Column.IsReadOnly = !_tableData.CanWrite;
                 e.Column.Width = new DataGridLength(110);
                 e.Column.SortMemberPath = name;

@@ -139,7 +139,7 @@ public sealed class ProjectWorkspace : IProjectWorkspace, IDisposable
     public async Task UpdateRecordAsync(string tableName, IReadOnlyList<string> keyColumns, IReadOnlyDictionary<string, object?> keyValues, IReadOnlyDictionary<string, object?> values, CancellationToken cancellationToken = default)
     { EnsureWritable(); using var linked = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, cancellationToken); await _writer!.UpdateRecordAsync(tableName, keyColumns, keyValues, values, linked.Token).ConfigureAwait(false); if (!IsOffline) Interlocked.Increment(ref _revision); }
 
-    public async Task UpdateCompareRecordAsync(ProjectTableSchema schema, ProjectRecord expectedRecord,
+    public async Task UpdateCompareRecordAsync(ProjectTableSchema schema, ProjectRecord? expectedRecord,
         IReadOnlyDictionary<string, object?> keyValues, IReadOnlyDictionary<string, object?> values,
         CancellationToken cancellationToken = default)
     {

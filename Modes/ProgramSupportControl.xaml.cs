@@ -1,4 +1,4 @@
-﻿#nullable enable
+#nullable enable
 using System;
 using System.Collections.Generic;
 using System.Data;
@@ -7,11 +7,19 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
+using System.Windows.Input;
 
 namespace Configurator;
 
 public partial class ProgramSupportControl : UserControl
 {
+    private Configurator.Core.Projects.OfflineProjectDataSource? _offlineSource;
+    private ProgramSupportControl? _recipeDetails;
+    private bool _selectingRecipe;
+    private int? _recipeRecord;
+    private (string Column, int Record)? _detailFilter;
+    private DataView? _queueChoices;
+    public event Action<ChangeJournalEntry>? ChangeJournalRequested;
     private string? _connectionString;
     private ProgramContext? _context;
     private ProgramSupportRepository? _repository;
@@ -38,6 +46,16 @@ public partial class ProgramSupportControl : UserControl
         SetActions(false, false, false);
     }
 
+    public void SetSections(params string[] ids)
+    {
+        _suppressSectionSelection = true;
+        SectionBox.ItemsSource = ProgramSupportCatalog.ProgramTables.Where(section => ids.Contains(section.Id)).ToArray();
+        SectionBox.SelectedIndex = 0;
+        SectionLabel.Visibility = SectionBox.Visibility = ids.Length > 1 ? Visibility.Visible : Visibility.Collapsed;
+        _appliedSectionId = SectionBox.SelectedValue as string;
+        _suppressSectionSelection = false;
+    }
+
     public async void Configure(string connectionString, ProgramContext? context)
         => await ConfigureCoreAsync(connectionString, null, context);
 
@@ -59,8 +77,10 @@ public partial class ProgramSupportControl : UserControl
         ++_contextVersion;
         ++_loadVersion;
         _connectionString = connectionString;
+        _offlineSource = offline;
         _repository = offline != null ? new ProgramSupportRepository(offline)
             : string.IsNullOrWhiteSpace(connectionString) ? null : new ProgramSupportRepository(connectionString);
+        if (_repository != null) _repository.ChangeJournalRequested += entry => ChangeJournalRequested?.Invoke(entry);
         if (context == null)
         {
             _context = null;
@@ -94,6 +114,12 @@ public partial class ProgramSupportControl : UserControl
         _context = null;
         _tableData = null;
         RowsGrid.ItemsSource = null;
+        _selectingRecipe = true;
+        RecipePicker.ItemsSource = null;
+        RecipeDetailsGroup.Content = null;
+        _recipeDetails = null;
+        _recipeRecord = null;
+        _selectingRecipe = false;
         ContextText.Text = "Выберите программу и последовательность";
         StatusText.Text = "Контекст программы очищен.";
         SetActions(false, false, false);
@@ -102,7 +128,7 @@ public partial class ProgramSupportControl : UserControl
 
     public bool HasPendingChanges()
     {
-        return _tableData?.Rows.Rows.Cast<DataRow>().Any(row =>
+        return _recipeDetails?.HasPendingChanges() == true || _tableData?.Rows.Rows.Cast<DataRow>().Any(row =>
             row.RowState is DataRowState.Added or DataRowState.Modified or DataRowState.Deleted) == true;
     }
 
@@ -121,12 +147,13 @@ public partial class ProgramSupportControl : UserControl
 
     private async System.Threading.Tasks.Task<bool> PrepareForContextChangeCoreAsync()
     {
+        if (_recipeDetails != null && !await _recipeDetails.PrepareForContextChangeAsync()) return false;
         if (!HasPendingChanges()) return true;
 
-        var choice = MessageBox.Show(Window.GetWindow(this),
+        var choice = Configurator.Infrastructure.ModernDialog.Show(Window.GetWindow(this),
             "В текущем разделе есть несохранённые изменения. Сохранить их перед переключением?",
             "Несохранённые изменения", MessageBoxButton.YesNoCancel, MessageBoxImage.Warning);
-        if (choice == MessageBoxResult.Cancel) return false;
+        if (choice is MessageBoxResult.Cancel or MessageBoxResult.None) return false;
         if (choice == MessageBoxResult.Yes) return await SavePendingChangesAsync();
 
         _tableData!.Rows.RejectChanges();
@@ -196,10 +223,31 @@ public partial class ProgramSupportControl : UserControl
         SetActions(false, false, false);
         try
         {
-            var tableData = await repository.LoadProgramAsync(id, context);
+            var tableData = id == "recipe-values" && _detailFilter is { Column: "Recipe_Record" } recipe
+                ? await repository.LoadRecipeValuesAsync(context, recipe.Record)
+                : await repository.LoadProgramAsync(id, context);
+            var queues = id == "queue-selections" ? await repository.LoadProgramAsync("queues", context) : null;
             if (contextVersion != _contextVersion || loadVersion != _loadVersion) return false;
             _tableData = tableData;
-            RowsGrid.ItemsSource = _tableData.Rows.DefaultView;
+            _queueChoices = queues?.Rows.DefaultView;
+            var view = _tableData.Rows.DefaultView;
+            if (_detailFilter is { } filter) view.RowFilter = $"[{filter.Column}] = {filter.Record}";
+            RowsGrid.ItemsSource = view;
+            ToggleRecipeButton.Visibility = id == "recipe-values" ? Visibility.Visible : Visibility.Collapsed;
+            if (id == "recipes")
+            {
+                RecipePicker.Visibility = Visibility.Visible;
+                RecipeDetailsGroup.Visibility = Visibility.Visible;
+                RecipeDetailsHeight.Height = new GridLength(1, GridUnitType.Star);
+                RecordsHeight.Height = GridLength.Auto;
+                RowsGrid.MaxHeight = 125;
+                _selectingRecipe = true;
+                RecipePicker.ItemsSource = view;
+                RecipePicker.SelectedItem = view.Cast<DataRowView>().FirstOrDefault(row =>
+                    Convert.ToString(row["Record"]) == _recipeRecord?.ToString()) ?? view.Cast<DataRowView>().FirstOrDefault();
+                _selectingRecipe = false;
+                await SelectRecipeAsync();
+            }
             bool writable = _tableData.CanWrite;
             SetActions(writable && _tableData.Definition.AllowInsert, writable && _tableData.Definition.AllowDelete, writable);
             StatusText.Text = _tableData.WriteBlockReason ?? $"{_tableData.Definition.Caption}: {_tableData.Rows.Rows.Count} строк. Ключ и область записи сверены со схемой; изменения сохраняются транзакционно.";
@@ -357,15 +405,23 @@ public partial class ProgramSupportControl : UserControl
         return copy;
     }
 
-    private void Add_Click(object sender, RoutedEventArgs e)
+    private async void Add_Click(object sender, RoutedEventArgs e)
     {
         if (_busy || !UserAuthorizationService.Require(Permission.AddData) || _context == null
             || _tableData == null || !_tableData.CanWrite || !_tableData.Definition.AllowInsert) return;
         try
         {
+            if (_recipeDetails != null && !await _recipeDetails.PrepareForContextChangeAsync()) return;
             var row = _tableData.Rows.NewRow();
             var scope = ProgramSupportRepository.GetProgramScope(_tableData.Definition, _context);
             foreach (var pair in scope) row[pair.Key] = pair.Value;
+            if (_appliedSectionId == "queue-selections")
+            {
+                var queue = _detailFilter?.Record;
+                if (queue == null && _queueChoices is { Count: 1 }) queue = Convert.ToInt32(_queueChoices[0]["Record"]);
+                if (queue == null) throw new InvalidOperationException("Откройте нужную очередь двойным кликом.");
+                row["Queue_Record"] = queue.Value;
+            }
             foreach (DataColumn column in _tableData.Rows.Columns)
             {
                 if (row[column] != DBNull.Value || column.AutoIncrement) continue;
@@ -384,7 +440,15 @@ public partial class ProgramSupportControl : UserControl
                     row[column] = Activator.CreateInstance(column.DataType);
             }
             _tableData.Rows.Rows.Add(row);
-            var item = RowsGrid.Items[RowsGrid.Items.Count - 1];
+            if (_appliedSectionId == "recipes")
+            {
+                _selectingRecipe = true;
+                RecipePicker.SelectedItem = RecipePicker.Items.OfType<DataRowView>().First(view => ReferenceEquals(view.Row, row));
+                _selectingRecipe = false;
+                await SelectRecipeAsync();
+            }
+            var item = RowsGrid.Items.OfType<DataRowView>().FirstOrDefault(view => ReferenceEquals(view.Row, row));
+            if (item == null) return;
             RowsGrid.SelectedItem = item;
             RowsGrid.ScrollIntoView(item);
             StatusText.Text = "Заполните поля новой строки и сохраните. Ключевые поля существующих строк менять нельзя.";
@@ -409,21 +473,212 @@ public partial class ProgramSupportControl : UserControl
         catch (Exception ex) { StatusText.Text = Configurator.Infrastructure.UserErrorMessage.Format(ex); }
     }
 
-    private async void Save_Click(object sender, RoutedEventArgs e)
+    private async void Save_Click(object sender, RoutedEventArgs e) => await SaveCurrentAsync();
+
+    public async Task SaveCurrentAsync()
     {
-        if (_busy || _repository == null || _tableData == null) return;
-        RowsGrid.CommitEdit(DataGridEditingUnit.Cell, true);
-        if (!RowsGrid.CommitEdit(DataGridEditingUnit.Row, true)) return;
-        if (!CanSavePendingChanges(true)) return;
+        if (_busy || _repository == null || _tableData == null || !CommitGridEdits()) return;
+        if (_recipeDetails?.HasPendingChanges() == true) await _recipeDetails.SaveCurrentAsync();
+        if (!CanSavePendingChanges(true) || _recipeDetails?.HasPendingChanges() == true) return;
         SetBusy(true);
         if (await SavePendingChangesAsync()) await LoadSelectedAsync(_appliedSectionId);
         else SetBusy(false);
+    }
+
+    private async void RecipePicker_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_selectingRecipe && !_busy) await SelectRecipeAsync();
+    }
+
+    private async Task SelectRecipeAsync()
+    {
+        _selectingRecipe = true;
+        RecipePicker.IsEnabled = false;
+        try
+        {
+            if (_recipeDetails != null && !await _recipeDetails.PrepareForContextChangeAsync())
+            {
+                RecipePicker.SelectedItem = RecipePicker.Items.OfType<DataRowView>().FirstOrDefault(row =>
+                    Convert.ToString(row["Record"]) == _recipeRecord?.ToString());
+                return;
+            }
+            _recipeDetails = null;
+            RecipeDetailsGroup.Content = null;
+            if (RecipePicker.SelectedItem is not DataRowView selected || _tableData == null)
+            {
+                if (_tableData != null) RowsGrid.ItemsSource = new DataView(_tableData.Rows) { RowFilter = "1 = 0" };
+                _recipeRecord = null;
+                return;
+            }
+            int record = Convert.ToInt32(selected["Record"]);
+            _recipeRecord = record;
+            RowsGrid.ItemsSource = new DataView(_tableData.Rows) { RowFilter = $"[Record] = {record}" };
+            RowsGrid.SelectedIndex = 0;
+            if (selected.Row.RowState == DataRowState.Added) return;
+            var editor = CreateDetails("recipe-values", "Recipe_Record", record);
+            _recipeDetails = editor;
+            RecipeDetailsGroup.Content = editor;
+            await editor.ConfigureCoreAsync(_connectionString, _offlineSource, _context);
+        }
+        finally
+        {
+            _selectingRecipe = false;
+            RecipePicker.IsEnabled = true;
+        }
+    }
+
+    private ProgramSupportControl CreateDetails(string section, string column, int record)
+    {
+        var editor = new ProgramSupportControl { _detailFilter = (column, record) };
+        editor.SetSections(section);
+        editor.ChangeJournalRequested += entry => ChangeJournalRequested?.Invoke(entry);
+        return editor;
+    }
+
+    private async void RowsGrid_DoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (_busy || _tableData == null || e.OriginalSource is not DependencyObject source ||
+            ItemsControl.ContainerFromElement(RowsGrid, source) is not DataGridRow { Item: DataRowView row }) return;
+        if (!int.TryParse(Convert.ToString(row["Record"]), out int record)) return;
+        if (_appliedSectionId == "queues" && row.Row.RowState != DataRowState.Added)
+        {
+            e.Handled = true;
+            if (!await PrepareForContextChangeAsync()) return;
+            var details = CreateDetails("queue-selections", "Queue_Record", record);
+            await details.ConfigureCoreAsync(_connectionString, _offlineSource, _context);
+            var dialog = new Window
+            {
+                Owner = Window.GetWindow(this), WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Title = $"Очередь № {record}", Content = details,
+                Width = Math.Min(1280, SystemParameters.WorkArea.Width),
+                Height = Math.Min(820, SystemParameters.WorkArea.Height)
+            };
+            dialog.Closing += (_, args) =>
+            {
+                args.Cancel = details._busy || (details.HasPendingChanges() &&
+                    Configurator.Infrastructure.ModernDialog.Show(dialog, "Закрыть окно и отменить несохранённые правки?",
+                        "Несохранённые изменения", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes);
+            };
+            dialog.ShowDialog();
+            return;
+        }
+        if (_appliedSectionId is not ("recipes" or "recipe-values" or "queue-selections")) return;
+        e.Handled = true;
+        var permission = row.Row.RowState == DataRowState.Added ? Permission.AddData : Permission.EditData;
+        if (!_canSave || !UserAuthorizationService.Require(permission) || !CommitGridEdits()) return;
+        EditFields(row, record);
+    }
+
+    private void EditFields(DataRowView row, int record)
+    {
+        var fields = new UniformGrid { Columns = 2, Margin = new Thickness(12) };
+        var editors = new Dictionary<DataColumn, Control>();
+        bool added = row.Row.RowState == DataRowState.Added;
+        foreach (DataColumn column in row.Row.Table.Columns)
+        {
+            string name = column.ColumnName;
+            if (column.ReadOnly || (!_tableData!.Definition.EditableColumns.Contains(name, StringComparer.OrdinalIgnoreCase) &&
+                !(added && _tableData.Definition.ProtectedColumns.Contains(name, StringComparer.OrdinalIgnoreCase)))) continue;
+            if (name == "UseRecipes" && !IsDefaultRecipe(row)) continue;
+            Control editor = name == "UseRecipes" || column.DataType == typeof(bool)
+                ? new CheckBox { IsChecked = row[name] != DBNull.Value && Convert.ToBoolean(row[name]) }
+                : new TextBox { Text = Convert.ToString(row[name]) ?? "" };
+            editors.Add(column, editor);
+            var box = new StackPanel { Margin = new Thickness(6) };
+            box.Children.Add(new Label { Content = name == "UseRecipes" ? "Использовать в рецепте" : name, Target = editor });
+            box.Children.Add(editor);
+            fields.Children.Add(box);
+        }
+        if (editors.Count == 0) return;
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(12) };
+        var save = new Button { Content = "Применить", IsDefault = true, Margin = new Thickness(6) };
+        save.SetResourceReference(StyleProperty, "BtnSaveObject");
+        actions.Children.Add(new Button { Content = "Отмена", IsCancel = true, Margin = new Thickness(6) });
+        actions.Children.Add(save);
+        var panel = new DockPanel();
+        DockPanel.SetDock(actions, Dock.Bottom);
+        panel.Children.Add(actions);
+        panel.Children.Add(new ScrollViewer { Content = fields, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
+        var dialog = new Window { Owner = Window.GetWindow(this), WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Title = $"{_tableData!.Definition.Caption} · № {record}", Width = 700,
+            MaxHeight = SystemParameters.WorkArea.Height * 0.9, SizeToContent = SizeToContent.Height, Content = panel };
+        save.Click += (_, _) =>
+        {
+            row.BeginEdit();
+            try
+            {
+                foreach (var (column, editor) in editors)
+                {
+                    object value = editor is CheckBox option
+                        ? Convert.ChangeType(option.IsChecked == true, column.DataType)
+                        : ((TextBox)editor).Text;
+                    if (value is string text && column.DataType != typeof(string))
+                        value = text.Length == 0 && column.AllowDBNull ? DBNull.Value : Convert.ChangeType(text, column.DataType);
+                    if (!Equals(row[column.ColumnName], value)) row[column.ColumnName] = value;
+                }
+                row.EndEdit();
+                dialog.DialogResult = true;
+            }
+            catch (Exception ex) when (ex is FormatException or OverflowException or ArgumentException or DataException)
+            {
+                row.CancelEdit();
+                Configurator.Infrastructure.ModernDialog.Show(dialog, "Проверьте тип и диапазон введённых значений.",
+                    "Редактирование", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        };
+        dialog.ShowDialog();
+        UpdateActionState();
+    }
+
+    private static bool IsDefaultRecipe(DataRowView row) =>
+        row.Row.Table.Columns.Contains("Recipe_Record") && Convert.ToString(row["Recipe_Record"]) == "0";
+
+    private void ToggleRecipe_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_canSave || RowsGrid.SelectedItem is not DataRowView row || !IsDefaultRecipe(row) ||
+            !UserAuthorizationService.Require(Permission.EditData) ||
+            row.Row.Table.Columns["UseRecipes"] is not DataColumn { ReadOnly: false } column) return;
+        bool value = row[column.ColumnName] != DBNull.Value && Convert.ToBoolean(row[column.ColumnName]);
+        row[column.ColumnName] = Convert.ChangeType(!value, column.DataType);
+        row.EndEdit();
+        UpdateActionState();
     }
 
     private void RowsGrid_AutoGeneratingColumn(object sender, DataGridAutoGeneratingColumnEventArgs e)
     {
         if (_tableData == null) { e.Column.IsReadOnly = true; return; }
         string name = e.PropertyName;
+        if (e.Column is DataGridTextColumn text)
+        {
+            var style = new Style(typeof(TextBlock), text.ElementStyle);
+            style.Setters.Add(new Setter(FrameworkElement.MarginProperty, new Thickness(8, 3, 8, 3)));
+            text.ElementStyle = style;
+        }
+        if (name == "UseRecipes")
+        {
+            e.Column.Header = "Использовать в рецепте";
+            var style = new Style(typeof(DataGridCell), RowsGrid.CellStyle);
+            foreach (string enabled in new[] { "1", "True" })
+            {
+                var trigger = new MultiDataTrigger();
+                trigger.Conditions.Add(new Condition(new Binding("[Recipe_Record]"), "0"));
+                trigger.Conditions.Add(new Condition(new Binding("[UseRecipes]"), enabled));
+                trigger.Setters.Add(new Setter(Control.BackgroundProperty, System.Windows.Media.Brushes.PaleGreen));
+                trigger.Setters.Add(new Setter(Control.ForegroundProperty, System.Windows.Media.Brushes.Black));
+                style.Triggers.Add(trigger);
+            }
+            e.Column.CellStyle = style;
+        }
+        if (_appliedSectionId == "queue-selections" && name == "Queue_Record" && _queueChoices != null)
+        {
+            e.Column = new DataGridComboBoxColumn
+            {
+                Header = "Очередь", SortMemberPath = name, ItemsSource = _queueChoices,
+                DisplayMemberPath = _queueChoices.Table?.Columns.Contains("Name_L1") == true ? "[Name_L1]" : "[Record]",
+                SelectedValuePath = "[Record]", SelectedValueBinding = new Binding($"[{name}]"), IsReadOnly = true
+            };
+            return;
+        }
         bool inKey = _tableData.Definition.KeyColumns.Contains(name, StringComparer.OrdinalIgnoreCase);
         bool inScope = _tableData.Definition.ScopeColumns.Contains(name, StringComparer.OrdinalIgnoreCase);
         bool eligible = _tableData.Definition.EditableColumns.Contains(name, StringComparer.OrdinalIgnoreCase)
@@ -434,6 +689,8 @@ public partial class ProgramSupportControl : UserControl
     private void RowsGrid_BeginningEdit(object sender, DataGridBeginningEditEventArgs e)
     {
         if (_busy || _tableData == null || !_tableData.CanWrite || e.Row.Item is not DataRowView row) { e.Cancel = true; return; }
+        if (_appliedSectionId is "recipes" or "recipe-values" or "queue-selections" ||
+            (_appliedSectionId == "queues" && row.Row.RowState != DataRowState.Added)) { e.Cancel = true; return; }
         Permission required = row.Row.RowState == DataRowState.Added ? Permission.AddData : Permission.EditData;
         if (!UserAuthorizationService.Has(required)) { e.Cancel = true; return; }
         string? name = e.Column.SortMemberPath;

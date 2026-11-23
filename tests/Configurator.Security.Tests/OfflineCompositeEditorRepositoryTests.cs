@@ -58,6 +58,218 @@ public sealed class OfflineCompositeEditorRepositoryTests
         Assert.Equal("After", source.GetRecords("dbo.Matrix_List").Single().Values["Name_L1"]!.GetValue<string>());
     }
 
+    [Theory]
+    [InlineData(1, 2, true)]  // Another step in the same sequence points to the target.
+    [InlineData(2, 2, false)] // A different sequence is independent.
+    [InlineData(1, 1, false)] // A self-reference disappears with the target.
+    public async Task OfflineStepDeletionChecksOnlyIncomingDestinations(int sourceSequence, int sourceStep, bool blocked)
+    {
+        const string table = "dbo.Prog_StepTransition";
+        string[] keys = { "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Seq_Record", "SeqStep_Number" };
+        var schema = new ProjectTableSchema { TableName = table, HasStableKey = true };
+        schema.KeyColumns.AddRange(keys);
+        foreach (string name in keys.Concat(new[] { "TransDest_01" }))
+            schema.Columns.Add(new ProjectColumnSchema { Name = name, DataType = "int", IsNullable = true });
+        var project = new ConfiguratorProject { Manifest = new ConfiguratorProjectManifest { Name = "local" } };
+        project.TableSchemas.Add(schema);
+        project.LocalRecords.Add(Record(table, new("PLC", 1), new("PLC_Class_Prog_Number", 10),
+            new("Prog_Record", 3), new("Seq_Record", 1), new("SeqStep_Number", 1),
+            new("TransDest_01", sourceStep == 1 ? 1 : 0)));
+        if (sourceStep != 1)
+            project.LocalRecords.Add(Record(table, new("PLC", 1), new("PLC_Class_Prog_Number", 10),
+                new("Prog_Record", 3), new("Seq_Record", sourceSequence), new("SeqStep_Number", sourceStep),
+                new("TransDest_01", 1)));
+        var source = new OfflineProjectDataSource(project);
+        var repository = new ProgramManagementRepository(source);
+        var context = new ProgramContext { PlcValue = 1, ClassNumberValue = 10, RecordValue = 3, SeqRecordValue = 1 };
+
+        if (blocked)
+            await Assert.ThrowsAsync<InvalidOperationException>(() => repository.DeleteStepFromSequenceAsync(context, 1));
+        else
+            await repository.DeleteStepFromSequenceAsync(context, 1);
+
+        Assert.Equal(blocked, source.GetRecords(table).Any(row =>
+            row.Values["Seq_Record"]!.GetValue<int>() == 1 && row.Values["SeqStep_Number"]!.GetValue<int>() == 1));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OfflineMoveSwapsAllReferencesAndRollsBackOnInvalidDestination(bool invalid)
+    {
+        string[] scope = { "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Seq_Record" };
+        var project = new ConfiguratorProject { Manifest = new ConfiguratorProjectManifest { Name = "move" } };
+        foreach (string table in new[] { "dbo.Prog_StepTransition", "dbo.Prog_StepParam", "dbo.Prog_Recipes" })
+        {
+            bool transition = table.EndsWith("Transition");
+            string step = transition ? "SeqStep_Number" : "Step_Number";
+            var schema = new ProjectTableSchema { TableName = table, HasStableKey = true };
+            schema.KeyColumns.AddRange(scope.Concat(new[] { step }));
+            foreach (string name in scope.Concat(new[] { step }).Concat(transition
+                         ? Enumerable.Range(1, 8).Select(i => $"TransDest_{i:00}") : new[] { "Marker" }))
+                schema.Columns.Add(new ProjectColumnSchema { Name = name, DataType = "int", IsNullable = true });
+            project.TableSchemas.Add(schema);
+            for (int number = 1; number <= 2; number++)
+            {
+                var values = new System.Collections.Generic.List<(string Name, object Value)>
+                {
+                    ("PLC", 1), ("PLC_Class_Prog_Number", 10), ("Prog_Record", 3), ("Seq_Record", 1), (step, number)
+                };
+                if (transition)
+                    for (int i = 1; i <= 8; i++)
+                        values.Add(($"TransDest_{i:00}", i == 1 ? 3 - number : i == 2 && invalid && number == 2 ? "bad" : 0));
+                else values.Add(("Marker", number));
+                project.LocalRecords.Add(Record(table, values.ToArray()));
+            }
+        }
+        var source = new OfflineProjectDataSource(project);
+        var repository = new ProgramManagementRepository(source);
+        var context = new ProgramContext { PlcValue = 1, ClassNumberValue = 10, RecordValue = 3, SeqRecordValue = 1 };
+        var rows = await repository.GetTransitionsAsync(context);
+        var original = rows.Rows[0].Table.Columns.Cast<System.Data.DataColumn>()
+            .ToDictionary(c => c.ColumnName, c => rows.Rows[0][c.ColumnName], StringComparer.OrdinalIgnoreCase);
+        string before = string.Join("|", project.LocalRecords.Select(x => x.Values.ToJsonString()));
+
+        if (invalid)
+        {
+            await Assert.ThrowsAsync<FormatException>(() => repository.MoveOfflineStepAsync(context, original, 1));
+            Assert.Equal(before, string.Join("|", project.LocalRecords.Select(x => x.Values.ToJsonString())));
+        }
+        else
+        {
+            Assert.Equal(2, await repository.MoveOfflineStepAsync(context, original, 1));
+            var transitions = source.GetRecords("dbo.Prog_StepTransition");
+            Assert.Contains(transitions, r => r.Values["SeqStep_Number"]!.GetValue<int>() == 2
+                && r.Values["TransDest_01"]!.GetValue<int>() == 1);
+            foreach (string table in new[] { "dbo.Prog_StepParam", "dbo.Prog_Recipes" })
+            {
+                var records = source.GetRecords(table);
+                Assert.Contains(records, r => r.Values["Step_Number"]!.GetValue<int>() == 2 && r.Values["Marker"]!.GetValue<int>() == 1);
+                Assert.Contains(records, r => r.Values["Step_Number"]!.GetValue<int>() == 1 && r.Values["Marker"]!.GetValue<int>() == 2);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ProgramParameterCrudKeepsOccurrenceScopeAndPreservesRecipeValues()
+    {
+        const string parameter = "dbo.Prog_StepParam";
+        const string recipe = "dbo.Prog_Recipes";
+        string[] key = { "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Seq_Record", "Step_Number", "Type", "Record" };
+        var project = new ConfiguratorProject { Manifest = new ConfiguratorProjectManifest { Name = "parameters" } };
+        foreach (string table in new[] { parameter, recipe })
+        {
+            var schema = new ProjectTableSchema { TableName = table, HasStableKey = true };
+            schema.KeyColumns.AddRange(table == parameter ? key : key.Append("Recipe_Record"));
+            foreach (string field in schema.KeyColumns)
+                schema.Columns.Add(new ProjectColumnSchema { Name = field, DataType = "int" });
+            project.TableSchemas.Add(schema);
+        }
+        project.LocalRecords.Add(Record(recipe, new("PLC", 1), new("PLC_Class_Prog_Number", 10), new("Prog_Record", 3),
+            new("Seq_Record", 1), new("Step_Number", 2), new("Type", 0), new("Record", 1), new("Recipe_Record", 4)));
+        var source = new OfflineProjectDataSource(project);
+        var repository = new ProgramManagementRepository(source);
+        var context = new ProgramContext { PlcValue = 1, ClassNumberValue = 10, RecordValue = 3, SeqRecordValue = 1 };
+        var values = new System.Collections.Generic.Dictionary<string, object> { ["Type"] = 0, ["Step_Number"] = 99 };
+
+        Assert.Equal(1, await repository.AddParameterAsync(context, 2, values));
+        Assert.Equal(1, await repository.AddParameterAsync(context, 0, values));
+        Assert.Empty((await repository.GetParametersAsync(context, 99)).Rows.Cast<System.Data.DataRow>());
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repository.DeleteParameterAsync(context, 2, 0, 1));
+        await repository.DeleteParameterAsync(context, 0, 0, 1);
+
+        Assert.Single(source.GetRecords(parameter));
+        Assert.Single(source.GetRecords(recipe));
+    }
+
+    [Fact]
+    public async Task SequenceDeletionRequiresConfirmationToRemoveOrphanParameters()
+    {
+        const string sequence = ProgramManagementRepository.SequenceTable;
+        const string parameter = ProgramManagementRepository.ParameterTable;
+        string[] scope = { "PLC", "PLC_Class_Prog_Number", "Prog_Record" };
+        var project = new ConfiguratorProject { Manifest = new ConfiguratorProjectManifest { Name = "sequence" } };
+        foreach (string table in new[] { sequence, parameter })
+        {
+            var schema = new ProjectTableSchema { TableName = table, HasStableKey = true };
+            schema.KeyColumns.AddRange(scope.Append("Record"));
+            if (table == parameter) schema.KeyColumns.AddRange(new[] { "Seq_Record", "Step_Number", "Type" });
+            foreach (string field in schema.KeyColumns)
+                schema.Columns.Add(new ProjectColumnSchema { Name = field, DataType = "int" });
+            project.TableSchemas.Add(schema);
+        }
+        project.LocalRecords.Add(Record(sequence, new("PLC", 1), new("PLC_Class_Prog_Number", 10), new("Prog_Record", 3), new("Record", 2)));
+        project.LocalRecords.Add(Record(parameter, new("PLC", 1), new("PLC_Class_Prog_Number", 10), new("Prog_Record", 3),
+            new("Record", 1), new("Seq_Record", 2), new("Step_Number", 99), new("Type", 0)));
+        var source = new OfflineProjectDataSource(project);
+        var repository = new ProgramManagementRepository(source);
+        var context = new ProgramContext { PlcValue = 1, ClassNumberValue = 10, RecordValue = 3, SeqRecordValue = 2 };
+
+        Assert.Empty((await repository.GetParametersAsync(context, 0)).Rows.Cast<System.Data.DataRow>());
+        var orphan = Assert.Single((await repository.GetAllSequenceParametersAsync(context)).Rows.Cast<System.Data.DataRow>());
+        Assert.Equal(99, orphan["Step_Number"]);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repository.DeleteSequenceAsync(context, 2));
+        Assert.Single(source.GetRecords(sequence));
+        Assert.Single(source.GetRecords(parameter));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repository.DeleteSequenceAsync(context, 3, deleteDependents: true));
+        Assert.Single(source.GetRecords(parameter));
+        project.LocalRecords.Add(Record(parameter, new("PLC", 1), new("PLC_Class_Prog_Number", 10), new("Prog_Record", 3),
+            new("Record", 1), new("Seq_Record", 7), new("Step_Number", 99), new("Type", 0)));
+        var deleted = await repository.DeleteSequenceAsync(context, 2, deleteDependents: true);
+        Assert.Equal(new[] { parameter, sequence }, deleted.Select(row => row.TableName));
+        Assert.Empty(source.GetRecords(sequence));
+        Assert.Empty((await repository.GetAllSequenceParametersAsync(context)).Rows.Cast<System.Data.DataRow>());
+        Assert.Single(source.GetRecords(parameter));
+        var entry = new ChangeJournalEntry
+        {
+            ProjectType = "Offline",
+            ProjectId = project.Manifest.ProjectId,
+            Changes = deleted.ToList()
+        };
+        Assert.True(entry.CanRestore);
+        new ChangeJournalService(System.IO.Path.GetTempPath()).RestoreOffline(entry, project, source.InvalidateIndex);
+        Assert.Single(source.GetRecords(sequence));
+        Assert.Equal(2, source.GetRecords(parameter).Count);
+    }
+
+    [Fact]
+    public async Task QueueItemCanOnlyBeSavedUnderAQueueFromItsProgram()
+    {
+        string[] scope = { "PLC", "PLC_Class_Prog_Number", "Prog_Record" };
+        const string queues = "dbo.Prog_Queue";
+        const string items = "dbo.Prog_QueueSelections";
+        var project = new ConfiguratorProject();
+        foreach (string table in new[] { queues, items })
+        {
+            var schema = new ProjectTableSchema { TableName = table, HasStableKey = true };
+            schema.KeyColumns.Add("Record");
+            schema.KeyColumns.AddRange(scope);
+            if (table == items) schema.KeyColumns.AddRange(new[] { "Seq_Record", "Queue_Record" });
+            foreach (string column in schema.KeyColumns)
+                schema.Columns.Add(new ProjectColumnSchema { Name = column, DataType = "int" });
+            project.TableSchemas.Add(schema);
+        }
+        project.LocalRecords.Add(Record(queues, new("Record", 7), new("PLC", 1), new("PLC_Class_Prog_Number", 10), new("Prog_Record", 3)));
+        project.LocalRecords.Add(Record(queues, new("Record", 8), new("PLC", 1), new("PLC_Class_Prog_Number", 10), new("Prog_Record", 4)));
+
+        var repository = new ProgramSupportRepository(new OfflineProjectDataSource(project));
+        var context = new ProgramContext { PlcValue = 1, ClassNumberValue = 10, RecordValue = 3, SeqRecordValue = 1 };
+        var tableData = await repository.LoadProgramAsync("queue-selections", context);
+        var scopeValues = ProgramSupportRepository.GetProgramScope(tableData.Definition, context);
+        var row = tableData.Rows.NewRow();
+        foreach (var pair in scopeValues) row[pair.Key] = pair.Value;
+        row["Record"] = 1;
+        row["Queue_Record"] = 8;
+        tableData.Rows.Rows.Add(row);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repository.SaveAsync(tableData, scopeValues));
+        row["Queue_Record"] = 7;
+        await repository.SaveAsync(tableData, scopeValues);
+
+        var stored = Assert.Single((await repository.LoadProgramAsync("queue-selections", context)).Rows.Rows.Cast<System.Data.DataRow>());
+        Assert.Equal(7, stored["Queue_Record"]);
+    }
+
     private static ProjectTableSchema Schema(string table, params string[] columns)
     {
         var schema = new ProjectTableSchema { TableName = table, HasStableKey = true };

@@ -39,7 +39,12 @@ SELECT s.name AS SchemaName,t.name AS TableName,c.name AS ColumnName,ty.name AS 
             AND HAS_PERMS_BY_NAME(QUOTENAME(s.name)+'.'+QUOTENAME(t.name), 'OBJECT', 'UPDATE')=1
             AND DATABASEPROPERTYEX(DB_NAME(), 'Updateability')='READ_WRITE'
             AND NOT EXISTS (SELECT 1 FROM sys.triggers tr WHERE tr.parent_id=t.object_id AND tr.is_disabled=0)
-            THEN 1 ELSE 0 END AS CanCompareUpdate
+            THEN 1 ELSE 0 END AS CanCompareUpdate,
+       CASE WHEN HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'VIEW DEFINITION')=1
+            AND HAS_PERMS_BY_NAME(QUOTENAME(s.name)+'.'+QUOTENAME(t.name), 'OBJECT', 'INSERT')=1
+            AND DATABASEPROPERTYEX(DB_NAME(), 'Updateability')='READ_WRITE'
+            AND NOT EXISTS (SELECT 1 FROM sys.triggers tr WHERE tr.parent_id=t.object_id AND tr.is_disabled=0)
+            THEN 1 ELSE 0 END AS CanCompareInsert
 FROM sys.tables t JOIN sys.schemas s ON s.schema_id=t.schema_id
 JOIN sys.columns c ON c.object_id=t.object_id JOIN sys.types ty ON ty.user_type_id=c.user_type_id
 LEFT JOIN sys.default_constraints dc ON dc.object_id=c.default_object_id
@@ -59,7 +64,8 @@ WHERE t.is_ms_shipped=0 ORDER BY s.name,t.name,c.column_id;";
                     SchemaName = schemaName,
                     Name = tableName,
                     IsComplexEntity = IsComplexName(tableName),
-                    CanCompareUpdate = Convert.ToBoolean(reader["CanCompareUpdate"])
+                    CanCompareUpdate = Convert.ToBoolean(reader["CanCompareUpdate"]),
+                    CanCompareInsert = Convert.ToBoolean(reader["CanCompareInsert"])
                 };
                 map[fullName] = table; schema.Tables.Add(table);
             }

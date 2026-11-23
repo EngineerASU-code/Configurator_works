@@ -16,7 +16,7 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
     private Dictionary<string, List<ProjectRecord>>? _recordsByTable;
     private Dictionary<string, List<string>>? _tableNamesByLeaf;
     private bool _suspendNotifications;
-    private Dictionary<string, ILookup<string, ProjectRecord>>? _transactionKeyIndexes;
+    private Dictionary<string, Dictionary<string, List<ProjectRecord>>>? _transactionKeyIndexes;
     public OfflineProjectDataSource(ConfiguratorProject project) => _project = project ?? throw new ArgumentNullException(nameof(project));
     public event EventHandler? ProjectChanged;
     public string DisplayName => _project.Manifest.Name;
@@ -186,8 +186,9 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
             if (_transactionKeyIndexes == null)
                 return tableRecords.Where(row => string.Equals(ReadKey(row), key, StringComparison.Ordinal));
             if (!_transactionKeyIndexes.TryGetValue(resolved, out var byKey))
-                _transactionKeyIndexes[resolved] = byKey = tableRecords.ToLookup(ReadKey, StringComparer.Ordinal);
-            return byKey[key];
+                _transactionKeyIndexes[resolved] = byKey = tableRecords.GroupBy(ReadKey, StringComparer.Ordinal)
+                    .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.Ordinal);
+            return byKey.TryGetValue(key, out var rows) ? rows : Array.Empty<ProjectRecord>();
         }
 
         var matches = FindByKey(oldKey).Take(2).ToList();
@@ -209,7 +210,14 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
             throw new InvalidOperationException("Запись с таким ключом уже существует в локальном проекте.");
         record.Values = candidate;
         record.Key = newKey;
-        if (keyChanged) _transactionKeyIndexes?.Remove(resolved);
+        if (keyChanged && _transactionKeyIndexes != null &&
+            _transactionKeyIndexes.TryGetValue(resolved, out var indexed))
+        {
+            indexed[oldKey].Remove(record);
+            if (indexed[oldKey].Count == 0) indexed.Remove(oldKey);
+            if (!indexed.TryGetValue(newKey, out var target)) indexed[newKey] = target = new List<ProjectRecord>();
+            target.Add(record);
+        }
         Touch(invalidateIndex: false);
         return Task.CompletedTask;
     }

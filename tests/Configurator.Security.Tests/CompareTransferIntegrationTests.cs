@@ -201,6 +201,37 @@ public sealed class CompareTransferIntegrationTests
         Assert.True(System.Text.Json.Nodes.JsonNode.DeepEquals(bProject.Architecture, afterB.Architecture));
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task OfflineObjectTransferPersistsAllChangedFieldsInEitherDirection(bool aToB)
+    {
+        using var files = new CompareTestDirectory();
+        var packages = new ProjectPackageService();
+        var first = CompareTransferPreviewTests.Sample("Compare A", 10.25m);
+        var second = CompareTransferPreviewTests.Sample("Compare B", 15.25m);
+        second.Manifest.ProjectId = first.Manifest.ProjectId;
+        second.LocalRecords[0].Values["Neighbour"] = 72;
+        await packages.SaveAsync(files.A, first);
+        await packages.SaveAsync(files.B, second);
+        var a = await CompareSourceReader.OpenOfflineAsync(files.A, true);
+        var b = await CompareSourceReader.OpenOfflineAsync(files.B, true);
+        using var workspaceA = (IDisposable)a.Workspace;
+        using var workspaceB = (IDisposable)b.Workspace;
+        var sourcePath = aToB ? files.A : files.B;
+        var targetPath = aToB ? files.B : files.A;
+        var originalSource = File.ReadAllBytes(sourcePath);
+        var comparison = await CompareEngine.CompareAsync(a, b);
+        var difference = Assert.Single(comparison.Objects, item => item.Status == CompareStatus.Changed && item.Pair is not null);
+
+        await ApplyAsync(a, b, difference, aToB);
+
+        var record = Assert.Single((await packages.OpenAsync(targetPath)).LocalRecords);
+        Assert.Equal(aToB ? 10.25m : 15.25m, record.Values["Pressure"]!.GetValue<decimal>());
+        Assert.Equal(aToB ? 51 : 72, record.Values["Neighbour"]!.GetValue<int>());
+        Assert.Equal(originalSource, File.ReadAllBytes(sourcePath));
+    }
+
     [Fact]
     public async Task OfflineCanCreateSimpleObjectWithoutChangingItsSource()
     {
@@ -289,6 +320,25 @@ public sealed class CompareTransferIntegrationTests
         Assert.Equal(51, output.LocalRecords[0].Values["Neighbour"]!.GetValue<int>());
         Assert.Equal(10.25m, output.LocalRecords[0].Values["Pressure"]!.GetValue<decimal>());
         Assert.Equal(4m, await db.DecimalAsync("SELECT COUNT(*) FROM sys.columns WHERE object_id=OBJECT_ID(N'dbo.Valves')"));
+    }
+
+    [CompareLocalDbFact]
+    public async Task OnlineObjectTransferWritesAllChangedFieldsAtomically()
+    {
+        using var files = new CompareTestDirectory();
+        await using var db = await CompareLocalDb.CreateAsync();
+        var (online, offline) = await OpenSqlPairAsync(db, files, 10.25m);
+        using var workspaceOnline = (IDisposable)online.Workspace;
+        using var workspaceOffline = (IDisposable)offline.Workspace;
+        var beforePackage = File.ReadAllBytes(files.B);
+        var result = await CompareEngine.CompareAsync(online, offline);
+        var difference = Assert.Single(result.Objects, item => item.Status == CompareStatus.Changed && item.Pair is not null);
+
+        await ApplyAsync(online, offline, difference, aToB: false);
+
+        Assert.Equal(10.25m, await db.DecimalAsync("SELECT Pressure FROM dbo.Valves WHERE Record=1"));
+        Assert.Equal(72m, await db.DecimalAsync("SELECT Neighbour FROM dbo.Valves WHERE Record=1"));
+        Assert.Equal(beforePackage, File.ReadAllBytes(files.B));
     }
 
     [CompareLocalDbFact]

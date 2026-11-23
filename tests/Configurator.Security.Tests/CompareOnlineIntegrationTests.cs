@@ -13,6 +13,51 @@ namespace Configurator.Security.Tests;
 public sealed class CompareOnlineIntegrationTests
 {
     [CompareLocalDbFact]
+    public async Task CompareAddPreservesTheCopiedKeyAndRejectsAnOccupiedKey()
+    {
+        await using var db = await CompareLocalDb.CreateAsync();
+        await db.ExecuteAsync("CREATE TABLE dbo.Valves (Record int NOT NULL PRIMARY KEY, Label nvarchar(30) NOT NULL);");
+        var dataSource = new OnlineProjectDataSource(db.ConnectionString, "Compare insert");
+        var schema = Assert.Single(await dataSource.GetTablesAsync(), table => table.TableName == "dbo.Valves");
+        var crud = new OnlineProjectCrudDataSource(db.ConnectionString);
+        var key = new Dictionary<string, object?> { ["Record"] = 7 };
+        var values = new Dictionary<string, object?> { ["Record"] = 7, ["Label"] = "Copied" };
+
+        await crud.UpdateCompareRecordAsync(schema, null, key, values);
+        Assert.Equal(1m, await db.DecimalAsync("SELECT COUNT(*) FROM dbo.Valves WHERE Record=7 AND Label=N'Copied'"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => crud.UpdateCompareRecordAsync(schema, null, key, values));
+        Assert.Equal(1m, await db.DecimalAsync("SELECT COUNT(*) FROM dbo.Valves"));
+    }
+
+    [CompareLocalDbFact]
+    public async Task ProgramMovePreservesDestinationsParametersAndRecipeValues()
+    {
+        await using var db = await CompareLocalDb.CreateAsync();
+        string scope = "PLC int NOT NULL, PLC_Class_Prog_Number int NOT NULL, Prog_Record int NOT NULL, Seq_Record int NOT NULL";
+        string key = "PLC, PLC_Class_Prog_Number, Prog_Record, Seq_Record";
+        string destinations = string.Join(",", Enumerable.Range(1, 8).Select(i => $"TransDest_{i:00} int NULL"));
+        await db.ExecuteAsync($"""
+            CREATE TABLE dbo.Prog_StepTransition ({scope}, SeqStep_Number smallint NOT NULL, Marker int NOT NULL, {destinations}, PRIMARY KEY ({key},SeqStep_Number));
+            CREATE TABLE dbo.Prog_StepParam ({scope}, Step_Number smallint NOT NULL, Marker int, PRIMARY KEY ({key},Step_Number));
+            CREATE TABLE dbo.Prog_Recipes ({scope}, Step_Number smallint NOT NULL, Marker int, PRIMARY KEY ({key},Step_Number));
+            INSERT dbo.Prog_StepTransition ({key},SeqStep_Number,Marker,TransDest_01) VALUES (1,10,3,1,1,101,2),(1,10,3,1,2,102,1),(1,10,3,1,3,103,1);
+            INSERT dbo.Prog_StepParam VALUES (1,10,3,1,1,10),(1,10,3,1,2,20);
+            INSERT dbo.Prog_Recipes VALUES (1,10,3,1,1,111),(1,10,3,1,2,222);
+            """);
+        var context = new ProgramContext { PlcValue = 1, ClassNumberValue = 10, RecordValue = 3, SeqRecordValue = 1 };
+        var repository = new ProgramManagementRepository(db.ConnectionString);
+        var rows = await repository.GetTransitionsAsync(context);
+        var selected = rows.Rows.Cast<DataRow>().Single(row => Convert.ToInt32(row["SeqStep_Number"]) == 1);
+        var original = rows.Columns.Cast<DataColumn>().ToDictionary(column => column.ColumnName, column => selected[column]);
+
+        Assert.Equal(2, await repository.MoveStepAsync(context, original, 1));
+        Assert.Equal(2m, await db.DecimalAsync("SELECT TransDest_01 FROM dbo.Prog_StepTransition WHERE SeqStep_Number=3"));
+        Assert.Equal(10m, await db.DecimalAsync("SELECT Marker FROM dbo.Prog_StepParam WHERE Step_Number=2"));
+        Assert.Equal(111m, await db.DecimalAsync("SELECT Marker FROM dbo.Prog_Recipes WHERE Step_Number=2"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repository.MoveStepAsync(context, original, 1));
+    }
+
+    [CompareLocalDbFact]
     public async Task ReadUsesRealSqlWithoutMutatingRowsSchemaOrSnapshot()
     {
         using var files = new CompareTestDirectory();

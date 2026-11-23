@@ -522,7 +522,7 @@ public partial class ProjectModeView : UserControl
                 if (previousItem?.Class != null)
                 {
                     bool canLeave = previousItem.Class.Name.Equals("Program", StringComparison.OrdinalIgnoreCase)
-                        ? await ProgramSupportEditor.PrepareForContextChangeAsync()
+                        ? await ProgramManagementEditor.PrepareToLeaveProgramAsync()
                         : previousItem.Class.Name.Equals("Matrix", StringComparison.OrdinalIgnoreCase)
                             ? await MatrixCatalogEditor.PrepareForContextChangeAsync()
                             : true;
@@ -541,7 +541,7 @@ public partial class ProjectModeView : UserControl
         if (previousItem?.Class != null && !SameSpecialConfiguration(previousItem.Class, item.Class))
         {
             bool canLeave = previousItem.Class.Name.Equals("Program", StringComparison.OrdinalIgnoreCase)
-                ? await ProgramSupportEditor.PrepareForContextChangeAsync()
+                ? await ProgramManagementEditor.PrepareToLeaveProgramAsync()
                 : previousItem.Class.Name.Equals("Matrix", StringComparison.OrdinalIgnoreCase)
                     ? await MatrixCatalogEditor.PrepareForContextChangeAsync()
                     : true;
@@ -827,6 +827,7 @@ public partial class ProjectModeView : UserControl
             return;
         }
         CancelLoad();
+        ResetProgramTools();
         _selectedClass = cls;
         _objects = new DataTable();
         ObjectList.SelectedItem = null;
@@ -931,12 +932,15 @@ public partial class ProjectModeView : UserControl
             return;
         }
 
+        var listTable = requestedClass.Name.Equals("Matrix", StringComparison.OrdinalIgnoreCase)
+            ? "dbo.Matrix_List"
+            : requestedClass.PrimaryStorage.TableName;
         try
         {
             if (_offlineProject != null)
             {
                 if (_offlineReader == null) _offlineReader = new ClassArchitectureReader(_offlineSource ?? new OfflineProjectDataSource(_offlineProject));
-                var mappedTable = (_offlineSource ?? new OfflineProjectDataSource(_offlineProject)).ResolveTableName(_selectedClass.PrimaryStorage.TableName);
+                var mappedTable = (_offlineSource ?? new OfflineProjectDataSource(_offlineProject)).ResolveTableName(listTable);
                 var loadedOfflineObjects = await _offlineReader.ReadRowsAsync(mappedTable, 5000, ct);
                 if (ct.IsCancellationRequested || generation != _loadGeneration || !ReferenceEquals(requestedClass, _selectedClass) || requestedDatabase != _selectedDatabase) return;
                 _objects = loadedOfflineObjects;
@@ -945,16 +949,16 @@ public partial class ProjectModeView : UserControl
                 ApplyObjectFilters();
                 SelectInitialObjectForPreview();
                 TxtStatus.Text = $"Offline · {_selectedClass.Name} · объектов: {_objects.Rows.Count}";
-                BtnNewObject.IsEnabled = UserAuthorizationService.Has(Permission.AddData); BtnNewObjectsBatch.IsEnabled = UserAuthorizationService.Has(Permission.AddData);
+                ApplyAuthorizationUi();
                 return;
             }
             var db = new DatabaseService(_connection.ToConnectionString(_selectedDatabase));
-            var columns = await db.GetTableColumnsAsync(_selectedClass.PrimaryStorage.TableName, ct);
-            SessionTestLog.Trace("РЕЖИМ3-ОБЪЕКТЫ", $"Schema response: table='{_selectedClass.PrimaryStorage.TableName}', columns={columns.Count}, names=[{string.Join(", ", columns.Select(c => c.Name))}]");
+            var columns = await db.GetTableColumnsAsync(listTable, ct);
+            SessionTestLog.Trace("РЕЖИМ3-ОБЪЕКТЫ", $"Schema response: table='{listTable}', columns={columns.Count}, names=[{string.Join(", ", columns.Select(c => c.Name))}]");
             if (columns.Count == 0) { SessionTestLog.Trace("РЕЖИМ3-ОБЪЕКТЫ", "EARLY RETURN: database returned zero columns"); return; }
             var order = columns.Take(3).Select(x => x.Name).ToList();
-            SessionTestLog.Trace("SQL-ЗАПРОС", $"Mode3 objects: SELECT * FROM [{_selectedClass.PrimaryStorage.TableName.Replace(".", "].[")}] ORDER BY [{string.Join("], [", order)}] OFFSET 0 ROWS FETCH NEXT 5000 ROWS ONLY; table='{_selectedClass.PrimaryStorage.TableName}'");
-            var loadedObjects = await db.GetTableDataPageAsync(_selectedClass.PrimaryStorage.TableName, 1, 5000, order, null, ct);
+            SessionTestLog.Trace("SQL-ЗАПРОС", $"Mode3 objects: SELECT * FROM [{listTable.Replace(".", "].[")}] ORDER BY [{string.Join("], [", order)}] OFFSET 0 ROWS FETCH NEXT 5000 ROWS ONLY; table='{listTable}'");
+            var loadedObjects = await db.GetTableDataPageAsync(listTable, 1, 5000, order, null, ct);
             if (ct.IsCancellationRequested || generation != _loadGeneration || !ReferenceEquals(requestedClass, _selectedClass) || requestedDatabase != _selectedDatabase)
             {
                 SessionTestLog.Trace("РЕЖИМ3-ОБЪЕКТЫ", $"STALE RESULT IGNORED: requestedClass='{requestedClass?.Name}', currentClass='{_selectedClass?.Name}', requestedDatabase='{requestedDatabase}', currentDatabase='{_selectedDatabase}'");
@@ -966,6 +970,7 @@ public partial class ProjectModeView : UserControl
             RebuildObjectFilters();
             ApplyObjectFilters();
             SelectInitialObjectForPreview();
+            ApplyAuthorizationUi();
             TxtStatus.Text = $"{_selectedClass.Name} · объектов: {_objects.Rows.Count}";
             SessionTestLog.Trace("РЕЖИМ3-ОБЪЕКТЫ", $"END OK: rows={_objects.Rows.Count}, status='{TxtStatus.Text}'");
         }
@@ -1089,6 +1094,8 @@ public partial class ProjectModeView : UserControl
 
     private void ObjectList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        ShowSelectedProgram();
+        ShowSelectedMatrix();
         var selected = ObjectList.SelectedItems.Cast<ObjectItem>().ToList();
         if (_configurationKind != ConfigurationKind.Class)
         {
@@ -1145,6 +1152,26 @@ public partial class ProjectModeView : UserControl
             : $"Выбран объект: {item.Name}";
     }
 
+    private void NavigationPanel_Click(object sender, RoutedEventArgs e)
+    {
+        bool configuration = ReferenceEquals(sender, ConfigurationPanelButton);
+        var panel = configuration ? (FrameworkElement)ConfigurationPanel : ElementsPanel;
+        var column = configuration ? ConfigurationColumn : ElementsColumn;
+        var gap = configuration ? ConfigurationGap : ElementsGap;
+        var button = configuration ? ConfigurationPanelButton : ElementsPanelButton;
+
+        bool show = panel.Visibility == Visibility.Collapsed;
+        panel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        column.Width = new GridLength(show ? (configuration ? 330 : 390) : 0);
+        gap.Width = new GridLength(show ? 10 : 0);
+        string action = configuration
+            ? (show ? "Свернуть конфигурацию" : "Показать конфигурацию")
+            : (show ? "Свернуть элементы" : "Показать элементы");
+        button.ToolTip = action;
+        System.Windows.Automation.AutomationProperties.SetName(button, action);
+        button.Tag = show ? null : "Collapsed";
+    }
+
     private void BuildObjectEditor()
     {
         RenderLookupObjectDetailsAsync();
@@ -1163,8 +1190,9 @@ public partial class ProjectModeView : UserControl
         bool classMode = _configurationKind == ConfigurationKind.Class;
         bool configMode = _configurationKind is ConfigurationKind.Plc or ConfigurationKind.Area;
         bool hasSelection = _selectedRow != null;
+        bool matrixCatalog = classMode && _selectedClass?.Name.Equals("Matrix", StringComparison.OrdinalIgnoreCase) == true;
         if (BtnNewObject != null) BtnNewObject.IsEnabled = (classMode ? UserAuthorizationService.Has(Permission.AddData) : UserAuthorizationService.Has(Permission.ManageObjects));
-        if (BtnNewObjectsBatch != null) BtnNewObjectsBatch.IsEnabled = classMode && UserAuthorizationService.Has(Permission.AddData);
+        if (BtnNewObjectsBatch != null) BtnNewObjectsBatch.IsEnabled = classMode && !matrixCatalog && SupportsBatchObjects && UserAuthorizationService.Has(Permission.AddData);
         if (BtnConfigDelete != null)
         {
             BtnConfigDelete.Visibility = configMode ? Visibility.Visible : Visibility.Collapsed;
@@ -1181,8 +1209,10 @@ public partial class ProjectModeView : UserControl
                 ? hasSelection && UserAuthorizationService.Has(Permission.EditData)
                 : configMode && hasSelection && UserAuthorizationService.Has(Permission.ManageObjects);
         }
-        if (BtnDuplicate != null) BtnDuplicate.IsEnabled = UserAuthorizationService.Has(Permission.AddData) && BtnDuplicate.IsEnabled;
-        if (BtnDelete != null) BtnDelete.IsEnabled = UserAuthorizationService.Has(Permission.DeleteData) && BtnDelete.IsEnabled;
+        if (matrixCatalog && BtnNewObject != null) BtnNewObject.IsEnabled = false;
+        if (matrixCatalog && BtnSave != null) BtnSave.IsEnabled = false;
+        if (BtnDuplicate != null) BtnDuplicate.IsEnabled = !matrixCatalog && UserAuthorizationService.Has(Permission.AddData) && BtnDuplicate.IsEnabled;
+        if (BtnDelete != null) BtnDelete.IsEnabled = !matrixCatalog && UserAuthorizationService.Has(Permission.DeleteData) && BtnDelete.IsEnabled;
     }
 
     private static Dictionary<string, object> SnapshotRow(DataRow row)
@@ -1303,6 +1333,12 @@ public partial class ProjectModeView : UserControl
 
     private async void SaveObject_Click(object sender, RoutedEventArgs e)
     {
+        if (_selectedClass?.Name.Equals("Matrix", StringComparison.OrdinalIgnoreCase) == true) return;
+        if (IsProgramCardActive)
+        {
+            await ProgramManagementEditor.SaveProgramCardAsync();
+            return;
+        }
         SessionTestLog.Trace("РЕЖИМ3-СОХРАНЕНИЕ", $"Save requested; kind={_configurationKind}; selected={_selectedRow != null}; offline={_offlineProject != null}");
         if (_configurationKind is ConfigurationKind.Plc or ConfigurationKind.Area)
         {
@@ -2041,9 +2077,12 @@ public partial class ProjectModeView : UserControl
         }
     }
 
+    private bool SupportsBatchObjects => _selectedClass?.Name is string name &&
+        !name.Equals("Program", StringComparison.OrdinalIgnoreCase) && !name.Equals("Step", StringComparison.OrdinalIgnoreCase);
+
     private async void NewObjectsBatch_Click(object sender, RoutedEventArgs e)
     {
-        if (!UserAuthorizationService.Require(Permission.AddData)) return;
+        if (!SupportsBatchObjects || !UserAuthorizationService.Require(Permission.AddData)) return;
         if (_selectedClass?.PrimaryStorage == null) return;
 
         var selectedClass = _selectedClass;
@@ -2059,11 +2098,13 @@ public partial class ProjectModeView : UserControl
             var writable = columns.Where(c => !c.IsReadOnly && !c.IsIdentity).ToList();
             var nameColumn = writable.FirstOrDefault(c => c.Name.Equals("Name", StringComparison.OrdinalIgnoreCase))
                 ?? writable.FirstOrDefault(c => c.Name.Equals("Tag", StringComparison.OrdinalIgnoreCase));
-            if (nameColumn == null) throw new InvalidOperationException("Для массового создания не найдено поле Name или Tag.");
+            if (nameColumn == null && selectedClass.Name.Equals("Program", StringComparison.OrdinalIgnoreCase))
+                nameColumn = writable.FirstOrDefault(c => new[] { "Name_L1", "NameL1" }.Contains(c.Name, StringComparer.OrdinalIgnoreCase));
+            if (nameColumn == null) throw new InvalidOperationException("Для массового создания не найдено поле имени.");
 
             string recordColumn = writable.FirstOrDefault(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase))?.Name;
             string plcColumn = writable.FirstOrDefault(c => c.Name.Equals("PLC", StringComparison.OrdinalIgnoreCase))?.Name;
-            string classNumberColumn = writable.FirstOrDefault(c => new[] { "PLCClassNumber", "PLC_Class_Number", "PLCClasssNumber" }.Contains(c.Name, StringComparer.OrdinalIgnoreCase))?.Name;
+            string classNumberColumn = writable.FirstOrDefault(c => new[] { "PLCClassNumber", "PLC_Class_Number", "PLCClass_Number", "PLCClasssNumber" }.Contains(c.Name, StringComparer.OrdinalIgnoreCase))?.Name;
             var assigned = new[] { nameColumn.Name, recordColumn, plcColumn, classNumberColumn };
             var required = writable.Where(c => !c.IsNullable && !c.HasDefault
                 && !assigned.Contains(c.Name, StringComparer.OrdinalIgnoreCase)).ToList();
