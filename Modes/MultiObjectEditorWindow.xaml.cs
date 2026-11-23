@@ -34,6 +34,7 @@ public partial class MultiObjectEditorWindow : Window
     private readonly bool _requirePlc;
     private readonly Func<IReadOnlyList<BatchObjectRow>, Task<string>> _submit;
     private readonly ObservableCollection<BatchObjectRow> _rows = new();
+    private bool _submitting;
 
     public IReadOnlyList<BatchObjectRow> Rows => _rows.ToList();
     public IReadOnlyList<BatchObjectPlcOption> PlcOptions { get; }
@@ -53,14 +54,16 @@ public partial class MultiObjectEditorWindow : Window
         PlcOptions = (plcOptions ?? Array.Empty<(string, string)>())
             .Where(x => !string.IsNullOrWhiteSpace(x.Key))
             .Select(x => new BatchObjectPlcOption { Key = x.Key, Title = string.IsNullOrWhiteSpace(x.Title) ? x.Key : x.Title }).ToList();
+        RecordColumn.Visibility = hasRecord ? Visibility.Visible : Visibility.Collapsed;
+        PlcColumn.Visibility = requirePlc || PlcOptions.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (hasRecord)
+            InputHint.Text += " Номер Record подбирается автоматически и доступен для редактирования.";
         RowsGrid.ItemsSource = _rows;
-        _rows.CollectionChanged += (_, _) => ResizeForRows();
-        Loaded += (_, _) => ResizeForRows();
+        Loaded += (_, _) => FitToOwnerMonitor();
         AddRow();
-        ResizeForRows();
     }
 
-    private void ResizeForRows()
+    private void FitToOwnerMonitor()
     {
         var workArea = GetOwnerWorkArea();
         double maxHeight = Math.Max(1, workArea.Height - 40);
@@ -71,11 +74,7 @@ public partial class MultiObjectEditorWindow : Window
         MaxWidth = maxWidth;
         MaxHeight = maxHeight;
 
-        // Keep four row slots visible from the first open. Grow with added rows,
-        // then let the DataGrid scroll instead of pushing the footer off screen.
-        double visibleRows = Math.Max(4, Math.Min(8, _rows.Count));
-        double desiredHeight = 300 + 46 * visibleRows;
-        Height = Math.Min(maxHeight, Math.Max(Height, desiredHeight));
+        Height = Math.Min(Height, maxHeight);
 
         if (IsLoaded && Owner != null)
         {
@@ -156,7 +155,6 @@ public partial class MultiObjectEditorWindow : Window
         SetValidation(string.Empty);
         RowsGrid.SelectedIndex = _rows.Count - 1;
         RowsGrid.ScrollIntoView(RowsGrid.SelectedItem);
-        ResizeForRows();
     }
 
     private void AddRow_Click(object sender, RoutedEventArgs e)
@@ -165,9 +163,7 @@ public partial class MultiObjectEditorWindow : Window
         Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() =>
         {
             if (_rows.Count == 0) return;
-            var nameColumn = RowsGrid.Columns.FirstOrDefault(column => string.Equals(column.Header?.ToString(), "Name", StringComparison.Ordinal));
-            if (nameColumn == null) return;
-            RowsGrid.CurrentCell = new DataGridCellInfo(_rows[^1], nameColumn);
+            RowsGrid.CurrentCell = new DataGridCellInfo(_rows[^1], NameColumn);
             RowsGrid.BeginEdit();
         }));
     }
@@ -177,11 +173,15 @@ public partial class MultiObjectEditorWindow : Window
         if ((sender as Button)?.Tag is BatchObjectRow row) _rows.Remove(row);
         if (_rows.Count == 0) AddRow();
         SetValidation(string.Empty);
-        ResizeForRows();
     }
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (_submitting)
+        {
+            e.Handled = true;
+            return;
+        }
         bool editingText = RowsGrid.IsKeyboardFocusWithin
             && (Keyboard.FocusedElement is TextBoxBase or ComboBox or ComboBoxItem);
         if (e.Key == Key.Escape)
@@ -220,7 +220,6 @@ public partial class MultiObjectEditorWindow : Window
             _rows.Remove(row);
             if (_rows.Count == 0) AddRow();
             SetValidation(string.Empty);
-            ResizeForRows();
             e.Handled = true;
         }
     }
@@ -243,9 +242,9 @@ public partial class MultiObjectEditorWindow : Window
 
     private async void Accept_Click(object sender, RoutedEventArgs e)
     {
+        if (_submitting) return;
         SetValidation(string.Empty);
-        RowsGrid.CommitEdit(DataGridEditingUnit.Cell, true);
-        RowsGrid.CommitEdit(DataGridEditingUnit.Row, true);
+        if (!RowsGrid.CommitEdit(DataGridEditingUnit.Cell, true) || !RowsGrid.CommitEdit(DataGridEditingUnit.Row, true)) return;
         var errors = Configurator.Core.Workspace.BatchObjectPolicy.ValidateRows(
             _rows.Select(r => (r.Record, r.PlcKey, r.Name)),
             _existingNames,
@@ -255,17 +254,28 @@ public partial class MultiObjectEditorWindow : Window
             PlcOptions.Select(p => p.Key));
         if (errors.Count > 0) { SetValidation(string.Join(Environment.NewLine, errors)); return; }
         foreach (var row in _rows) row.Name = row.Name.Trim();
+        _submitting = true;
+        RowsGrid.IsEnabled = BtnAddRow.IsEnabled = BtnAccept.IsEnabled = BtnCancel.IsEnabled = false;
+        bool saved = false;
         try
         {
             var error = await _submit(_rows.ToList());
             if (!string.IsNullOrWhiteSpace(error)) { SetValidation(error); return; }
-            DialogResult = true;
+            saved = true;
         }
         catch (Exception ex)
         {
             SetValidation("Не удалось добавить объекты: " + ex.Message);
         }
+        finally
+        {
+            _submitting = false;
+            RowsGrid.IsEnabled = BtnAddRow.IsEnabled = BtnAccept.IsEnabled = BtnCancel.IsEnabled = true;
+        }
+        if (saved) DialogResult = true;
     }
+
+    private void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e) => e.Cancel = _submitting;
 
     private void Cancel_Click(object sender, RoutedEventArgs e) => DialogResult = false;
 }

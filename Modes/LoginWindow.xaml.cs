@@ -25,18 +25,6 @@ public partial class LoginWindow : Window
         PasswordLabel.Text = "Пароль пользователя";
     }
     private void Login_Click(object sender, RoutedEventArgs e) => Login();
-    private void Guest_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            UserAuthorizationService.EnterGuest();
-            DialogResult = true;
-        }
-        catch (Exception ex)
-        {
-            ErrorText.Text = "Не удалось выполнить гостевой вход: " + Configurator.Infrastructure.UserErrorMessage.Format(ex);
-        }
-    }
     private void PasswordBox_KeyDown(object sender, KeyEventArgs e) { if (e.Key == Key.Enter) Login(); }
     private void Login()
     {

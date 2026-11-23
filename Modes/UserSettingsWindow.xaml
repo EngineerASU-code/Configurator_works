@@ -10,14 +10,8 @@
             <TabItem Header="Пользователи">
                 <Grid Margin="10">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="300"/><ColumnDefinition Width="20"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                    <Grid Grid.Column="0">
-                        <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                        <ListBox x:Name="UsersList" MinHeight="300" Margin="0,0,0,10" SelectionChanged="UsersList_SelectionChanged"/>
-                        <StackPanel Grid.Row="1" Orientation="Horizontal">
-                            <Button x:Name="AddUserButton" Content="＋ Добавить" Width="130" Height="42" MinHeight="42" Style="{StaticResource BtnPrimary}" Click="AddUser_Click"/>
-                            <Button x:Name="DeleteUserButton" Content="Удалить" Width="110" Height="42" MinHeight="42" Margin="8,0,0,0" Style="{StaticResource BtnSecondary}" Click="DeleteUser_Click"/>
-                        </StackPanel>
-                    </Grid>
+                    <ListBox x:Name="UsersList" Grid.Column="0" MinHeight="300" DisplayMemberPath="DisplayName"
+                             SelectedValuePath="UserName" SelectionChanged="UsersList_SelectionChanged"/>
                     <Border Grid.Column="2" Padding="18" Background="{DynamicResource BrushPanel}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="9">
                         <Grid>
                             <Grid.RowDefinitions>
@@ -26,7 +20,7 @@
                             </Grid.RowDefinitions>
                             <TextBlock Text="Учётная запись" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource BrushText}"/>
                             <TextBlock Grid.Row="1" Text="Логин" Margin="0,14,0,5" Foreground="{DynamicResource BrushTextSecondary}"/>
-                            <TextBox x:Name="UserNameBox" Grid.Row="2" Height="46" MinHeight="46" VerticalContentAlignment="Center" Padding="10,0" FontSize="13"/>
+                            <TextBox x:Name="UserNameBox" Grid.Row="2" IsReadOnly="True" Height="46" MinHeight="46" VerticalContentAlignment="Center" Padding="10,0" FontSize="13"/>
                             <TextBlock Grid.Row="3" Text="Отображаемое имя" Margin="0,12,0,5" Foreground="{DynamicResource BrushTextSecondary}"/>
                             <TextBox x:Name="DisplayNameBox" Grid.Row="4" Height="46" MinHeight="46" VerticalContentAlignment="Center" Padding="10,0" FontSize="13"/>
                             <Grid Grid.Row="5" Margin="0,14,0,0">

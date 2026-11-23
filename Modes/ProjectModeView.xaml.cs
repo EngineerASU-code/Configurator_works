@@ -1181,7 +1181,7 @@ public partial class ProjectModeView : UserControl
                 ? hasSelection && UserAuthorizationService.Has(Permission.EditData)
                 : configMode && hasSelection && UserAuthorizationService.Has(Permission.ManageObjects);
         }
-        if (BtnDuplicate != null) BtnDuplicate.IsEnabled = _offlineProject == null && UserAuthorizationService.Has(Permission.AddData) && BtnDuplicate.IsEnabled;
+        if (BtnDuplicate != null) BtnDuplicate.IsEnabled = UserAuthorizationService.Has(Permission.AddData) && BtnDuplicate.IsEnabled;
         if (BtnDelete != null) BtnDelete.IsEnabled = UserAuthorizationService.Has(Permission.DeleteData) && BtnDelete.IsEnabled;
     }
 
@@ -1544,6 +1544,32 @@ public partial class ProjectModeView : UserControl
                 var localSchema = _offlineSource?.GetSchema(tableName);
                 var keyColumns = localSchema?.KeyColumns;
                 if (localSchema?.HasStableKey != true || keyColumns.Count == 0) throw new InvalidOperationException("В локальном снимке не сохранён ключ для удаления записей.");
+                var source = _offlineSource;
+                var sourceRecords = source.GetRecords(tableName);
+                var targetRecords = rows.Select(snapshot =>
+                {
+                    var identity = SelectIdentity(snapshot, keyColumns);
+                    return sourceRecords.SingleOrDefault(record => identity.All(key =>
+                        record.Values.TryGetPropertyValue(key.Key, out var value) &&
+                        OfflineObjectDeletionGuard.ValuesEqual(value, key.Value)))
+                        ?? throw new InvalidOperationException("Не удалось сопоставить выбранный объект со снимком. Удаление отменено.");
+                }).ToList();
+                var targetValues = targetRecords.Select(record => record.Values.ToDictionary(pair => pair.Key,
+                    pair => (object?)(pair.Value?.DeepClone()), StringComparer.OrdinalIgnoreCase)).ToList();
+                var replacementOptions = OfflineObjectDeletionGuard.BuildOptions(source, tableName, targetValues);
+                if (replacementOptions.Count > 0 && selected.Count > 1)
+                    throw new InvalidOperationException("Объекты со связанными строками нужно удалять по одному, чтобы проверить выбранные замены.");
+                IReadOnlyList<ReferenceReplacement> replacements = Array.Empty<ReferenceReplacement>();
+                if (replacementOptions.Count > 0)
+                {
+                    var dialog = new DependencyReplacementWindow(replacementOptions, requireExistingCandidates: true)
+                    { Owner = Window.GetWindow(this) };
+                    if (dialog.ShowDialog() != true) return;
+                    replacements = dialog.Replacements;
+                    if (replacements.Count != replacementOptions.Count)
+                        throw new InvalidOperationException("Не удалось сопоставить варианты замены со связанными строками. Удаление отменено.");
+                }
+
                 var keyValues = new List<IReadOnlyDictionary<string, object?>>();
                 var deletedSnapshots = new List<(Dictionary<string, object> Values, Dictionary<string, object> Identity)>();
                 foreach (var snapshot in rows)
@@ -1553,18 +1579,94 @@ public partial class ProjectModeView : UserControl
                     keyValues.Add(identity.ToDictionary(pair => pair.Key,
                         pair => pair.Value == DBNull.Value ? null : pair.Value, StringComparer.OrdinalIgnoreCase));
                 }
-                var source = _offlineSource;
+                var replacementGroups = replacements.Select((replacement, index) =>
+                {
+                    var option = replacementOptions[index];
+                    var dependent = source.GetRecords(option.Hit.SourceTable).SingleOrDefault(record =>
+                        option.Hit.SourceKey.All(key => record.Values.TryGetPropertyValue(key.Key, out var value) &&
+                            OfflineObjectDeletionGuard.ValuesEqual(value, key.Value)))
+                        ?? throw new InvalidOperationException("Связанная строка для замены больше не найдена.");
+                    return (Replacement: replacement, Dependent: dependent, Option: option);
+                }).GroupBy(item => item.Dependent).ToList();
+                var relatedChanges = new List<ChangeJournalRowChange>();
+                foreach (var group in replacementGroups)
+                {
+                    var first = group.First();
+                    var dependentSchema = source.GetSchema(first.Replacement.SourceTable)
+                        ?? throw new InvalidOperationException($"В локальном снимке отсутствует схема «{first.Replacement.SourceTable}».");
+                    var before = SnapshotProjectRecord(first.Dependent, dependentSchema);
+                    var updates = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var item in group)
+                    {
+                        foreach (var expected in item.Replacement.ExpectedOldValues)
+                            if (!item.Dependent.Values.TryGetPropertyValue(expected.Key, out var actual) ||
+                                !OfflineObjectDeletionGuard.ValuesEqual(actual, expected.Value))
+                                throw new InvalidOperationException("Связанная строка изменилась после выбора замены. Удаление отменено.");
+                        if (item.Replacement.SourceColumns.Count != item.Replacement.NewValues.Count)
+                            throw new InvalidOperationException("Количество полей и значений в замене не совпадает.");
+                        for (var i = 0; i < item.Replacement.SourceColumns.Count; i++)
+                            AddOfflineReplacementAssignment(updates, item.Replacement.SourceColumns[i], item.Replacement.NewValues[i]);
+                        foreach (var assignment in item.Replacement.AdditionalAssignments)
+                            AddOfflineReplacementAssignment(updates, assignment.Key, assignment.Value);
+                    }
+                    var after = new Dictionary<string, object>(before, StringComparer.OrdinalIgnoreCase);
+                    foreach (var update in updates) after[update.Key] = update.Value ?? DBNull.Value;
+                    var identityBefore = ReadStableIdentity(first.Dependent, dependentSchema);
+                    var identityAfter = IdentityFromValues(after, dependentSchema);
+                    if (identityBefore.Count == 0 || identityAfter.Count == 0)
+                        throw new InvalidOperationException($"Не удалось сохранить ключ связанной строки «{first.Replacement.SourceTable}» в журнале.");
+                    relatedChanges.Add(new ChangeJournalRowChange
+                    {
+                        TableName = first.Replacement.SourceTable,
+                        Kind = ChangeJournalOperationKind.Update,
+                        Before = JournalValues(before),
+                        After = JournalValues(after),
+                        IdentityBefore = JournalValues(identityBefore),
+                        IdentityAfter = JournalValues(identityAfter)
+                    });
+                }
+
                 await source.ExecuteMutationTransactionAsync(async () =>
                 {
-                    OfflineObjectDeletionGuard.Check(source, tableName, rows);
+                    foreach (var group in replacementGroups)
+                    {
+                        var first = group.First();
+                        var updates = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var item in group)
+                        {
+                            foreach (var expected in item.Replacement.ExpectedOldValues)
+                                if (!item.Dependent.Values.TryGetPropertyValue(expected.Key, out var actual) ||
+                                    !OfflineObjectDeletionGuard.ValuesEqual(actual, expected.Value))
+                                    throw new InvalidOperationException("Связанная строка изменилась после выбора замены. Удаление отменено.");
+                            for (var i = 0; i < item.Replacement.SourceColumns.Count; i++)
+                                AddOfflineReplacementAssignment(updates, item.Replacement.SourceColumns[i], item.Replacement.NewValues[i]);
+                            foreach (var assignment in item.Replacement.AdditionalAssignments)
+                                AddOfflineReplacementAssignment(updates, assignment.Key, assignment.Value);
+                        }
+                        await source.UpdateRecordAsync(first.Replacement.SourceTable,
+                            first.Replacement.KeyColumns,
+                            first.Replacement.KeyColumns.Select((column, index) => (column, first.Replacement.KeyValues[index]))
+                                .ToDictionary(pair => pair.column, pair => (object?)pair.Item2, StringComparer.OrdinalIgnoreCase), updates);
+                    }
                     var removed = await RequireCrudSource().DeleteRecordsAsync(tableName, keyColumns, keyValues);
                     if (removed != keyValues.Count)
                         throw new InvalidOperationException("Состав выбранных строк изменился. Удаление отменено.");
                 });
                 int deleted = keyValues.Count;
-                foreach (var snapshot in deletedSnapshots)
-                    RecordMode3Mutation(tableName, ChangeJournalOperationKind.Delete, "Удалён объект",
-                        snapshot.Values, null, snapshot.Identity, null, mutationGeneration);
+                if (replacements.Count > 0)
+                {
+                    var snapshot = deletedSnapshots.Single();
+                    RecordMode3Mutation(tableName, ChangeJournalOperationKind.Delete,
+                        $"Удалён объект; заменено зависимых значений: {replacements.Count}", snapshot.Values, null,
+                        snapshot.Identity, null, mutationGeneration, relatedChanges: relatedChanges,
+                        journalOperationKind: ChangeJournalOperationKind.Composite);
+                }
+                else
+                {
+                    foreach (var snapshot in deletedSnapshots)
+                        RecordMode3Mutation(tableName, ChangeJournalOperationKind.Delete, "Удалён объект",
+                            snapshot.Values, null, snapshot.Identity, null, mutationGeneration);
+                }
                 await LoadObjectsAsync();
                 SessionTestLog.Trace("РЕЖИМ3-УДАЛЕНИЕ", $"Offline delete complete; selected={selected.Count}, deleted={deleted}, table='{tableName}', rowsAfter={_objects.Rows.Count}, totalMs={deleteTimer.ElapsedMilliseconds}");
                 TxtStatus.Text = $"Объекты удалены из локального проекта: {deleted}";
@@ -1662,6 +1764,14 @@ public partial class ProjectModeView : UserControl
             ? value
             : throw new InvalidOperationException($"В загруженных данных отсутствует ключевой столбец «{column}»."),
             StringComparer.OrdinalIgnoreCase);
+
+    private static void AddOfflineReplacementAssignment(IDictionary<string, object?> updates, string column, object? value)
+    {
+        if (updates.TryGetValue(column, out var previous) &&
+            !OfflineObjectDeletionGuard.ValuesEqual(ProjectKeyCodec.ToNode(previous), value))
+            throw new InvalidOperationException($"Для поля «{column}» выбраны разные замены. Удаление отменено.");
+        updates[column] = value;
+    }
 
     private string GetConfigurationKeyValue()
     {

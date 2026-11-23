@@ -70,6 +70,7 @@
                         <Button x:Name="BtnAdd" Content="＋ Добавить" Style="{StaticResource BtnPrimary}" Width="120" Margin="0,0,8,0" Click="BtnAdd_Click"/>
                         <Button x:Name="BtnEdit" Content="Изменить" Style="{StaticResource BtnSecondary}" Width="110" Margin="0,0,8,0" Click="BtnEdit_Click"/>
                         <Button x:Name="BtnDelete" Content="Удалить" Style="{StaticResource BtnSecondary}" Width="100" Click="BtnDelete_Click"/>
+                        <Button x:Name="BtnSaveProjectList" Content="В проектный Compare" Style="{StaticResource BtnSecondary}" Width="150" Margin="8,0,0,0" Click="BtnSaveProjectList_Click"/>
                     </StackPanel>
                 </Grid>
             </Border>

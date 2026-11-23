@@ -125,6 +125,45 @@ public sealed class PermissionPolicyTests
         Assert.True(PermissionPolicy.CanEnterMode(user, viewer, 4));
     }
 
+    public static IEnumerable<object[]> OnlineOfflineMode3And4Pairs()
+    {
+        yield return new object[] { "Online", 3 };
+        yield return new object[] { "Offline", 3 };
+        yield return new object[] { "Online", 4 };
+        yield return new object[] { "Offline", 4 };
+    }
+
+    [Theory]
+    [MemberData(nameof(OnlineOfflineMode3And4Pairs))]
+    public void CommissioningEngineerHasTheSameModePermissionsForOnlineAndOffline(string source, int mode)
+    {
+        var user = new UserAccount { UserName = "Инженер-ПНР", RoleName = "Инженер ПНР", Enabled = true };
+        var role = new RoleDefinition { Name = "Инженер ПНР" };
+        UserAuthorizationService.EnsureCommissioningRolePermissions(role);
+
+        Assert.True(PermissionPolicy.CanEnterMode(user, role, mode), $"{source} mode {mode}");
+        Assert.True(PermissionPolicy.Has(user, role, Permission.ManageObjects));
+        Assert.True(PermissionPolicy.Has(user, role, Permission.AddData));
+        Assert.True(PermissionPolicy.Has(user, role, Permission.EditData));
+        Assert.True(PermissionPolicy.Has(user, role, Permission.DeleteData));
+    }
+
+    [Fact]
+    public void EngineerObjectPermissionsDoNotImplyTableAccessThroughLegacyVisibility()
+    {
+        var user = new UserAccount { UserName = "Инженер-ПНР", Enabled = true };
+        var role = Role(Permission.Mode1Show);
+        UserAuthorizationService.EnsureCommissioningRolePermissions(role);
+
+        Assert.False(PermissionPolicy.CanEnterMode(user, role, 1));
+        Assert.False(PermissionPolicy.Has(user, role, Permission.Mode1Add));
+        Assert.True(PermissionPolicy.CanEnterMode(user, role, 3));
+
+        role.Permissions.Add(nameof(Permission.Mode1View));
+        Assert.True(PermissionPolicy.CanEnterMode(user, role, 1));
+        Assert.False(PermissionPolicy.Has(user, role, Permission.Mode1Add));
+    }
+
     [Fact]
     public void Mode2ManageAuthorizesArchitectureHandlersWithoutGrantingMode3InstanceRights()
     {

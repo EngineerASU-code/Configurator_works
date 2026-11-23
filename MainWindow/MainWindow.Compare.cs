@@ -50,13 +50,31 @@ public partial class MainWindow
 
         bool canUseOnline = _workspaceModeChosen && !_isOfflineWorkspace && !_offlineSelectionRequired;
         IEnumerable<string> databases = canUseOnline ? GetActiveDatabases() : Array.Empty<string>();
-        bool canRequestWrite = canShowMode3 && UserAuthorizationService.Has(Permission.Mode3Manage) &&
-            (UserAuthorizationService.Has(Permission.EditData) || UserAuthorizationService.Has(Permission.AddData));
+        bool canRequestWrite = (canShowMode3 && (UserAuthorizationService.Has(Permission.ManageTextLists) ||
+            (UserAuthorizationService.Has(Permission.Mode3Manage) &&
+                (UserAuthorizationService.Has(Permission.EditData) || UserAuthorizationService.Has(Permission.AddData))))) ||
+            (canShowMode2 && (UserAuthorizationService.Has(Permission.Mode2Manage) ||
+                UserAuthorizationService.Has(Permission.ManageClasses) || UserAuthorizationService.Has(Permission.ManageRelations) ||
+                UserAuthorizationService.Has(Permission.ManageTextLists)));
 
-        static bool IsTransferAuthorized(CompareDifference difference) =>
-            PermissionPolicy.CanEnterMode(UserAuthorizationService.CurrentUser, UserAuthorizationService.CurrentRole, 3) &&
-            UserAuthorizationService.Has(Permission.Mode3Manage) &&
-            UserAuthorizationService.Has(difference.Column is null ? Permission.AddData : Permission.EditData);
+        static bool IsTransferAuthorized(CompareDifference difference)
+        {
+            if (difference.MetadataKind == CompareMetadataKind.ClassDefinition)
+                return PermissionPolicy.CanEnterMode(UserAuthorizationService.CurrentUser, UserAuthorizationService.CurrentRole, 2) &&
+                    UserAuthorizationService.Has(Permission.Mode2FieldsShow) &&
+                    (UserAuthorizationService.Has(Permission.Mode2Manage) || UserAuthorizationService.Has(Permission.ManageClasses));
+            if (difference.MetadataKind == CompareMetadataKind.ManualRelation)
+                return PermissionPolicy.CanEnterMode(UserAuthorizationService.CurrentUser, UserAuthorizationService.CurrentRole, 2) &&
+                    UserAuthorizationService.Has(Permission.Mode2RelationsShow) &&
+                    (UserAuthorizationService.Has(Permission.Mode2Manage) || UserAuthorizationService.Has(Permission.ManageRelations));
+            if (difference.MetadataKind is CompareMetadataKind.ProjectTextList or CompareMetadataKind.ThemePreset)
+                return (PermissionPolicy.CanEnterMode(UserAuthorizationService.CurrentUser, UserAuthorizationService.CurrentRole, 2) ||
+                    PermissionPolicy.CanEnterMode(UserAuthorizationService.CurrentUser, UserAuthorizationService.CurrentRole, 3)) &&
+                    (UserAuthorizationService.Has(Permission.Mode2Manage) || UserAuthorizationService.Has(Permission.ManageTextLists));
+            return PermissionPolicy.CanEnterMode(UserAuthorizationService.CurrentUser, UserAuthorizationService.CurrentRole, 3) &&
+                UserAuthorizationService.Has(Permission.Mode3Manage) &&
+                UserAuthorizationService.Has(difference.Column is null ? Permission.AddData : Permission.EditData);
+        }
 
         var window = new CompareWindow(
             databases,
@@ -69,9 +87,13 @@ public partial class MainWindow
             canShowMode2 && UserAuthorizationService.Has(Permission.Mode2GraphShow),
             canShowMode2 && UserAuthorizationService.Has(Permission.Mode2RelationsShow),
             canShowMode2 && UserAuthorizationService.Has(Permission.Mode2FieldsShow),
-            canRequestWrite)
+            canRequestWrite,
+            canShowMode2 || canShowMode3)
         {
-            ApplyTransferAsync = CompareTransfer.ApplyAsync
+            Owner = this,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            ApplyTransferAsync = CompareTransfer.ApplyAsync,
+            ApplyMetadataTransferAsync = CompareTransfer.ApplyMetadataAsync
         };
         window.Closed += (_, _) => _compareWindow = null;
         _compareWindow = window;

@@ -5,6 +5,8 @@ using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.Json.Nodes;
+using Configurator.Core.Projects;
 
 namespace Configurator;
 
@@ -32,11 +34,18 @@ public sealed class ProgramManagementRepository
 
     private readonly DatabaseService _database;
     private readonly string _connectionString;
+    private readonly OfflineProjectDataSource? _offline;
 
     public ProgramManagementRepository(string connectionString)
     {
         _connectionString = connectionString ?? throw new ArgumentNullException(nameof(connectionString));
         _database = new DatabaseService(_connectionString);
+    }
+
+    public ProgramManagementRepository(OfflineProjectDataSource offline)
+    {
+        _offline = offline ?? throw new ArgumentNullException(nameof(offline));
+        _connectionString = string.Empty;
     }
 
     public Task<DataTable> GetProgramsAsync(object plc, object programClass, CancellationToken ct = default)
@@ -60,6 +69,9 @@ public sealed class ProgramManagementRepository
 
     public async Task<HashSet<string>> GetNonEditableColumnsAsync(string tableName, CancellationToken ct = default)
     {
+        if (_offline != null)
+            return GetOfflineSchema(tableName).Columns.Where(column => column.IsIdentity || column.IsComputed || column.IsReadOnly)
+                .Select(column => column.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var columns = await _database.GetTableColumnsAsync(tableName, ct);
         return columns.Where(column => column.IsIdentity || column.IsReadOnly)
             .Select(column => column.Name)
@@ -68,6 +80,14 @@ public sealed class ProgramManagementRepository
 
     public async Task<List<ColumnInfo>> GetInsertColumnsAsync(string tableName, IEnumerable<string> generatedColumns, CancellationToken ct = default)
     {
+        if (_offline != null)
+        {
+            var generatedOffline = new HashSet<string>(generatedColumns ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+            return GetOfflineSchema(tableName).Columns.Where(column => !column.IsIdentity && !column.IsComputed && !column.IsReadOnly && !generatedOffline.Contains(column.Name))
+                .Select(column => new ColumnInfo { Name = column.Name, DataType = column.DataType, IsNullable = column.IsNullable,
+                    HasDefault = column.HasDefault, IsIdentity = column.IsIdentity, IsComputed = column.IsComputed,
+                    MaxLength = column.MaxLength, Precision = column.Precision, Scale = column.Scale }).ToList();
+        }
         var generated = new HashSet<string>(generatedColumns ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
         var columns = await _database.GetTableColumnsAsync(tableName, ct);
         return columns.Where(column => !column.IsIdentity && !column.IsReadOnly && !generated.Contains(column.Name) &&
@@ -77,6 +97,15 @@ public sealed class ProgramManagementRepository
 
     public async Task<Dictionary<string, object>> GetStepTextDefaultsAsync(DataRow step, CancellationToken ct = default)
     {
+        if (_offline != null)
+        {
+            var defaults = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+            var schema = GetOfflineSchema(TransitionTable);
+            foreach (var column in schema.Columns.Where(column => !column.IsIdentity && !column.IsComputed && !column.IsReadOnly &&
+                         (column.Name.StartsWith("Name", StringComparison.OrdinalIgnoreCase) || column.Name.StartsWith("Description", StringComparison.OrdinalIgnoreCase))))
+                if (step.Table.Columns.Contains(column.Name) && step[column.Name] != DBNull.Value) defaults[column.Name] = step[column.Name];
+            return defaults;
+        }
         var columns = await _database.GetTableColumnsAsync(TransitionTable, ct);
         var values = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
         foreach (var column in columns)
@@ -93,6 +122,7 @@ public sealed class ProgramManagementRepository
     public Task<int> AddProgramAsync(object plc, object programClass, IReadOnlyDictionary<string, object> values, CancellationToken ct = default)
     {
         var scope = Context(plc, programClass);
+        if (_offline != null) return InsertOfflineAsync(ProgramTable, "Record", scope, values, ct);
         return InsertWithGeneratedRecordAsync(ProgramTable, "Record", scope,
             new[] { "Record", "PLC", "PLC_Class_Number" }, values, ct);
     }
@@ -106,6 +136,7 @@ public sealed class ProgramManagementRepository
             ["PLC_Class_Prog_Number"] = context.ClassNumberValue,
             ["Prog_Record"] = context.RecordValue
         };
+        if (_offline != null) return InsertOfflineAsync(SequenceTable, "Record", scope, values, ct);
         return InsertWithGeneratedRecordAsync(SequenceTable, "Record", scope,
             new[] { "Record", "PLC", "PLC_Class_Prog_Number", "Prog_Record" }, values, ct);
     }
@@ -118,6 +149,7 @@ public sealed class ProgramManagementRepository
             ?? new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
         valuesWithStepReference["PLC_Class_Step_Number"] = stepClass;
         valuesWithStepReference["Step_Record"] = stepRecord;
+        if (_offline != null) return InsertOfflineAsync(TransitionTable, "SeqStep_Number", scope, valuesWithStepReference, ct);
         return InsertWithGeneratedRecordAsync(TransitionTable, "SeqStep_Number", scope,
             new[] { "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Seq_Record", "SeqStep_Number" }, valuesWithStepReference, ct);
     }
@@ -140,6 +172,13 @@ public sealed class ProgramManagementRepository
             ("dbo.Prog_Recipe", childScope), ("dbo.Prog_Recipes", childScope), ("dbo.Prog_Queue", childScope),
             ("dbo.Prog_QueueSelections", childScope), ("dbo.Prog_SoftKey", childScope), ("dbo.Prog_Msg", childScope)
         };
+        if (_offline != null)
+        {
+            await DeleteOfflineIfUnreferencedAsync(ProgramTable, new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+            { ["PLC"] = context.PlcValue, ["PLC_Class_Number"] = context.ClassNumberValue, ["Record"] = context.RecordValue },
+                dependentTables, ct);
+            return;
+        }
         await DeleteIfUnreferencedAsync(ProgramTable, new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
         {
             ["PLC"] = context.PlcValue,
@@ -163,6 +202,13 @@ public sealed class ProgramManagementRepository
             (TransitionTable, scope), (ParameterTable, scope), ("dbo.Prog_Recipe", scope),
             ("dbo.Prog_Recipes", scope), ("dbo.Prog_QueueSelections", scope)
         };
+        if (_offline != null)
+        {
+            await DeleteOfflineIfUnreferencedAsync(SequenceTable, new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+            { ["PLC"] = context.PlcValue, ["PLC_Class_Prog_Number"] = context.ClassNumberValue, ["Prog_Record"] = context.RecordValue, ["Record"] = sequenceRecord },
+                dependentTables, ct);
+            return;
+        }
         await DeleteIfUnreferencedAsync(SequenceTable, new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
         {
             ["PLC"] = context.PlcValue,
@@ -183,6 +229,13 @@ public sealed class ProgramManagementRepository
         {
             (ParameterTable, parameterScope), ("dbo.Prog_Recipes", parameterScope)
         };
+        if (_offline != null)
+        {
+            await DeleteOfflineIfUnreferencedAsync(TransitionTable, new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+            { ["PLC"] = context.PlcValue, ["PLC_Class_Prog_Number"] = context.ClassNumberValue, ["Prog_Record"] = context.RecordValue,
+                ["Seq_Record"] = context.SeqRecordValue, ["SeqStep_Number"] = sequenceStepNumber }, dependentTables, ct);
+            return;
+        }
         await DeleteIfUnreferencedAsync(TransitionTable, new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
         {
             ["PLC"] = context.PlcValue,
@@ -207,6 +260,8 @@ public sealed class ProgramManagementRepository
             .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
         if (changes.Count == 0)
             throw new InvalidOperationException("Строка не изменена.");
+
+        if (_offline != null) return UpdateOfflineAsync(tableName, original, changes, ct);
 
         return UpdateCompareAndSwapAsync(tableName, original, changes, ct);
     }
@@ -399,7 +454,9 @@ public sealed class ProgramManagementRepository
         object stepNumber, CancellationToken ct)
     {
         var columns = await _database.GetTableColumnsAsync(TransitionTable, ct);
-        var destinations = columns.Where(column => column.Name.StartsWith("TransDest_", StringComparison.OrdinalIgnoreCase)).ToList();
+        const string destinationPrefix = "TransDest_";
+        var destinations = columns.Where(column => column.Name.StartsWith(destinationPrefix, StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(column.Name.AsSpan(destinationPrefix.Length), NumberStyles.None, CultureInfo.InvariantCulture, out _)).ToList();
         if (destinations.Count == 0)
             throw new InvalidOperationException("Удаление шага заблокировано: поля назначения переходов не подтверждены в текущей схеме.");
 
@@ -407,22 +464,29 @@ public sealed class ProgramManagementRepository
             .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
         RequireColumns(columns, scope.Keys.Append("SeqStep_Number"), TransitionTable);
         var where = BuildPredicates(scope, "dest", out var parameters);
-        var destinationPredicates = new List<string>();
         foreach (var column in destinations)
         {
             if (!IsNumericOrText(column.DataType))
                 throw new InvalidOperationException($"Удаление шага заблокировано: тип {TransitionTable}.{column.Name} не поддерживает безопасную проверку ссылок.");
-            destinationPredicates.Add($"TRY_CONVERT(int, {QuoteIdentifier(column.Name)}) = @targetStep");
         }
 
+        int targetStep = Convert.ToInt32(stepNumber, CultureInfo.InvariantCulture);
+        string destinationColumns = string.Join(", ", destinations.Select(column => QuoteIdentifier(column.Name)));
         using var command = new Microsoft.Data.SqlClient.SqlCommand(
-            $"SELECT TOP (1) 1 FROM {QuoteTable(TransitionTable)} WITH (UPDLOCK, HOLDLOCK) WHERE {where} AND {QuoteIdentifier("SeqStep_Number")} <> @targetSequenceStep AND ({string.Join(" OR ", destinationPredicates)})",
+            $"SELECT {destinationColumns} FROM {QuoteTable(TransitionTable)} WITH (UPDLOCK, HOLDLOCK) WHERE {where} AND {QuoteIdentifier("SeqStep_Number")} <> @targetSequenceStep;",
             connection, transaction);
         AddParameters(command, parameters);
-        command.Parameters.AddWithValue("@targetStep", stepNumber);
         command.Parameters.AddWithValue("@targetSequenceStep", stepNumber);
-        if (await command.ExecuteScalarAsync(ct) != null)
-            throw new InvalidOperationException("Удаление шага заблокировано: другой переход указывает на этот шаг.");
+        using var reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            for (int index = 0; index < reader.FieldCount; index++)
+            {
+                if (int.TryParse(Convert.ToString(reader.GetValue(index), CultureInfo.InvariantCulture),
+                    NumberStyles.Integer, CultureInfo.InvariantCulture, out int destination) && destination == targetStep)
+                    throw new InvalidOperationException("Удаление шага заблокировано: другой переход указывает на этот шаг.");
+            }
+        }
     }
 
     private static async Task EnsureUniqueIndexAsync(Microsoft.Data.SqlClient.SqlConnection connection,
@@ -500,9 +564,117 @@ ORDER BY i.index_id, ic.key_ordinal;";
         return parts.Length == 2 ? (parts[0], parts[1]) : ("dbo", parts[0]);
     }
 
+    private ProjectTableSchema GetOfflineSchema(string tableName) => _offline?.GetSchema(tableName)
+        ?? throw new InvalidOperationException($"В локальном проекте отсутствует схема «{tableName}».");
+
+    private DataTable ReadOfflineTable(string tableName, IReadOnlyDictionary<string, object> scope)
+    {
+        var schema = GetOfflineSchema(tableName);
+        foreach (var column in scope.Keys)
+            if (!schema.Columns.Any(item => item.Name.Equals(column, StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidOperationException($"В {schema.TableName} нет поля контекста «{column}».");
+        var table = new DataTable(schema.TableName);
+        foreach (var column in schema.Columns) table.Columns.Add(column.Name, OfflineType(column.DataType));
+        foreach (var record in _offline!.GetRecords(schema.TableName))
+        {
+            if (scope.Any(item => !record.Values.TryGetPropertyValue(item.Key, out var actual) || !OfflineEquals(actual, item.Value))) continue;
+            var row = table.NewRow();
+            foreach (DataColumn column in table.Columns)
+                if (record.Values.TryGetPropertyValue(column.ColumnName, out var value)) row[column] = OfflineValue(value, column.DataType);
+            table.Rows.Add(row);
+        }
+        table.AcceptChanges();
+        return table;
+    }
+
+    private static Type OfflineType(string type) => (type ?? "").ToLowerInvariant() switch
+    {
+        "tinyint" => typeof(byte), "smallint" => typeof(short), "int" => typeof(int), "bigint" => typeof(long),
+        "bit" => typeof(bool), "decimal" or "numeric" or "money" or "smallmoney" => typeof(decimal),
+        "float" => typeof(double), "real" => typeof(float), "date" or "datetime" or "datetime2" or "smalldatetime" => typeof(DateTime),
+        "uniqueidentifier" => typeof(Guid), _ => typeof(string)
+    };
+
+    private static object OfflineValue(JsonNode? value, Type type)
+    {
+        if (value == null) return DBNull.Value;
+        string raw = value.ToString();
+        if (type == typeof(string)) return raw;
+        try { return Convert.ChangeType(raw, type, CultureInfo.InvariantCulture); }
+        catch { return DBNull.Value; }
+    }
+
+    private static bool OfflineEquals(JsonNode? actual, object? expected)
+        => actual == null ? expected == null || expected == DBNull.Value :
+            string.Equals(actual.ToString(), Convert.ToString(expected, CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase);
+
+    private async Task<int> InsertOfflineAsync(string tableName, string generatedColumn,
+        IReadOnlyDictionary<string, object> scope, IReadOnlyDictionary<string, object> values, CancellationToken ct)
+    {
+        var schema = GetOfflineSchema(tableName);
+        var record = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in scope) record[pair.Key] = pair.Value;
+        foreach (var pair in values ?? new Dictionary<string, object>()) record[pair.Key] = pair.Value;
+        bool isIdentity = schema.Columns.FirstOrDefault(column => column.Name.Equals(generatedColumn, StringComparison.OrdinalIgnoreCase))?.IsIdentity == true;
+        if (!record.ContainsKey(generatedColumn) && !isIdentity)
+        {
+            var rows = ReadOfflineTable(schema.TableName, scope);
+            long maximum = rows.Rows.Count == 0 ? 0 : rows.Rows.Cast<DataRow>()
+                .Where(row => row[generatedColumn] != DBNull.Value)
+                .Select(row => Convert.ToInt64(row[generatedColumn], CultureInfo.InvariantCulture)).DefaultIfEmpty(0).Max();
+            record[generatedColumn] = checked(maximum + 1);
+        }
+        ct.ThrowIfCancellationRequested();
+        var creator = (IProjectCreateWithKeyDataSource)_offline!;
+        var key = await creator.CreateRecordAndGetKeyAsync(schema.TableName, record, ct);
+        return Convert.ToInt32(key[generatedColumn], CultureInfo.InvariantCulture);
+    }
+
+    private async Task UpdateOfflineAsync(string tableName, IReadOnlyDictionary<string, object> original,
+        IReadOnlyDictionary<string, object> changes, CancellationToken ct)
+    {
+        var schema = GetOfflineSchema(tableName);
+        if (!schema.HasStableKey || schema.KeyColumns.Count == 0) throw new InvalidOperationException("В локальном снимке нет стабильного ключа для изменения записи.");
+        var matches = _offline!.GetRecords(schema.TableName).Where(row => original.All(pair =>
+            row.Values.TryGetPropertyValue(pair.Key, out var value) && OfflineEquals(value, pair.Value))).Take(2).ToList();
+        if (matches.Count != 1) throw new InvalidOperationException(matches.Count == 0
+            ? "Исходная запись больше не найдена в локальном проекте." : "Исходная запись неоднозначна в локальном проекте.");
+        var target = matches[0];
+        var keyValues = schema.KeyColumns.ToDictionary(name => name,
+            name => (object?)OfflineValue(target.Values[name], OfflineType(schema.Columns.First(column => column.Name.Equals(name, StringComparison.OrdinalIgnoreCase)).DataType)),
+            StringComparer.OrdinalIgnoreCase);
+        await ((IProjectCrudDataSource)_offline).UpdateRecordAsync(schema.TableName, schema.KeyColumns, keyValues, changes, ct);
+    }
+
+    private async Task DeleteOfflineIfUnreferencedAsync(string tableName, IReadOnlyDictionary<string, object> key,
+        IReadOnlyList<(string Table, IReadOnlyDictionary<string, object> Scope)> dependents, CancellationToken ct)
+    {
+        var schema = GetOfflineSchema(tableName);
+        if (!schema.HasStableKey || schema.KeyColumns.Count == 0) throw new InvalidOperationException("В локальном снимке нет стабильного ключа для удаления записи.");
+        foreach (var dependent in dependents)
+        {
+            var dependentSchema = _offline!.GetSchema(dependent.Table);
+            if (dependentSchema == null || dependent.Scope.Keys.Any(column => !dependentSchema.Columns.Any(c => c.Name.Equals(column, StringComparison.OrdinalIgnoreCase)))) continue;
+            if (ReadOfflineTable(dependent.Table, dependent.Scope).Rows.Count > 0)
+                throw new InvalidOperationException($"Нельзя удалить запись: в {dependent.Table} остались связанные строки.");
+        }
+        var matches = _offline!.GetRecords(schema.TableName).Where(row => key.All(pair => row.Values.TryGetPropertyValue(pair.Key, out var value) && OfflineEquals(value, pair.Value))).Take(2).ToList();
+        if (matches.Count != 1) throw new InvalidOperationException("Запись для удаления не найдена или неоднозначна в локальном проекте.");
+        var keyValues = schema.KeyColumns.ToDictionary(name => name,
+            name => (object?)OfflineValue(matches[0].Values[name], OfflineType(schema.Columns.First(column => column.Name.Equals(name, StringComparison.OrdinalIgnoreCase)).DataType)),
+            StringComparer.OrdinalIgnoreCase);
+        int removed = await ((IProjectCrudDataSource)_offline).DeleteRecordsAsync(schema.TableName, schema.KeyColumns, new[] { keyValues }, ct);
+        if (removed != 1) throw new InvalidOperationException("Состав локального проекта изменился; удаление отменено.");
+    }
+
     private async Task<DataTable> GetScopedTableAsync(string tableName,
         IReadOnlyDictionary<string, object> requestedScope, CancellationToken ct)
     {
+        if (_offline != null)
+        {
+            ct.ThrowIfCancellationRequested();
+            return ReadOfflineTable(tableName, requestedScope);
+        }
         var columns = await _database.GetTableColumnsAsync(tableName, ct);
         if (columns.Count == 0) return new DataTable();
 
@@ -553,6 +725,18 @@ ORDER BY i.index_id, ic.key_ordinal;";
     private async Task<DataTable> GetReferencedStepsAsync(ProgramContext context, CancellationToken ct)
     {
         var scope = ProgramScope(context, includeSequence: true);
+        if (_offline != null)
+        {
+            ct.ThrowIfCancellationRequested();
+            var offlineTransitions = ReadOfflineTable(TransitionTable, scope);
+            var offlineSteps = ReadOfflineTable(StepTable, new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase) { ["PLC"] = context.PlcValue });
+            var keys = offlineTransitions.Rows.Cast<DataRow>().Select(row => (Class: row["PLC_Class_Step_Number"], Record: row["Step_Record"]))
+                .ToHashSet();
+            var offlineResult = offlineSteps.Clone();
+            foreach (DataRow row in offlineSteps.Rows)
+                if (keys.Contains((row["PLC_Class_Number"], row["Record"]))) offlineResult.ImportRow(row);
+            return offlineResult;
+        }
         var transitions = await _database.GetTableColumnsAsync(TransitionTable, ct);
         var steps = await _database.GetTableColumnsAsync(StepTable, ct);
         foreach (var required in new[] { "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Seq_Record", "PLC_Class_Step_Number", "Step_Record" })

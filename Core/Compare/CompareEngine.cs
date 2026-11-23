@@ -45,6 +45,7 @@ public static class CompareEngine
             architecture.AddRange(CompareTables(snapshotA, snapshotB));
             architecture.AddRange(CompareRelations(snapshotA, snapshotB));
         }
+        architecture.AddRange(await CompareProjectSettingsAsync(a, b, cancellationToken).ConfigureAwait(false));
 
         progress?.Report("Сравнение данных объектов");
         if (!sameOfflineArchitecture ||
@@ -55,6 +56,79 @@ public static class CompareEngine
         }
 
         return new CompareResult(architecture, objects, started, DateTimeOffset.UtcNow);
+    }
+
+    private static async Task<IReadOnlyList<CompareDifference>> CompareProjectSettingsAsync(
+        CompareSource a, CompareSource b, CancellationToken cancellationToken)
+    {
+        ProjectCompareSettings? settingsA;
+        ProjectCompareSettings? settingsB;
+        try
+        {
+            settingsA = await CompareMetadataTransferPreview.ReadProjectSettingsAsync(a, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return [new CompareDifference("Проектные текстовые списки и темы · источник A", null, null,
+                CompareStatus.Error, Issue: "Не удалось прочитать локальные настройки проекта.")];
+        }
+        try
+        {
+            settingsB = await CompareMetadataTransferPreview.ReadProjectSettingsAsync(b, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return [new CompareDifference("Проектные текстовые списки и темы · источник B", null, null,
+                CompareStatus.Error, Issue: "Не удалось прочитать локальные настройки проекта.")];
+        }
+        if (settingsA is null && settingsB is null) return Array.Empty<CompareDifference>();
+        if (settingsA is null || settingsB is null)
+            return [new CompareDifference("Проектные текстовые списки и темы", null, null,
+                CompareStatus.NotComparable, Issue: "Не удалось прочитать настройки обеих сторон сравнения.")];
+
+        var differences = new List<CompareDifference>();
+        differences.AddRange(CompareProjectItems("Текстовые списки", settingsA.TextLists, settingsB.TextLists,
+            item => $"{item.SourceTable.Trim()}|{item.Name.Trim()}", SerializeTextListForCompare,
+            item => $"{item.SourceTable} · {item.Items.Count} записей · {item.KeyColumn} → {item.DisplayColumn}", CompareMetadataKind.ProjectTextList));
+        differences.AddRange(CompareProjectItems("Темы проекта", settingsA.ThemePresets, settingsB.ThemePresets,
+            item => item.Name.Trim(), item => JsonSerializer.Serialize(item),
+            item => $"{item.Name} · фон {item.Base} · акцент {item.Accent}", CompareMetadataKind.ThemePreset));
+        return differences;
+    }
+
+    private static string SerializeTextListForCompare(ProjectTextList item) => JsonSerializer.Serialize(new
+    {
+        item.Name,
+        item.SourceTable,
+        item.KeyColumn,
+        item.DisplayColumn,
+        Items = item.Items.OrderBy(value => value.Key, StringComparer.Ordinal).ThenBy(value => value.Text, StringComparer.Ordinal)
+    });
+
+    private static IReadOnlyList<CompareDifference> CompareProjectItems<T>(
+        string title, IReadOnlyList<T> a, IReadOnlyList<T> b, Func<T, string> keyOf,
+        Func<T, string> serialize, Func<T, string> display, CompareMetadataKind kind)
+    {
+        var groupsA = a.GroupBy(keyOf, StringComparer.OrdinalIgnoreCase).ToDictionary(x => x.Key, x => x.ToArray(), StringComparer.OrdinalIgnoreCase);
+        var groupsB = b.GroupBy(keyOf, StringComparer.OrdinalIgnoreCase).ToDictionary(x => x.Key, x => x.ToArray(), StringComparer.OrdinalIgnoreCase);
+        var result = new List<CompareDifference>();
+        foreach (var key in groupsA.Keys.Union(groupsB.Keys, StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+        {
+            groupsA.TryGetValue(key, out var itemsA);
+            groupsB.TryGetValue(key, out var itemsB);
+            var status = itemsA?.Length > 1 || itemsB?.Length > 1 ? CompareStatus.Ambiguous
+                : itemsA is null ? CompareStatus.OnlyB
+                : itemsB is null ? CompareStatus.OnlyA
+                : string.Equals(serialize(itemsA[0]), serialize(itemsB[0]), StringComparison.Ordinal)
+                    ? CompareStatus.Equal : CompareStatus.Changed;
+            result.Add(new CompareDifference($"{title} · {key}", itemsA is { Length: > 0 } ? display(itemsA[0]) : null,
+                itemsB is { Length: > 0 } ? display(itemsB[0]) : null, status,
+                Issue: status == CompareStatus.Ambiguous ? "Идентификатор настройки повторяется." : null,
+                MetadataKind: kind, MetadataKey: key,
+                DetailAValue: itemsA is { Length: > 0 } ? serialize(itemsA[0]) : null,
+                DetailBValue: itemsB is { Length: > 0 } ? serialize(itemsB[0]) : null));
+        }
+        return result;
     }
 
     private static bool SameOfflineArchitecture(SourceSnapshot a, SourceSnapshot b)
@@ -260,7 +334,9 @@ public static class CompareEngine
                 b?.Id,
                 presenceStatus,
                 Fields(a, b).Concat(ClassTypes(a, b)).Concat(ComplexTables(a, b)).ToArray(),
-                Issue: issue);
+                Issue: issue,
+                MetadataKind: CompareMetadataKind.ClassDefinition,
+                MetadataKey: a?.Id ?? b?.Id);
 
         var children = new List<CompareDifference>
         {
@@ -275,7 +351,8 @@ public static class CompareEngine
         children.AddRange(Fields(a, b));
         children.AddRange(ClassTypes(a, b));
         children.AddRange(ComplexTables(a, b));
-        return new CompareDifference($"Класс · {a.Name}", a.Id, b.Id, Aggregate(children), children, Issue: issue);
+        return new CompareDifference($"Класс · {a.Name}", a.Id, b.Id, Aggregate(children), children,
+            Issue: issue, MetadataKind: CompareMetadataKind.ClassDefinition, MetadataKey: a.Id);
     }
 
     private static IReadOnlyList<CompareDifference> Fields(ClassDefinition? a, ClassDefinition? b)
@@ -814,7 +891,10 @@ public static class CompareEngine
                 inB ? relationB!.Value : null,
                 status,
                 Issue: incomplete ? "Метаданные связей неполные как минимум в одном источнике." :
-                    unresolved ? "Конечная таблица связи отсутствует в сохранённой схеме." : null));
+                    unresolved ? "Конечная таблица связи отсутствует в сохранённой схеме." : null,
+                MetadataKind: !incomplete && !unresolved && (relationA?.IsManual == true || relationB?.IsManual == true)
+                    ? CompareMetadataKind.ManualRelation : null,
+                MetadataKey: signature));
         }
 
         if (incomplete)
@@ -836,7 +916,7 @@ public static class CompareEngine
             catch (JsonException)
             {
                 result["invalid-graph-relations"] = new RelationMetadata(
-                    "Не удалось прочитать документ логических связей.", false, "Некорректный документ логических связей");
+                    "Не удалось прочитать документ логических связей.", false, false, "Некорректный документ логических связей");
             }
         }
 
@@ -851,7 +931,7 @@ public static class CompareEngine
                     ? $"{ConfidenceLabel(confidence)} · {relation.Rule}"
                     : relation.Rule;
                 var title = relation.IsManual ? "Логическая связь" : "Связь";
-                result[relation.Id] = new RelationMetadata(value, true,
+                result[relation.Id] = new RelationMetadata(value, true, relation.IsManual,
                     $"{title} · {RelationLabel(relation.Source, relation.SourceColumns, relation.Target, relation.TargetColumns)}");
             }
         }
@@ -1474,7 +1554,7 @@ public static class CompareEngine
 
     private sealed record RecordIndex(Dictionary<string, List<ProjectRecord>> Rows, List<ProjectRecord> Invalid);
 
-    private sealed record RelationMetadata(string Value, bool Resolved, string Title);
+    private sealed record RelationMetadata(string Value, bool Resolved, bool IsManual, string Title);
 
     private sealed record MetadataFingerprintDocument(
         IReadOnlyList<ClassDefinition> Classes,

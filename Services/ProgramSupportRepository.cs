@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Data;
 using System.Linq;
 using System.Threading.Tasks;
+using Configurator.Core.Projects;
 using Microsoft.Data.SqlClient;
 
 namespace Configurator;
@@ -11,11 +12,18 @@ namespace Configurator;
 public sealed class ProgramSupportRepository
 {
     private readonly string _connectionString;
+    private readonly OfflineProjectDataSource? _offline;
 
     public ProgramSupportRepository(string connectionString) =>
         _connectionString = string.IsNullOrWhiteSpace(connectionString)
             ? throw new ArgumentException("Не задана строка подключения.", nameof(connectionString))
             : connectionString;
+
+    public ProgramSupportRepository(OfflineProjectDataSource offline)
+    {
+        _offline = offline ?? throw new ArgumentNullException(nameof(offline));
+        _connectionString = string.Empty;
+    }
 
     public Task<ProgramSupportTableData> LoadProgramAsync(string tableId, ProgramContext context) =>
         LoadAsync(Find(ProgramSupportCatalog.ProgramTables, tableId), GetProgramScope(Find(ProgramSupportCatalog.ProgramTables, tableId), context));
@@ -60,6 +68,27 @@ public sealed class ProgramSupportRepository
                 throw new InvalidOperationException($"Для позиции {position} указано несколько классов устройств.");
         }
 
+        if (_offline != null)
+        {
+            var classesByNumberOffline = classes.Where(item => !string.IsNullOrWhiteSpace(item.TableName))
+                .GroupBy(item => item.Number).ToDictionary(group => group.Key, group => group.First());
+            foreach (DataRow row in assignments.Rows)
+            {
+                if (row.RowState == DataRowState.Deleted) continue;
+                int position = Convert.ToInt32(row["Position"]);
+                int deviceClass = Convert.ToInt32(row["Device_PLC_Class_Number"]);
+                int devicePlc = Convert.ToInt32(row["Device_PLC"]);
+                int deviceRecord = Convert.ToInt32(row["Device_Record"]);
+                if (!classByPosition.TryGetValue(position, out int expectedClass) || expectedClass != deviceClass)
+                    throw new InvalidOperationException($"Объект в позиции {position} не соответствует выбранному классу устройств.");
+                if (!classesByNumberOffline.TryGetValue(expectedClass, out var option))
+                    throw new InvalidOperationException($"Класс устройств {expectedClass} отсутствует в локальном снимке.");
+                if (!_offline.GetRecords(option.TableName).Any(record => OfflineNumber(record, "PLC") == devicePlc && OfflineNumber(record, "Record") == deviceRecord))
+                    throw new InvalidOperationException($"Объект PLC={devicePlc}, класс={deviceClass}, Record={deviceRecord} не найден в локальном проекте.");
+            }
+            return;
+        }
+
         await using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
         await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection);
         var checkedTables = new Dictionary<string, TableMetadata>(StringComparer.OrdinalIgnoreCase);
@@ -99,6 +128,10 @@ public sealed class ProgramSupportRepository
 
     public async Task<IReadOnlyList<MatrixDevicePlcOption>> LoadMatrixDevicePlcsAsync(MatrixDeviceClassOption deviceClass)
     {
+        if (_offline != null)
+            return _offline.GetRecords(deviceClass.TableName).Select(record => OfflineNumber(record, "PLC"))
+                .Where(value => value.HasValue).Select(value => value!.Value).Distinct().OrderBy(value => value)
+                .Select(value => new MatrixDevicePlcOption(value, value.ToString(System.Globalization.CultureInfo.InvariantCulture))).ToList();
         await using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
         await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection);
         var metadata = await GetDeviceTableMetadataAsync(connection, deviceClass);
@@ -117,6 +150,20 @@ public sealed class ProgramSupportRepository
 
     public async Task<IReadOnlyList<MatrixDeviceObjectOption>> LoadMatrixDeviceObjectsAsync(MatrixDeviceClassOption deviceClass, int plc)
     {
+        if (_offline != null)
+        {
+            var schema = _offline.GetSchema(deviceClass.TableName);
+            string? display = new[] { "Name_L2", "NameL2", "Name_L1", "NameL1", "Name" }
+                .FirstOrDefault(name => schema?.Columns.Any(column => column.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) == true);
+            return _offline.GetRecords(deviceClass.TableName).Where(record => OfflineNumber(record, "PLC") == plc && OfflineNumber(record, "Record").HasValue)
+                .Select(record =>
+                {
+                    int number = OfflineNumber(record, "Record")!.Value;
+                    string name = display != null && record.Values.TryGetPropertyValue(display, out var value) ? value?.ToString() ?? "" : "";
+                    return new MatrixDeviceObjectOption(plc, deviceClass.Number, number,
+                        string.IsNullOrWhiteSpace(name) || name == number.ToString(System.Globalization.CultureInfo.InvariantCulture) ? number.ToString() : $"{number} · {name}");
+                }).OrderBy(item => item.Record).ToList();
+        }
         await using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
         await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection);
         var metadata = await GetDeviceTableMetadataAsync(connection, deviceClass);
@@ -156,6 +203,12 @@ public sealed class ProgramSupportRepository
         if (!tableData.CanWrite || definition.ReadOnly)
             throw new InvalidOperationException(tableData.WriteBlockReason ?? definition.ReadOnlyReason ?? "Запись для этой таблицы заблокирована.");
 
+        if (_offline != null)
+        {
+            await SaveOfflineAsync(tableData, scope);
+            return;
+        }
+
         await using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
         await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection);
         using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable);
@@ -192,6 +245,7 @@ public sealed class ProgramSupportRepository
 
     private async Task<ProgramSupportTableData> LoadAsync(ProgramSupportTableDefinition definition, IReadOnlyDictionary<string, object> scope)
     {
+        if (_offline != null) return LoadOffline(definition, scope);
         await using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
         await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection);
         var metadata = await GetMetadataAsync(connection, null, definition);
@@ -203,6 +257,12 @@ public sealed class ProgramSupportRepository
         AddScopeParameters(command, definition, scope);
         var rows = new DataTable(definition.TableName);
         using (var reader = await command.ExecuteReaderAsync()) rows.Load(reader);
+        foreach (DataColumn column in rows.Columns)
+        {
+            if (!definition.KeyColumns.Contains(column.ColumnName, StringComparer.OrdinalIgnoreCase) &&
+                metadata.Columns.TryGetValue(column.ColumnName, out var columnMetadata) && columnMetadata.HasDefault)
+                column.AllowDBNull = true;
+        }
 
         bool keyMatches = definition.KeyColumns.Count > 0 && metadata.UniqueKeys.Any(key => SameColumns(key, definition.KeyColumns));
         bool canWrite = !definition.ReadOnly && keyMatches;
@@ -227,15 +287,176 @@ public sealed class ProgramSupportRepository
         };
     }
 
+    private ProgramSupportTableData LoadOffline(ProgramSupportTableDefinition definition, IReadOnlyDictionary<string, object> scope)
+    {
+        var schema = _offline!.GetSchema(definition.TableName)
+            ?? throw new InvalidOperationException($"В локальном проекте отсутствует схема «{definition.TableName}».");
+        foreach (var name in definition.ScopeColumns)
+            if (!schema.Columns.Any(column => column.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidOperationException($"В {schema.TableName} нет поля контекста «{name}».");
+        var rows = new DataTable(schema.TableName);
+        foreach (var column in schema.Columns) rows.Columns.Add(column.Name, OfflineType(column.DataType));
+        foreach (var record in _offline.GetRecords(schema.TableName))
+        {
+            if (definition.ScopeColumns.Any(name => !record.Values.TryGetPropertyValue(name, out var value) ||
+                !OfflineEquals(value, scope.TryGetValue(name, out var expected) ? expected : null))) continue;
+            var row = rows.NewRow();
+            foreach (DataColumn column in rows.Columns)
+                if (record.Values.TryGetPropertyValue(column.ColumnName, out var value))
+                    row[column] = OfflineValue(value, schema.Columns.First(item => item.Name.Equals(column.ColumnName, StringComparison.OrdinalIgnoreCase)).DataType);
+            rows.Rows.Add(row);
+        }
+        bool keyMatches = schema.HasStableKey && definition.KeyColumns.Count > 0 && SameColumns(schema.KeyColumns, definition.KeyColumns);
+        if (keyMatches) rows.PrimaryKey = definition.KeyColumns.Select(name => rows.Columns[name]!).ToArray();
+        rows.AcceptChanges();
+        return new ProgramSupportTableData
+        {
+            Definition = definition, Rows = rows, Columns = schema.Columns.Select(column => column.Name).ToArray(),
+            IdentityColumns = schema.Columns.Where(column => column.IsIdentity).Select(column => column.Name).ToHashSet(StringComparer.OrdinalIgnoreCase),
+            ComputedColumns = schema.Columns.Where(column => column.IsComputed).Select(column => column.Name).ToHashSet(StringComparer.OrdinalIgnoreCase),
+            DefaultColumns = schema.Columns.Where(column => column.HasDefault).Select(column => column.Name).ToHashSet(StringComparer.OrdinalIgnoreCase),
+            CanWrite = !definition.ReadOnly && keyMatches,
+            WriteBlockReason = definition.ReadOnly ? definition.ReadOnlyReason : keyMatches ? null : "Запись отключена: стабильный ключ снимка не совпадает с проверенной схемой.",
+            ProgMatrixRows = definition.Id == "program-matrix" ? rows.Rows.Cast<DataRow>().Select(ToProgMatrixRow).ToArray() : null,
+            MatrixListRows = definition.Id == "matrix-list" ? rows.Rows.Cast<DataRow>().Select(ToMatrixListRow).ToArray() : null
+        };
+    }
+
+    private async Task SaveOfflineAsync(ProgramSupportTableData tableData, IReadOnlyDictionary<string, object> scope)
+    {
+        var definition = tableData.Definition;
+        var schema = _offline!.GetSchema(definition.TableName)
+            ?? throw new InvalidOperationException($"В локальном проекте отсутствует схема «{definition.TableName}».");
+        if (!schema.HasStableKey || !SameColumns(schema.KeyColumns, definition.KeyColumns))
+            throw new InvalidOperationException("Изменение отменено: ключ таблицы в локальном снимке отличается от проверенного ключа редактора.");
+        var crud = (IProjectCrudDataSource)_offline;
+        await _offline.ExecuteMutationTransactionAsync(async () =>
+        {
+            foreach (DataRow row in tableData.Rows.Rows)
+            {
+                if (row.RowState is DataRowState.Unchanged or DataRowState.Detached) continue;
+                if (row.RowState == DataRowState.Added)
+                {
+                    var values = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var pair in scope) values[pair.Key] = pair.Value;
+                    foreach (DataColumn column in row.Table.Columns)
+                    {
+                        var metadata = schema.Columns.FirstOrDefault(item => item.Name.Equals(column.ColumnName, StringComparison.OrdinalIgnoreCase));
+                        if (metadata == null || metadata.IsIdentity || metadata.IsComputed || metadata.IsReadOnly) continue;
+                        bool included = definition.ScopeColumns.Contains(column.ColumnName, StringComparer.OrdinalIgnoreCase)
+                            || definition.KeyColumns.Contains(column.ColumnName, StringComparer.OrdinalIgnoreCase)
+                            || definition.EditableColumns.Contains(column.ColumnName, StringComparer.OrdinalIgnoreCase)
+                            || definition.ProtectedColumns.Contains(column.ColumnName, StringComparer.OrdinalIgnoreCase);
+                        if (!included) continue;
+                        values[column.ColumnName] = row[column] == DBNull.Value ? null : row[column];
+                    }
+                    await ((IProjectCreateWithKeyDataSource)_offline).CreateRecordAndGetKeyAsync(schema.TableName, values);
+                    continue;
+                }
+                var version = row.RowState == DataRowState.Deleted ? DataRowVersion.Original : DataRowVersion.Current;
+                var key = definition.KeyColumns.ToDictionary(name => name, name => (object?)row[name, version], StringComparer.OrdinalIgnoreCase);
+                if (row.RowState == DataRowState.Deleted)
+                {
+                    EnsureNoOfflineDependents(definition, row);
+                    int count = await crud.DeleteRecordsAsync(schema.TableName, schema.KeyColumns, new[] { key });
+                    if (count != 1) throw new InvalidOperationException("Состав локального снимка изменился; удаление отменено.");
+                    continue;
+                }
+                var editable = definition.EditableColumns.Where(name => !definition.KeyColumns.Contains(name, StringComparer.OrdinalIgnoreCase)
+                    && !definition.ScopeColumns.Contains(name, StringComparer.OrdinalIgnoreCase)
+                    && !definition.ProtectedColumns.Contains(name, StringComparer.OrdinalIgnoreCase)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var changed = row.Table.Columns.Cast<DataColumn>().Where(column =>
+                    !Equals(row[column, DataRowVersion.Original], row[column, DataRowVersion.Current])).Select(column => column.ColumnName).ToList();
+                var forbidden = changed.Where(name => !editable.Contains(name)).ToList();
+                if (forbidden.Count > 0)
+                    throw new InvalidOperationException($"Изменение ключей, связей или полей без разрешённой записи заблокировано: {string.Join(", ", forbidden)}.");
+                var changes = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                foreach (string name in changed)
+                    if (row.Table.Columns.Contains(name)) changes[name] = row[name] == DBNull.Value ? null : row[name];
+                if (changes.Count > 0) await crud.UpdateRecordAsync(schema.TableName, schema.KeyColumns, key, changes);
+            }
+        });
+    }
+
+    private void EnsureNoOfflineDependents(ProgramSupportTableDefinition definition, DataRow row)
+    {
+        (string Table, string[] Columns, string[] ParentColumns)[] checks = definition.TableName switch
+        {
+            "dbo.Prog_Recipe" => new (string Table, string[] Columns, string[] ParentColumns)[]
+            { ("dbo.Prog_Recipes", new[] { "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Seq_Record", "Recipe_Record" }, new[] { "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Seq_Record", "Record" }) },
+            "dbo.Prog_Queue" => new (string Table, string[] Columns, string[] ParentColumns)[]
+            { ("dbo.Prog_QueueSelections", new[] { "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Seq_Record", "Queue_Record" }, new[] { "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Seq_Record", "Record" }) },
+            "dbo.Matrix_List" => new (string Table, string[] Columns, string[] ParentColumns)[]
+            {
+                ("dbo.Matrix_CommandList", new[] { "PLC", "PLC_Class_Number", "Record" }, new[] { "PLC", "PLC_Class_Number", "Record" }),
+                ("dbo.Matrix_Commands", new[] { "PLC", "PLC_Class_Number", "Record" }, new[] { "PLC", "PLC_Class_Number", "Record" }),
+                ("dbo.Matrix_DeviceList", new[] { "PLC", "PLC_Class_Number", "Record" }, new[] { "PLC", "PLC_Class_Number", "Record" }),
+                ("dbo.Matrix_DeviceListType", new[] { "PLC", "PLC_Class_Number", "Record" }, new[] { "PLC", "PLC_Class_Number", "Record" }),
+                ("dbo.Matrix_Devices", new[] { "PLC", "PLC_Class_Number", "Record" }, new[] { "PLC", "PLC_Class_Number", "Record" }),
+                ("dbo.Prog_Queue", new[] { "PLC", "PLC_Class_Matrix_Number", "Matrix_Record" }, new[] { "PLC", "PLC_Class_Number", "Record" }),
+                ("dbo.Prog_QueueSelections", new[] { "PLC", "PLC_Class_Matrix_Number", "Matrix_Record" }, new[] { "PLC", "PLC_Class_Number", "Record" })
+            },
+            "dbo.Matrix_CommandList" => new (string Table, string[] Columns, string[] ParentColumns)[]
+            { ("dbo.Matrix_Commands", new[] { "PLC", "PLC_Class_Number", "Record", "CmdNumber" }, new[] { "PLC", "PLC_Class_Number", "Record", "CmdNumber" }) },
+            "dbo.Matrix_DeviceList" => new (string Table, string[] Columns, string[] ParentColumns)[]
+            {
+                ("dbo.Matrix_Devices", new[] { "PLC", "PLC_Class_Number", "Record", "DeviceList" }, new[] { "PLC", "PLC_Class_Number", "Record", "DeviceList" }),
+                ("dbo.Prog_QueueSelections", new[] { "PLC", "PLC_Class_Matrix_Number", "Matrix_Record", "Matrix_DeviceList" }, new[] { "PLC", "PLC_Class_Number", "Record", "DeviceList" })
+            },
+            "dbo.Matrix_DeviceListType" => new (string Table, string[] Columns, string[] ParentColumns)[]
+            { ("dbo.Matrix_Devices", new[] { "PLC", "PLC_Class_Number", "Record", "Position" }, new[] { "PLC", "PLC_Class_Number", "Record", "Position" }) },
+            _ => []
+        };
+
+        foreach (var check in checks)
+        {
+            var childSchema = _offline!.GetSchema(check.Table);
+            if (childSchema == null || check.Columns.Any(name => !childSchema.Columns.Any(column => column.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))) continue;
+            if (_offline.GetRecords(check.Table).Any(record => check.Columns.Select((name, index) =>
+                    record.Values.TryGetPropertyValue(name, out var actual) &&
+                    OfflineEquals(actual, row[check.ParentColumns[index], DataRowVersion.Original])).All(matches => matches)))
+                throw new InvalidOperationException($"Удаление заблокировано: в {check.Table} найдены зависимые строки.");
+        }
+    }
+
+    private static int? OfflineNumber(ProjectRecord record, string name)
+        => record.Values.TryGetPropertyValue(name, out var value) && int.TryParse(value?.ToString(), out int number) ? number : null;
+
+    private static Type OfflineType(string type) => (type ?? "").ToLowerInvariant() switch
+    {
+        "tinyint" => typeof(byte), "smallint" => typeof(short), "int" => typeof(int), "bigint" => typeof(long),
+        "bit" => typeof(bool), "decimal" or "numeric" or "money" or "smallmoney" => typeof(decimal),
+        "float" => typeof(double), "real" => typeof(float), "date" or "datetime" or "datetime2" or "smalldatetime" => typeof(DateTime),
+        "uniqueidentifier" => typeof(Guid), _ => typeof(string)
+    };
+
+    private static object OfflineValue(System.Text.Json.Nodes.JsonNode? value, string sqlType)
+    {
+        if (value == null) return DBNull.Value;
+        string raw = value.ToString();
+        Type type = OfflineType(sqlType);
+        if (type == typeof(string)) return raw;
+        try { return Convert.ChangeType(raw, type, System.Globalization.CultureInfo.InvariantCulture); }
+        catch { return DBNull.Value; }
+    }
+
+    private static bool OfflineEquals(System.Text.Json.Nodes.JsonNode? value, object? expected)
+        => value == null ? expected == null || expected == DBNull.Value :
+            string.Equals(value.ToString(), Convert.ToString(expected, System.Globalization.CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase);
+
     private static ProgMatrixRow ToProgMatrixRow(DataRow row) => new(
         new ProgMatrixKey(Convert.ToInt32(row["Record"]), Convert.ToInt32(row["PLC"]), Convert.ToInt32(row["PLC_Class_Number"])),
-        row["Type"] == DBNull.Value ? null : Convert.ToInt32(row["Type"]),
-        NullableText(row["Name_L1"]), NullableText(row["Name_L2"]), NullableText(row["DescriptionL1"]), NullableText(row["DescriptionL2"]));
+        OptionalValue(row, "Type") == DBNull.Value ? null : Convert.ToInt32(OptionalValue(row, "Type")),
+        NullableText(OptionalValue(row, "Name_L1")), NullableText(OptionalValue(row, "Name_L2")),
+        NullableText(OptionalValue(row, "DescriptionL1")), NullableText(OptionalValue(row, "DescriptionL2")));
 
     private static MatrixListRow ToMatrixListRow(DataRow row) => new(
         new MatrixListKey(Convert.ToInt32(row["Record"]), Convert.ToInt32(row["PLC"]), Convert.ToInt32(row["PLC_Class_Number"])),
-        Convert.ToString(row["Name_L1"]) ?? "", Convert.ToString(row["Name_L2"]) ?? "",
-        row["DB_Number"] == DBNull.Value ? null : Convert.ToInt32(row["DB_Number"]));
+        Convert.ToString(OptionalValue(row, "Name_L1")) ?? "", Convert.ToString(OptionalValue(row, "Name_L2")) ?? "",
+        OptionalValue(row, "DB_Number") == DBNull.Value ? null : Convert.ToInt32(OptionalValue(row, "DB_Number")));
+
+    private static object OptionalValue(DataRow row, string column)
+        => row.Table.Columns.Contains(column) ? row[column] : DBNull.Value;
 
     private static string? NullableText(object value) => value == null || value == DBNull.Value ? null : Convert.ToString(value);
 
@@ -502,7 +723,7 @@ ORDER BY fk.object_id, fkc.constraint_column_id;";
         ProgramSupportTableDefinition definition, IReadOnlyDictionary<string, object> scope, Type recordType)
     {
         string where = string.Join(" AND ", definition.ScopeColumns.Select((column, index) => $"{Quote(column)}=@s{index}"));
-        using var command = new SqlCommand($"SELECT COALESCE(MAX(TRY_CONVERT(bigint,{Quote("Record")})),0)+1 FROM {QuoteTable(definition.TableName)} WITH (UPDLOCK,HOLDLOCK) WHERE {where};", connection, transaction);
+        using var command = new SqlCommand($"SELECT COALESCE(MAX(CONVERT(bigint,{Quote("Record")})),0)+1 FROM {QuoteTable(definition.TableName)} WITH (UPDLOCK,HOLDLOCK) WHERE {where};", connection, transaction);
         AddScopeParameters(command, definition, scope);
         object next = await command.ExecuteScalarAsync() ?? 1L;
         return Convert.ChangeType(next, recordType, System.Globalization.CultureInfo.InvariantCulture);

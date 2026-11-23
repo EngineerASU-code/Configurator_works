@@ -4,7 +4,21 @@
         Title="Добавить несколько объектов" Width="960" Height="520" MinWidth="720" MinHeight="420"
         WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
         Background="{DynamicResource BrushBase}" Foreground="{DynamicResource BrushText}"
-        PreviewKeyDown="Window_PreviewKeyDown">
+        PreviewKeyDown="Window_PreviewKeyDown" Closing="Window_Closing">
+    <Window.Resources>
+        <Style x:Key="BatchCellText" TargetType="TextBlock">
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Margin" Value="8,0"/>
+            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+        </Style>
+        <Style x:Key="BatchCellEditor" TargetType="TextBox">
+            <Setter Property="Background" Value="{DynamicResource BrushBase}"/>
+            <Setter Property="Foreground" Value="{DynamicResource BrushText}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BrushAccent}"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="Padding" Value="8,0"/>
+        </Style>
+    </Window.Resources>
     <Grid Margin="16">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -12,30 +26,17 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <Border Grid.Row="0" Background="{DynamicResource BrushPanel}"
-                BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1"
-                CornerRadius="10" Padding="16" Margin="0,0,0,12">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-                <Border Width="42" Height="42" CornerRadius="9" Background="{DynamicResource BrushSelected}"
-                        VerticalAlignment="Top" Margin="0,0,14,0">
-                    <TextBlock Text="＋" FontSize="25" FontWeight="SemiBold" Foreground="{DynamicResource BrushAccent}"
-                               HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,-3,0,0"/>
-                </Border>
-                <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                    <TextBlock x:Name="TitleText" Text="Массовое добавление объектов" FontSize="19" FontWeight="SemiBold"/>
-                    <TextBlock Text="Добавьте объекты в несколько строк. Номер Record подбирается автоматически; при необходимости его можно изменить."
-                               Margin="0,4,0,0" Foreground="{DynamicResource BrushTextSecondary}" TextWrapping="Wrap"/>
-                    <Border x:Name="ValidationPanel" Visibility="Collapsed" Background="#12B42318"
-                            BorderBrush="#55B42318" BorderThickness="1" CornerRadius="6" Padding="9,6" Margin="0,10,0,0">
-                        <TextBlock x:Name="ValidationText" Foreground="#B42318" TextWrapping="Wrap"/>
-                    </Border>
-                </StackPanel>
-            </Grid>
-        </Border>
+        <StackPanel Grid.Row="0" Margin="0,0,0,12">
+            <TextBlock x:Name="TitleText" Text="Массовое добавление объектов" FontSize="19" FontWeight="SemiBold"/>
+            <TextBlock x:Name="InputHint" Text="Укажите название каждого объекта."
+                       Margin="0,4,0,0" Foreground="{DynamicResource BrushTextSecondary}" TextWrapping="Wrap"/>
+            <Border x:Name="ValidationPanel" Visibility="Collapsed" Background="#12B42318"
+                    BorderBrush="#55B42318" BorderThickness="1" CornerRadius="6" Padding="9,6" Margin="0,10,0,0">
+                <ScrollViewer MaxHeight="90" VerticalScrollBarVisibility="Auto">
+                    <TextBlock x:Name="ValidationText" Foreground="{DynamicResource BrushText}" TextWrapping="Wrap"/>
+                </ScrollViewer>
+            </Border>
+        </StackPanel>
 
         <Border Grid.Row="1" Background="{DynamicResource BrushPanel}"
                 BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="10"
@@ -46,20 +47,21 @@
                       HorizontalGridLinesBrush="{DynamicResource BrushGridLine}"
                       VerticalGridLinesBrush="{DynamicResource BrushGridLine}"
                       CanUserResizeColumns="True" CanUserReorderColumns="False" CanUserResizeRows="False"
-                      RowHeaderWidth="0" RowHeight="46" ColumnHeaderHeight="42" MinHeight="180"
+                      RowHeaderWidth="0" RowHeight="42" ColumnHeaderHeight="36"
                       EnableRowVirtualization="True" ScrollViewer.CanContentScroll="True"
                       ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.HorizontalScrollBarVisibility="Auto"
-                      FrozenColumnCount="1" BorderThickness="0" Background="Transparent">
+                      BorderThickness="0" Background="Transparent">
                 <DataGrid.Columns>
-                    <DataGridTextColumn Header="Record" Binding="{Binding Record, UpdateSourceTrigger=PropertyChanged}"
-                                        Width="130" MinWidth="100"/>
-                    <DataGridTemplateColumn Header="PLC" Width="2*" MinWidth="190">
+                    <DataGridTextColumn x:Name="NameColumn" Header="Название объекта" Binding="{Binding Name, UpdateSourceTrigger=PropertyChanged}"
+                                        ElementStyle="{StaticResource BatchCellText}" EditingElementStyle="{StaticResource BatchCellEditor}"
+                                        Width="3*" MinWidth="150"/>
+                    <DataGridTemplateColumn x:Name="PlcColumn" Header="PLC" Width="2*" MinWidth="130">
                         <DataGridTemplateColumn.CellTemplate>
                             <DataTemplate>
                                 <ComboBox ItemsSource="{Binding PlcOptions, RelativeSource={RelativeSource AncestorType={x:Type Window}}}"
                                           SelectedValuePath="Key"
                                           SelectedValue="{Binding PlcKey, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                          Height="36" Padding="8,3" MinWidth="0" MaxDropDownHeight="300"
+                                          Height="32" Padding="8,3" MinWidth="0" MaxDropDownHeight="300"
                                           ToolTip="Выберите PLC для этой строки">
                                     <ComboBox.ItemTemplate>
                                         <DataTemplate><TextBlock Text="{Binding Title}"/></DataTemplate>
@@ -68,9 +70,10 @@
                             </DataTemplate>
                         </DataGridTemplateColumn.CellTemplate>
                     </DataGridTemplateColumn>
-                    <DataGridTextColumn Header="Название объекта" Binding="{Binding Name, UpdateSourceTrigger=PropertyChanged}"
-                                        Width="3*" MinWidth="220"/>
-                    <DataGridTemplateColumn Header="" Width="100" MinWidth="90">
+                    <DataGridTextColumn x:Name="RecordColumn" Header="Record" Binding="{Binding Record, UpdateSourceTrigger=PropertyChanged}"
+                                        ElementStyle="{StaticResource BatchCellText}" EditingElementStyle="{StaticResource BatchCellEditor}"
+                                        Width="100" MinWidth="75"/>
+                    <DataGridTemplateColumn Header="Действие" Width="100" MinWidth="90">
                         <DataGridTemplateColumn.CellTemplate>
                             <DataTemplate>
                                 <Button Content="Удалить" Tag="{Binding}" Click="RemoveRow_Click" Padding="8,4"

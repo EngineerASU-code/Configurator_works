@@ -49,6 +49,7 @@ public static class CompareSourceReader
         var workspace = new ProjectWorkspace(reader,
             allowWrite ? new OnlineProjectCrudDataSource(connectionString) : null,
             new ProjectArchitectureDataSource(reader.Server, reader.Database, strictReads: true));
+        var settingsStore = new ProjectCompareSettingsStore(reader.Server, reader.Database);
 
         DatabaseSchema? schema = null;
         string? issue = null;
@@ -69,7 +70,9 @@ public static class CompareSourceReader
         return new CompareSource(workspace, null, Origin(reader.Server, reader.Database), schema,
             CanWrite: allowWrite && !workspace.IsReadOnly, MetadataIssue: issue)
         {
-            ReadUnkeyedTableAsync = reader.ReadUnkeyedTableAsync
+            ReadUnkeyedTableAsync = reader.ReadUnkeyedTableAsync,
+            ReadProjectSettingsAsync = settingsStore.LoadAsync,
+            SaveProjectSettingsAsync = settingsStore.SaveAsync
         };
     }
 

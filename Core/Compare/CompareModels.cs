@@ -1,10 +1,13 @@
 #nullable enable
 using Configurator.Core.Architecture;
 using Configurator.Core.Projects;
+using Configurator.Themes;
 
 namespace Configurator.Core.Compare;
 
 public enum CompareStatus { Equal, OnlyA, OnlyB, Changed, Ambiguous, NotComparable, Error }
+
+public enum CompareMetadataKind { ClassDefinition, ManualRelation, ProjectTextList, ThemePreset }
 
 public sealed record CompareSource(
     IProjectWorkspace Workspace,
@@ -18,7 +21,11 @@ public sealed record CompareSource(
 {
     internal ConfiguratorProject? OfflineProject { get; init; }
     internal Func<string, CancellationToken, Task<IReadOnlyList<ProjectRecord>>>? ReadUnkeyedTableAsync { get; init; }
+    internal Func<CancellationToken, Task<ProjectCompareSettings>>? ReadProjectSettingsAsync { get; init; }
+    internal Func<ProjectCompareSettings, CancellationToken, Task>? SaveProjectSettingsAsync { get; init; }
 }
+
+public sealed record ProjectCompareSettings(IReadOnlyList<ProjectTextList> TextLists, IReadOnlyList<ThemePreset> ThemePresets);
 
 public sealed record CompareTable(
     ProjectTableSchema Schema,
@@ -42,7 +49,11 @@ public sealed record CompareDifference(
     IReadOnlyList<CompareDifference>? Children = null,
     CompareRecordPair? Pair = null,
     string? Column = null,
-    string? Issue = null);
+    string? Issue = null,
+    CompareMetadataKind? MetadataKind = null,
+    string? MetadataKey = null,
+    string? DetailAValue = null,
+    string? DetailBValue = null);
 
 public sealed record CompareResult(
     IReadOnlyList<CompareDifference> Architecture,

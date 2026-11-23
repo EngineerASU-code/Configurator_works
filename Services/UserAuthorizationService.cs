@@ -78,8 +78,6 @@ public static class UserAuthorizationService
                     .Select(x => x.ToString()).ToList();
                 _document.Roles.Add(new RoleDefinition { Name = "Проектировщик", Description = "Просмотр и управление объектной структурой; права на изменение экземпляров назначаются отдельно", BuiltIn = true, Permissions = engineerPermissions });
             }
-            if (!_document.Roles.Any(r => r.Name.Equals("Гость", StringComparison.OrdinalIgnoreCase)))
-                _document.Roles.Add(new RoleDefinition { Name = "Гость", Description = "Только просмотр; без изменения данных и структуры", BuiltIn = true, Permissions = new List<string> { Permission.ViewData.ToString(), Permission.Mode1View.ToString(), Permission.Mode2View.ToString(), Permission.Mode3View.ToString() } });
             // The commissioning engineer is intended to operate Mode 3 fully.
             // Keep elevated user administration, unrestricted SQL and journal restore separate.
             bool commissioningRoleNeedsSave = false;
@@ -103,13 +101,7 @@ public static class UserAuthorizationService
             }
 
             var commissioningRole = _document.Roles.First(r => r.Name.Equals("Инженер ПНР", StringComparison.OrdinalIgnoreCase));
-            commissioningRole.BuiltIn = true;
-            foreach (var permission in new[] { Permission.Mode3Show, Permission.Mode3View, Permission.Mode3Manage, Permission.Mode4Show, Permission.Mode4View, Permission.Mode4Manage, Permission.ManageObjects, Permission.ViewData, Permission.AddData, Permission.EditData, Permission.DeleteData })
-                if (!commissioningRole.Permissions.Contains(permission.ToString(), StringComparer.OrdinalIgnoreCase))
-                {
-                    commissioningRole.Permissions.Add(permission.ToString());
-                    commissioningRoleNeedsSave = true;
-                }
+            commissioningRoleNeedsSave |= EnsureCommissioningRolePermissions(commissioningRole);
 
             if (!_document.Users.Any(u => u.UserName.Equals("Инженер-ПНР", StringComparison.OrdinalIgnoreCase)))
             {
@@ -178,7 +170,7 @@ public static class UserAuthorizationService
                     || x.Equals(nameof(Permission.Mode2Manage), StringComparison.OrdinalIgnoreCase)
                     || x.Equals(nameof(Permission.ManageClasses), StringComparison.OrdinalIgnoreCase)
                     || x.Equals(nameof(Permission.ManageRelations), StringComparison.OrdinalIgnoreCase));
-                if (!hasMode1Visibility && hadMode1Access) role.Permissions.Add(nameof(Permission.Mode1Show));
+                if (!hasMode1Visibility && hadMode1Access && role != commissioningRole) role.Permissions.Add(nameof(Permission.Mode1Show));
                 if (!hasMode2Visibility && hadMode2Access) role.Permissions.Add(nameof(Permission.Mode2Show));
             }
             // Schema 6: preserve legacy navigation without inventing data/management rights.
@@ -304,15 +296,6 @@ public static class UserAuthorizationService
 
     [Obsolete("Автоматический вход отключён. Используйте явную авторизацию.")]
     public static void StartAsDefaultUser() => throw new InvalidOperationException("Автоматический вход отключён. Требуется явная авторизация.");
-
-    public static void EnterGuest()
-    {
-        InitializeIfNeeded();
-        var guestRole = _document.Roles.FirstOrDefault(r => r.Name.Equals("Гость", StringComparison.OrdinalIgnoreCase));
-        if (guestRole == null) throw new InvalidOperationException("Не найдена встроенная роль «Гость».");
-        CurrentUser = new UserAccount { UserName = "guest", DisplayName = "Гость", RoleName = guestRole.Name, Enabled = true };
-        Changed?.Invoke(null, EventArgs.Empty);
-    }
 
     public static void Logout()
     {
@@ -475,28 +458,37 @@ public static class UserAuthorizationService
 
     public static IReadOnlyList<UserAccount> Users => _document.Users.Where(u => IsBuiltInUser(u.UserName)).ToList();
     public static IReadOnlyList<RoleDefinition> Roles => _document.Roles;
-    public static bool IsBuiltInUser(string name) => string.Equals(name, "admin", StringComparison.OrdinalIgnoreCase) || string.Equals(name, "Инженер-ПНР", StringComparison.OrdinalIgnoreCase);
+    public static bool IsBuiltInUser(string name) => string.Equals(name, "admin", StringComparison.OrdinalIgnoreCase) || IsCommissioningEngineer(name);
+    internal static bool IsCommissioningEngineer(string name) => string.Equals(name, "Инженер-ПНР", StringComparison.OrdinalIgnoreCase);
+
+    internal static bool EnsureCommissioningRolePermissions(RoleDefinition role)
+    {
+        bool changed = !role.BuiltIn;
+        role.BuiltIn = true;
+        foreach (var permission in new[]
+        {
+            Permission.Mode3Show, Permission.Mode3View, Permission.Mode3Manage,
+            Permission.Mode4Show, Permission.Mode4View, Permission.Mode4Manage,
+            Permission.ManageObjects, Permission.ViewData, Permission.AddData,
+            Permission.EditData, Permission.DeleteData
+        })
+        {
+            if (role.Permissions.Contains(permission.ToString(), StringComparer.OrdinalIgnoreCase)) continue;
+            role.Permissions.Add(permission.ToString());
+            changed = true;
+        }
+        return changed;
+    }
     public static void SaveUser(string originalName, string userName, string displayName, string role, bool enabled, string newPassword)
     {
         RequireAdministrativeSession();
         string beforeMutation = JsonConvert.SerializeObject(_document);
         string sessionUserName = CurrentUser?.UserName;
         userName = (userName ?? "").Trim();
-        if (string.IsNullOrWhiteSpace(userName)) throw new ArgumentException("Укажите логин пользователя.");
-        if (_document.Users.Any(u => !u.UserName.Equals(originalName ?? "", StringComparison.OrdinalIgnoreCase) && u.UserName.Equals(userName, StringComparison.OrdinalIgnoreCase))) throw new ArgumentException("Такой пользователь уже существует.");
-        bool creating = string.IsNullOrWhiteSpace(originalName);
-        var user = creating
-            ? null
-            : _document.Users.FirstOrDefault(u => u.UserName.Equals(originalName, StringComparison.OrdinalIgnoreCase));
-        if (!creating && user == null) throw new InvalidOperationException("Пользователь не найден.");
-        if (!creating && IsBuiltInUser(originalName) && !userName.Equals(originalName, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("Логины системных пользователей нельзя изменять.");
-        if (creating)
-        {
-            if (userName.Equals("admin", StringComparison.OrdinalIgnoreCase) || userName.Equals("Инженер-ПНР", StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("Этот логин зарезервирован для системной учётной записи.");
-            user = new UserAccount { UserName = userName, DisplayName = displayName?.Trim() ?? userName, Enabled = false };
-        }
+        if (!IsBuiltInUser(originalName) || !userName.Equals(originalName, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Доступно редактирование только существующих профилей администратора и инженера.");
+        var user = _document.Users.FirstOrDefault(u => u.UserName.Equals(originalName, StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidOperationException("Пользователь не найден.");
 
         bool isAdmin = user.UserName.Equals("admin", StringComparison.OrdinalIgnoreCase);
         string requestedRole = isAdmin ? "Администратор" : (role ?? "Проектировщик").Trim();
@@ -507,15 +499,12 @@ public static class UserAuthorizationService
 
         bool wasEnabled = user.Enabled;
         EnsureAdministratorRemainsEnabled(isAdmin, enabled);
-        if (creating && string.IsNullOrEmpty(newPassword))
-            throw new InvalidOperationException("Для нового пользователя задайте пароль длиной не менее 5 символов.");
         if (!wasEnabled && enabled && string.IsNullOrEmpty(newPassword))
             throw new InvalidOperationException("Перед включением пользователя задайте новый пароль.");
         if (!string.IsNullOrEmpty(newPassword)) ValidatePassword(newPassword);
         if (string.IsNullOrEmpty(newPassword) && (string.IsNullOrWhiteSpace(user.PasswordSalt) || string.IsNullOrWhiteSpace(user.PasswordHash)))
             throw new InvalidOperationException("Для учётной записи необходимо задать пароль перед включением.");
 
-        if (creating) _document.Users.Add(user);
         user.DisplayName = isAdmin ? "Администратор" : (string.IsNullOrWhiteSpace(displayName) ? user.UserName : displayName.Trim());
         user.RoleName = requestedRole;
         user.Enabled = enabled;

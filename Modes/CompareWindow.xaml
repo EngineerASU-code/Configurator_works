@@ -169,6 +169,12 @@
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="Связь" Binding="{Binding Title}" Width="2*"/>
                                 <DataGridTextColumn Header="Проект A" Binding="{Binding A}" Width="*"/>
+                                <DataGridTemplateColumn Header="B → A" Width="54">
+                                    <DataGridTemplateColumn.CellTemplate><DataTemplate><Button Content="←" Click="TransferBtoA_Click" IsEnabled="{Binding CanTransferBtoA}" ToolTipService.ShowOnDisabled="True" ToolTip="{Binding TransferBtoAReason}"/></DataTemplate></DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTemplateColumn Header="A → B" Width="54">
+                                    <DataGridTemplateColumn.CellTemplate><DataTemplate><Button Content="→" Click="TransferAtoB_Click" IsEnabled="{Binding CanTransferAtoB}" ToolTipService.ShowOnDisabled="True" ToolTip="{Binding TransferAtoBReason}"/></DataTemplate></DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
                                 <DataGridTextColumn Header="Проект B" Binding="{Binding B}" Width="*"/>
                                 <DataGridTextColumn Header="Статус" Binding="{Binding StatusText}" Width="150"/>
                             </DataGrid.Columns>
@@ -183,12 +189,38 @@
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="Элемент" Binding="{Binding Title}" Width="2*"/>
                                 <DataGridTextColumn Header="Проект A" Binding="{Binding A}" Width="*"/>
+                                <DataGridTemplateColumn Header="B → A" Width="54">
+                                    <DataGridTemplateColumn.CellTemplate><DataTemplate><Button Content="←" Click="TransferBtoA_Click" IsEnabled="{Binding CanTransferBtoA}" ToolTipService.ShowOnDisabled="True" ToolTip="{Binding TransferBtoAReason}"/></DataTemplate></DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
+                                <DataGridTemplateColumn Header="A → B" Width="54">
+                                    <DataGridTemplateColumn.CellTemplate><DataTemplate><Button Content="→" Click="TransferAtoB_Click" IsEnabled="{Binding CanTransferAtoB}" ToolTipService.ShowOnDisabled="True" ToolTip="{Binding TransferAtoBReason}"/></DataTemplate></DataGridTemplateColumn.CellTemplate>
+                                </DataGridTemplateColumn>
                                 <DataGridTextColumn Header="Проект B" Binding="{Binding B}" Width="*"/>
                                 <DataGridTextColumn Header="Статус" Binding="{Binding StatusText}" Width="150"/>
                             </DataGrid.Columns>
                         </DataGrid>
                     </TabItem>
                 </TabControl>
+            </TabItem>
+            <TabItem x:Name="SettingsTab" Header="Проектные настройки" Visibility="Collapsed">
+                <DataGrid x:Name="SettingsGrid" AutoGenerateColumns="False" IsReadOnly="True"
+                          CanUserAddRows="False" CanUserDeleteRows="False"
+                          EnableRowVirtualization="True" EnableColumnVirtualization="True"
+                          ScrollViewer.CanContentScroll="True" RowStyle="{StaticResource CompareResultRowStyle}"
+                          SelectionChanged="DifferenceGrid_SelectionChanged">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Настройка" Binding="{Binding Title}" Width="2*"/>
+                        <DataGridTextColumn Header="Проект A" Binding="{Binding A}" Width="*"/>
+                        <DataGridTemplateColumn Header="B → A" Width="58">
+                            <DataGridTemplateColumn.CellTemplate><DataTemplate><Button Content="←" Click="TransferBtoA_Click" IsEnabled="{Binding CanTransferBtoA}" ToolTipService.ShowOnDisabled="True" ToolTip="{Binding TransferBtoAReason}"/></DataTemplate></DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTemplateColumn Header="A → B" Width="58">
+                            <DataGridTemplateColumn.CellTemplate><DataTemplate><Button Content="→" Click="TransferAtoB_Click" IsEnabled="{Binding CanTransferAtoB}" ToolTipService.ShowOnDisabled="True" ToolTip="{Binding TransferAtoBReason}"/></DataTemplate></DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTextColumn Header="Проект B" Binding="{Binding B}" Width="*"/>
+                        <DataGridTextColumn Header="Статус" Binding="{Binding StatusText}" Width="150"/>
+                    </DataGrid.Columns>
+                </DataGrid>
             </TabItem>
             <TabItem x:Name="ObjectsTab" Header="Режим 3 — Объекты и данные">
                 <DataGrid x:Name="ObjectsGrid" AutoGenerateColumns="False" IsReadOnly="True"

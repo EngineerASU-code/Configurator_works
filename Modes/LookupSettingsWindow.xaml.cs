@@ -6,6 +6,8 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using Configurator.Core.Architecture;
+using Configurator.Core.Projects;
+using Configurator.Infrastructure.Projects;
 
 namespace Configurator;
 
@@ -166,6 +168,48 @@ public partial class LookupSettingsWindow : Window
         BtnAdd.IsEnabled = enabled;
         BtnEdit.IsEnabled = enabled && DataGrid.SelectedItem != null;
         BtnDelete.IsEnabled = enabled && DataGrid.SelectedItem != null && _keys.Count > 0;
+        BtnSaveProjectList.IsEnabled = enabled && _selectedDefinition != null;
+    }
+
+    private async void BtnSaveProjectList_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedDefinition is null || _db is null || CmbDatabase.SelectedItem is not string database) return;
+        try
+        {
+            string keyColumn = _columns.FirstOrDefault(column => column.Name.Equals(_selectedDefinition.LookupKeyField, StringComparison.OrdinalIgnoreCase))?.Name
+                ?? _keys.FirstOrDefault() ?? _columns.FirstOrDefault()?.Name ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(keyColumn)) throw new InvalidOperationException("У списка нет ключевого столбца.");
+            string displayColumn = _columns.FirstOrDefault(column => new[] { "Name", "Title", "Text", "Description" }
+                .Contains(column.Name, StringComparer.OrdinalIgnoreCase))?.Name ?? keyColumn;
+            var rows = await _db.GetAllTableRowsAsync(_selectedDefinition.LookupTable);
+            var list = new ProjectTextList
+            {
+                Name = _selectedDefinition.ClassName,
+                SourceTable = _selectedDefinition.LookupTable,
+                KeyColumn = keyColumn,
+                DisplayColumn = displayColumn,
+                ImportedUtc = DateTimeOffset.UtcNow,
+                Items = rows.Rows.Cast<DataRow>().Select(row => new ProjectTextListItem
+                {
+                    Key = Convert.ToString(row[keyColumn], System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
+                    Text = Convert.ToString(row[displayColumn], System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty
+                }).ToList()
+            };
+            if (list.Items.Any(item => string.IsNullOrWhiteSpace(item.Key)) ||
+                list.Items.Select(item => item.Key).Distinct(StringComparer.Ordinal).Count() != list.Items.Count)
+                throw new InvalidOperationException("В выбранном списке есть пустые или повторяющиеся ключи; его нельзя безопасно сохранить для Compare.");
+            var store = new ProjectCompareSettingsStore(_connection.Server, database);
+            var settings = await store.LoadAsync();
+            string listKey = $"{list.SourceTable.Trim()}|{list.Name.Trim()}";
+            var lists = settings.TextLists.Where(item => !$"{item.SourceTable.Trim()}|{item.Name.Trim()}"
+                .Equals(listKey, StringComparison.OrdinalIgnoreCase)).Append(list).ToList();
+            await store.SaveAsync(settings with { TextLists = lists });
+            TxtStatus.Text = $"Список «{list.Name}» сохранён в проектные настройки для Compare · записей: {list.Items.Count}";
+        }
+        catch (Exception ex)
+        {
+            TxtStatus.Text = "Не удалось сохранить список для Compare: " + Configurator.Infrastructure.UserErrorMessage.Format(ex);
+        }
     }
 
     private void DataGrid_SelectionChanged(object sender, SelectionChangedEventArgs e) => SetButtons(_selectedDefinition != null);

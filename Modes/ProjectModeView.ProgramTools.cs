@@ -18,7 +18,8 @@ public partial class ProjectModeView
     {
         bool isProgram = selectedClass?.Name.Equals("Program", StringComparison.OrdinalIgnoreCase) == true;
         bool isMatrix = selectedClass?.Name.Equals("Matrix", StringComparison.OrdinalIgnoreCase) == true;
-        if ((!isProgram && !isMatrix) || _connection == null || string.IsNullOrWhiteSpace(_selectedDatabase))
+        bool offline = _offlineProject != null && _offlineSource != null;
+        if ((!isProgram && !isMatrix) || (!offline && (_connection == null || string.IsNullOrWhiteSpace(_selectedDatabase))))
         {
             ResetProgramTools();
             return;
@@ -29,7 +30,7 @@ public partial class ProjectModeView
         ObjectDetailsPanel.Visibility = System.Windows.Visibility.Collapsed;
         ProgramToolsHost.Visibility = System.Windows.Visibility.Visible;
 
-        string connectionString = _connection.ToConnectionString(_selectedDatabase);
+        string? connectionString = offline ? null : _connection.ToConnectionString(_selectedDatabase);
         object plcValue = GetInitialProgramPlcValue();
         object classNumber = selectedClass.ClassNumber;
         if (isProgram)
@@ -37,7 +38,8 @@ public partial class ProjectModeView
             ProgramToolsTabs.Visibility = System.Windows.Visibility.Visible;
             MatrixCatalogEditor.Visibility = System.Windows.Visibility.Collapsed;
             ProgramToolsTabs.SelectedIndex = 0;
-            ProgramManagementEditor.Configure(connectionString, plcValue, classNumber);
+            if (offline) ProgramManagementEditor.Configure(_offlineSource, plcValue, classNumber);
+            else ProgramManagementEditor.Configure(connectionString!, plcValue, classNumber);
         }
         else
         {
@@ -49,7 +51,8 @@ public partial class ProjectModeView
                 .GroupBy(option => option.Number)
                 .Select(group => group.First())
                 .ToArray();
-            MatrixCatalogEditor.Configure(connectionString, plcValue, classNumber, deviceClasses);
+            if (offline) MatrixCatalogEditor.Configure(_offlineSource, plcValue, classNumber, deviceClasses);
+            else MatrixCatalogEditor.Configure(connectionString!, plcValue, classNumber, deviceClasses);
         }
     }
 
@@ -65,13 +68,15 @@ public partial class ProjectModeView
 
     private void ProgramContextChanged(ProgramContext context)
     {
-        if (context == null || _connection == null || string.IsNullOrWhiteSpace(_selectedDatabase))
+        bool offline = _offlineProject != null && _offlineSource != null;
+        if (context == null || (!offline && (_connection == null || string.IsNullOrWhiteSpace(_selectedDatabase))))
         {
             ProgramSupportEditor.ClearContext();
             return;
         }
 
-        ProgramSupportEditor.Configure(_connection.ToConnectionString(_selectedDatabase), context);
+        if (offline) ProgramSupportEditor.Configure(_offlineSource, context);
+        else ProgramSupportEditor.Configure(_connection!.ToConnectionString(_selectedDatabase), context);
     }
 
     private void ResetProgramTools()

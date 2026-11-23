@@ -77,6 +77,32 @@ public sealed class UserAuthorizationSecurityTests
     }
 
     [Fact]
+    public void BuiltInLoginAccountsAreAdministratorAndCommissioningEngineerOnly()
+    {
+        Assert.True(UserAuthorizationService.IsBuiltInUser("admin"));
+        Assert.True(UserAuthorizationService.IsBuiltInUser("Инженер-ПНР"));
+        Assert.False(UserAuthorizationService.IsBuiltInUser("guest"));
+    }
+
+    [Fact]
+    public void CommissioningEngineerGetsMode3AndMode4AccessByDefault()
+    {
+        var role = new RoleDefinition { Name = "Инженер ПНР" };
+
+        Assert.True(UserAuthorizationService.EnsureCommissioningRolePermissions(role));
+        Assert.False(UserAuthorizationService.EnsureCommissioningRolePermissions(role));
+        Assert.True(role.BuiltIn);
+        foreach (var permission in new[]
+        {
+            Permission.Mode3Show, Permission.Mode3View, Permission.Mode3Manage,
+            Permission.Mode4Show, Permission.Mode4View, Permission.Mode4Manage,
+            Permission.ManageObjects, Permission.ViewData, Permission.AddData,
+            Permission.EditData, Permission.DeleteData
+        })
+            Assert.Contains(permission.ToString(), role.Permissions);
+    }
+
+    [Fact]
     public void LegacyPbkdf2HashVerifiesAndCanBeUpgradedToCurrentVersion()
     {
         const string password = "legacy-passphrase";

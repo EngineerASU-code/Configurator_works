@@ -59,6 +59,7 @@ public sealed class ProjectPackageService
                 await WriteJsonAsync(archive, "project/graph-relations.json", project.GraphRelations, cancellationToken);
                 await WriteJsonAsync(archive, "project/filters.json", project.Filters, cancellationToken);
                 await WriteJsonAsync(archive, "project/text-lists.json", project.TextLists, cancellationToken);
+                await WriteJsonAsync(archive, "project/theme-presets.json", project.ThemePresets, cancellationToken);
                 await WriteJsonAsync(archive, "project/users.json", project.Users, cancellationToken);
                 await WriteJsonAsync(archive, "data/local-snapshot.json", project.LocalRecords, cancellationToken);
                 await WriteJsonAsync(archive, "data/baseline.json", project.BaselineRecords, cancellationToken);
@@ -287,6 +288,7 @@ public sealed class ProjectPackageService
             GraphRelations = await ReadJsonAsync<JsonObject>(archive, "project/graph-relations.json", cancellationToken) ?? new(),
             Filters = await ReadJsonAsync<JsonObject>(archive, "project/filters.json", cancellationToken) ?? new(),
             TextLists = await ReadJsonAsync<List<ProjectTextList>>(archive, "project/text-lists.json", cancellationToken) ?? new(),
+            ThemePresets = await ReadJsonAsync<List<Configurator.Themes.ThemePreset>>(archive, "project/theme-presets.json", cancellationToken) ?? new(),
             Users = await ReadJsonAsync<List<ProjectUserAccount>>(archive, "project/users.json", cancellationToken) ?? new(),
             LocalRecords = await ReadJsonAsync<List<ProjectRecord>>(archive, "data/local-snapshot.json", cancellationToken) ?? new(),
             BaselineRecords = await ReadJsonAsync<List<ProjectRecord>>(archive, "data/baseline.json", cancellationToken) ?? new(),
@@ -475,7 +477,7 @@ public sealed class ProjectPackageService
         if (project.Manifest.CreatedUtc == default || project.Manifest.ModifiedUtc == default)
             throw new InvalidDataException("В метаданных отсутствует дата создания или изменения проекта.");
         if (project.Settings is null || project.Mappings is null || project.Architecture is null ||
-            project.GraphRelations is null || project.Filters is null || project.TextLists is null || project.Users is null ||
+            project.GraphRelations is null || project.Filters is null || project.TextLists is null || project.ThemePresets is null || project.Users is null ||
             project.LocalRecords is null || project.BaselineRecords is null || project.TableSchemas is null)
             throw new InvalidDataException("Проект содержит отсутствующий обязательный раздел или раздел с null вместо структуры данных.");
 
@@ -582,6 +584,10 @@ public sealed class ProjectPackageService
                 if (item is null || string.IsNullOrWhiteSpace(item.Key) || !itemKeys.Add(item.Key))
                     throw new InvalidDataException($"Список '{list.Name}' содержит пустой или повторяющийся ключ элемента.");
         }
+
+        foreach (var theme in project.ThemePresets)
+            if (theme is null || string.IsNullOrWhiteSpace(theme.Name))
+                throw new InvalidDataException("Пресет темы проекта не имеет имени.");
 
         var userNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var user in project.Users)

@@ -1,9 +1,12 @@
 #nullable enable
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using Configurator.Core.Architecture;
 using Configurator.Core.Compare;
 using Configurator.Core.Projects;
 using Configurator.Infrastructure.Projects;
+using Configurator.Themes;
 using Microsoft.Data.SqlClient;
 using Xunit;
 
@@ -11,6 +14,159 @@ namespace Configurator.Security.Tests;
 
 public sealed class CompareTransferIntegrationTests
 {
+    [Fact]
+    public async Task OfflineTransfersProjectTextListsAndThemePresetsWithoutApplyingThemToTheApp()
+    {
+        using var files = new CompareTestDirectory();
+        var appTheme = ThemeManager.CurrentPreset;
+        foreach (var transferTheme in new[] { false, true })
+        {
+            var projectA = CompareTransferPreviewTests.Sample("Compare A", 10.25m);
+            var projectB = CompareTransferPreviewTests.Sample("Compare B", 15.25m);
+            if (transferTheme)
+                projectA.ThemePresets.Add(new ThemePreset { Name = "Project blue", Accent = System.Windows.Media.Color.FromRgb(22, 80, 160) });
+            else
+                projectA.TextLists.Add(new ProjectTextList
+                {
+                    Name = "Valve types", SourceTable = "dbo.ValveTypes", KeyColumn = "Type", DisplayColumn = "Name",
+                    Items = [new ProjectTextListItem { Key = "Ball", Text = "Ball valve" }]
+                });
+            await new ProjectPackageService().SaveAsync(files.A, projectA);
+            await new ProjectPackageService().SaveAsync(files.B, projectB);
+            var a = await CompareSourceReader.OpenOfflineAsync(files.A, true);
+            var b = await CompareSourceReader.OpenOfflineAsync(files.B, true);
+            using var workspaceA = (IDisposable)a.Workspace;
+            using var workspaceB = (IDisposable)b.Workspace;
+            var result = await CompareEngine.CompareAsync(a, b);
+
+            var kind = transferTheme ? CompareMetadataKind.ThemePreset : CompareMetadataKind.ProjectTextList;
+            var difference = Assert.Single(result.Architecture, item => item.MetadataKind == kind);
+            Assert.Equal(CompareStatus.OnlyA, difference.Status);
+            var preview = await CompareMetadataTransferPreview.EvaluateAsync(a, b, difference, aToB: true);
+            Assert.True(preview.IsAllowed, preview.BlockReason);
+            await CompareTransfer.ApplyMetadataToTargetAsync(preview);
+
+            var copied = await new ProjectPackageService().OpenAsync(files.B);
+            if (transferTheme)
+                Assert.Equal(System.Windows.Media.Color.FromRgb(22, 80, 160), Assert.Single(copied.ThemePresets).Accent);
+            else
+                Assert.Equal("Ball valve", Assert.Single(Assert.Single(copied.TextLists).Items).Text);
+            Assert.Same(appTheme, ThemeManager.CurrentPreset);
+        }
+    }
+
+    [Fact]
+    public async Task OfflineProjectSettingsTransferRejectsStaleTargetWithoutOverwritingIt()
+    {
+        using var files = new CompareTestDirectory();
+        var projectA = CompareTransferPreviewTests.Sample("Compare A", 10.25m);
+        projectA.TextLists.Add(new ProjectTextList
+        {
+            Name = "Valve types", SourceTable = "dbo.ValveTypes", KeyColumn = "Type", DisplayColumn = "Type",
+            Items = [new ProjectTextListItem { Key = "Ball", Text = "Ball" }]
+        });
+        await new ProjectPackageService().SaveAsync(files.A, projectA);
+        await new ProjectPackageService().SaveAsync(files.B, CompareTransferPreviewTests.Sample("Compare B", 15.25m));
+        var a = await CompareSourceReader.OpenOfflineAsync(files.A, true);
+        var b = await CompareSourceReader.OpenOfflineAsync(files.B, true);
+        using var workspaceA = (IDisposable)a.Workspace;
+        using var workspaceB = (IDisposable)b.Workspace;
+        var result = await CompareEngine.CompareAsync(a, b);
+        var difference = Assert.Single(result.Architecture, item => item.MetadataKind == CompareMetadataKind.ProjectTextList);
+        var preview = await CompareMetadataTransferPreview.EvaluateAsync(a, b, difference, aToB: true);
+        Assert.True(preview.IsAllowed, preview.BlockReason);
+
+        var changedTarget = await new ProjectPackageService().OpenAsync(files.B);
+        changedTarget.ThemePresets.Add(new ThemePreset { Name = "Concurrent edit" });
+        await new ProjectPackageService().SaveAsync(files.B, changedTarget);
+        var beforeRejectedWrite = File.ReadAllBytes(files.B);
+        await Assert.ThrowsAsync<CompareTransferException>(() => CompareTransfer.ApplyMetadataToTargetAsync(preview));
+        Assert.Equal(beforeRejectedWrite, File.ReadAllBytes(files.B));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task OfflineTransfersClassSettingsWithoutChangingSource(bool aToB)
+    {
+        using var files = new CompareTestDirectory();
+        var projectA = CompareTransferPreviewTests.Sample("Compare A", 10.25m);
+        var projectB = CompareTransferPreviewTests.Sample("Compare B", 15.25m);
+        projectB.Manifest.ProjectId = projectA.Manifest.ProjectId;
+        var sourceProject = aToB ? projectA : projectB;
+        var targetProject = aToB ? projectB : projectA;
+        sourceProject.Architecture["classDefinitions"] = JsonSerializer.SerializeToNode(new[]
+        {
+            new Configurator.Core.Architecture.ClassDefinition { Id = "extra", Name = "Extra", Description = "from A" }
+        });
+        targetProject.Architecture["classDefinitions"] = JsonSerializer.SerializeToNode(Array.Empty<Configurator.Core.Architecture.ClassDefinition>());
+        var packages = new ProjectPackageService();
+        await packages.SaveAsync(files.A, projectA);
+        await packages.SaveAsync(files.B, projectB);
+        var a = await CompareSourceReader.OpenOfflineAsync(files.A, true);
+        var b = await CompareSourceReader.OpenOfflineAsync(files.B, true);
+        using var workspaceA = (IDisposable)a.Workspace;
+        using var workspaceB = (IDisposable)b.Workspace;
+        string sourcePath = aToB ? files.A : files.B;
+        string targetPath = aToB ? files.B : files.A;
+        var beforeSource = File.ReadAllBytes(sourcePath);
+        var result = await CompareEngine.CompareAsync(a, b);
+        var difference = Flatten(result.Architecture).Single(item => item.MetadataKind == CompareMetadataKind.ClassDefinition && item.MetadataKey == "extra");
+        var preview = await CompareMetadataTransferPreview.EvaluateAsync(a, b, difference, aToB);
+        Assert.True(preview.IsAllowed, preview.BlockReason);
+        await CompareTransfer.ApplyMetadataToTargetAsync(preview);
+        var restored = await packages.OpenAsync(targetPath);
+        var definitions = JsonSerializer.Deserialize<Configurator.Core.Architecture.ClassDefinition[]>(restored.Architecture["classDefinitions"]!.ToJsonString());
+        Assert.Equal("from A", Assert.Single(definitions!).Description);
+        Assert.Equal(beforeSource, File.ReadAllBytes(sourcePath));
+
+        var afterTarget = File.ReadAllBytes(targetPath);
+        await Assert.ThrowsAsync<CompareTransferException>(() => CompareTransfer.ApplyMetadataToTargetAsync(preview));
+        Assert.Equal(afterTarget, File.ReadAllBytes(targetPath));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task OfflineTransfersManualRelationAndLeavesSourceUntouched(bool aToB)
+    {
+        using var files = new CompareTestDirectory();
+        var projectA = CompareTransferPreviewTests.Sample("Compare A", 10.25m);
+        var projectB = CompareTransferPreviewTests.Sample("Compare B", 10.25m);
+        var source = aToB ? projectA : projectB;
+        var target = aToB ? projectB : projectA;
+        target.Manifest.ProjectId = source.Manifest.ProjectId;
+        source.GraphRelations = JsonSerializer.SerializeToNode(new GraphRelationProjectDocument
+        {
+            ManualRelations = [new GraphRelationDefinition
+            {
+                Source = "dbo.CompareObjects", SourceColumn = "Neighbour", Target = "dbo.CompareObjects",
+                TargetColumn = "Record", Rule = "Explicit neighbour mapping"
+            }]
+        })!.AsObject();
+        var packages = new ProjectPackageService();
+        await packages.SaveAsync(files.A, projectA);
+        await packages.SaveAsync(files.B, projectB);
+        string sourcePath = aToB ? files.A : files.B;
+        string targetPath = aToB ? files.B : files.A;
+        var before = File.ReadAllBytes(sourcePath);
+
+        var a = await CompareSourceReader.OpenOfflineAsync(files.A, true);
+        var b = await CompareSourceReader.OpenOfflineAsync(files.B, true);
+        using var workspaceA = (IDisposable)a.Workspace;
+        using var workspaceB = (IDisposable)b.Workspace;
+        var result = await CompareEngine.CompareAsync(a, b);
+        var difference = Flatten(result.Architecture).Single(row => row.MetadataKind == CompareMetadataKind.ManualRelation);
+        var preview = await CompareMetadataTransferPreview.EvaluateAsync(a, b, difference, aToB);
+        Assert.True(preview.IsAllowed, preview.BlockReason);
+        await CompareTransfer.ApplyMetadataToTargetAsync(preview);
+
+        var reopened = await packages.OpenAsync(targetPath);
+        var relation = Assert.Single(reopened.GraphRelations.Deserialize<GraphRelationProjectDocument>()!.ManualRelations);
+        Assert.Equal(("Neighbour", "Record", "Explicit neighbour mapping"), (relation.SourceColumn, relation.TargetColumn, relation.Rule));
+        Assert.Equal(before, File.ReadAllBytes(sourcePath));
+    }
+
     [Fact]
     public async Task OfflineTransfersUpdateOnlyTheChosenValueAndPersistInBothDirections()
     {
@@ -211,4 +367,7 @@ public sealed class CompareTransferIntegrationTests
         Assert.True(preview.IsAllowed, preview.BlockReason);
         await CompareTransfer.ApplyToTargetAsync(preview);
     }
+
+    private static IEnumerable<CompareDifference> Flatten(IEnumerable<CompareDifference> rows) =>
+        rows.SelectMany(row => new[] { row }.Concat(Flatten(row.Children ?? Array.Empty<CompareDifference>())));
 }

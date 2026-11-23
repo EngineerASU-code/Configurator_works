@@ -132,6 +132,7 @@ public partial class MainWindow
         EditorModeView.Visibility = Visibility.Collapsed;
         Mode2View.Visibility = Visibility.Collapsed;
         Mode3View.Visibility = Visibility.Collapsed;
+        Mode4View.Visibility = Visibility.Collapsed;
         UpdateWorkspaceModeUi();
         CurrentProjectText.Content = "не выбран";
         StatusText.Text = "Проект закрыт. Выберите локальный проект или перейдите в Online.";
@@ -198,6 +199,17 @@ public partial class MainWindow
             project.Architecture["sourceServer"] = _connection.Server ?? string.Empty;
             project.Architecture["capturedUtc"] = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
 
+            try
+            {
+                var projectSettings = await new ProjectCompareSettingsStore(_connection.Server ?? string.Empty, database).LoadAsync();
+                project.TextLists = projectSettings.TextLists.Select(list => JsonSerializer.Deserialize<ProjectTextList>(JsonSerializer.Serialize(list))!).ToList();
+                project.ThemePresets = projectSettings.ThemePresets.Select(theme => theme.Clone()).ToList();
+            }
+            catch (Exception settingsError)
+            {
+                throw new InvalidOperationException("Не удалось перенести списки и темы проекта в локальную копию: " + settingsError.Message, settingsError);
+            }
+
             // Capture project logic alongside the physical database snapshot. These are
             // project data, not credentials; the local package must travel independently.
             try
@@ -235,6 +247,15 @@ public partial class MainWindow
             catch (Exception classError)
             {
                 throw new InvalidOperationException("Не удалось сохранить библиотеку классов в локальный проект: " + classError.Message, classError);
+            }
+            try
+            {
+                var functionalBlocks = new FunctionalBlockStore(_connection.Server ?? string.Empty, database).Load();
+                new FunctionalBlockStore(project).Save(functionalBlocks);
+            }
+            catch (Exception blockError)
+            {
+                throw new InvalidOperationException("Не удалось сохранить функциональные блоки в локальный проект: " + blockError.Message, blockError);
             }
 
             int tableCount = 0;
@@ -344,6 +365,7 @@ public partial class MainWindow
             selectedFile = dialog.FileName;
         }
         else selectedFile = requestedPath;
+        if (_currentMode == 4 && !FunctionalBlockEditorControl.ConfirmPendingEdits()) return false;
         bool resumeAutoSave = _offlineAutoSaveTimer.IsEnabled;
         FileStream? candidateLock = null;
         bool candidateLoaded = false;
@@ -481,10 +503,13 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
             if (!_offlineAutoSaveTimer.IsEnabled) _offlineAutoSaveTimer.Start();
             UpdateWorkspaceModeUi();
             WorkspaceModeHint.Text = "";
-            int modeToRestore = _currentMode is >= 1 and <= 3 ? _currentMode : 1;
+            int modeToRestore = _currentMode is >= 1 and <= 4 &&
+                (_currentMode != 4 || PermissionPolicy.CanEnterMode(UserAuthorizationService.CurrentUser, UserAuthorizationService.CurrentRole, 4))
+                ? _currentMode : 1;
             EditorModeView.Visibility = modeToRestore == 1 ? Visibility.Visible : Visibility.Collapsed;
             Mode2View.Visibility = modeToRestore == 2 ? Visibility.Visible : Visibility.Collapsed;
             Mode3View.Visibility = modeToRestore == 3 ? Visibility.Visible : Visibility.Collapsed;
+            Mode4View.Visibility = modeToRestore == 4 ? Visibility.Visible : Visibility.Collapsed;
             _currentMode = modeToRestore;
             _offlineModeSwitchCount++;
             System.Diagnostics.Debug.WriteLine($"[OfflinePerf] mode-switch #{_offlineModeSwitchCount}: mode={modeToRestore}, records={_openedLocalProject.LocalRecords.Count}, schemas={_openedLocalProject.TableSchemas.Count}");
@@ -888,7 +913,7 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
             SetOfflineEditorButtons();
         }
 
-        private void DeleteOfflineRows()
+        private async void DeleteOfflineRows()
         {
             if (!UserAuthorizationService.Require(Permission.Mode1Delete)) return;
             if (_offlineCurrentDataTable is null || _openedLocalProject is null) return;
@@ -898,15 +923,29 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
 
             try
             {
+                CommitOfflineGridToProject();
                 var source = _projectDataSource.Current as Configurator.Core.Projects.OfflineProjectDataSource
                     ?? throw new InvalidOperationException("Не удалось проверить связи локального проекта.");
                 var schema = _openedLocalProject.TableSchemas.FirstOrDefault(x =>
                     x.TableName.Equals(_offlineCurrentTableName, StringComparison.OrdinalIgnoreCase));
-                var targets = rows.Select(row => row.Table.Columns.Cast<DataColumn>()
-                    .ToDictionary(column => column.ColumnName, column => row[column] == DBNull.Value ? null! : row[column], StringComparer.OrdinalIgnoreCase)).ToList();
-                OfflineObjectDeletionGuard.Check(source, _offlineCurrentTableName!, targets);
+                var targetRecords = rows.Select(row =>
+                {
+                    if (!_offlineRowRecordKeys.TryGetValue(row, out var key) ||
+                        !_offlineCurrentRecordIndex.TryGetValue(key, out var record))
+                        throw new InvalidOperationException("Не удалось определить запись локального проекта для проверки связей.");
+                    return record;
+                }).ToList();
+                var targets = targetRecords.Select(record => record.Values.ToDictionary(pair => pair.Key,
+                    pair => (object?)(pair.Value?.DeepClone()), StringComparer.OrdinalIgnoreCase)).ToList();
+                var replacementOptions = OfflineObjectDeletionGuard.BuildOptions(source, _offlineCurrentTableName!, targets);
+                IReadOnlyList<ReferenceReplacement> replacements = Array.Empty<ReferenceReplacement>();
+                if (replacementOptions.Count > 0)
+                {
+                    var dialog = new DependencyReplacementWindow(replacementOptions, requireExistingCandidates: true) { Owner = this };
+                    if (dialog.ShowDialog() != true) return;
+                    replacements = dialog.Replacements;
+                }
 
-                var affectedKeys = new List<string>(rows.Count);
                 var recordsToRemove = new HashSet<Configurator.Core.Projects.ProjectRecord>();
                 var journalChanges = new List<ChangeJournalRowChange>(rows.Count);
                 foreach (var row in rows)
@@ -925,29 +964,86 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
                         values, null, identity, null));
                     if (!recordsToRemove.Add(record))
                         throw new InvalidOperationException("Выбранные строки указывают на одну и ту же запись.");
-                    affectedKeys.Add(key);
                 }
 
-                _openedLocalProject.LocalRecords.RemoveAll(recordsToRemove.Contains);
-                source.InvalidateIndex();
-                foreach (var key in affectedKeys)
+                var replacementGroups = replacements.GroupBy(BuildOfflineReplacementGroupKey, StringComparer.Ordinal).ToList();
+                var replacementUpdates = new Dictionary<string, Dictionary<string, object?>>(StringComparer.Ordinal);
+                foreach (var group in replacementGroups)
                 {
-                    _offlineCurrentRecordIndex.Remove(key);
-                    _offlineBaselineRows.Remove(key);
+                    var first = group.First();
+                    var groupKey = BuildOfflineReplacementGroupKey(first);
+                    var sourceRecord = source.GetRecords(first.SourceTable).SingleOrDefault(record =>
+                        first.KeyColumns.Select((column, index) => (column, value: first.KeyValues[index])).All(pair =>
+                            record.Values.TryGetPropertyValue(pair.column, out var value) && OfflineObjectDeletionGuard.ValuesEqual(value, pair.value)));
+                    if (sourceRecord == null) throw new InvalidOperationException("Зависимая запись для замены больше не найдена.");
+                    var before = OfflineRecordValues(sourceRecord);
+                    var updates = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                    var after = new Dictionary<string, object>(before, StringComparer.OrdinalIgnoreCase);
+                    foreach (var replacement in group)
+                    {
+                        if (replacement.SourceColumns.Count != replacement.NewValues.Count)
+                            throw new InvalidOperationException("Количество полей и значений в замене не совпадает.");
+                        for (var i = 0; i < replacement.SourceColumns.Count; i++)
+                            AssignOfflineReplacementValue(updates, replacement.SourceColumns[i], replacement.NewValues[i]);
+                        foreach (var extra in replacement.AdditionalAssignments)
+                            AssignOfflineReplacementValue(updates, extra.Key, extra.Value);
+                    }
+                    replacementUpdates[groupKey] = updates;
+                    foreach (var update in updates) after[update.Key] = update.Value!;
+                    var identityBefore = first.KeyColumns.Select((column, index) => (column, value: first.KeyValues[index]))
+                        .ToDictionary(pair => pair.column, pair => pair.value, StringComparer.OrdinalIgnoreCase);
+                    var identityAfter = new Dictionary<string, object>(identityBefore, StringComparer.OrdinalIgnoreCase);
+                    foreach (var key in identityAfter.Keys.ToList())
+                        if (after.TryGetValue(key, out var value)) identityAfter[key] = value;
+                    journalChanges.Insert(0, CreateJournalChange(first.SourceTable, ChangeJournalOperationKind.Update,
+                        before, after, identityBefore, identityAfter));
                 }
-                foreach (var row in rows)
+
+                await source.ExecuteMutationTransactionAsync(async () =>
                 {
-                    _offlineRowRecordKeys.Remove(row);
-                    _offlineCurrentDataTable.Rows.Remove(row);
-                }
+                    foreach (var group in replacementGroups)
+                    {
+                        var first = group.First();
+                        var updates = replacementUpdates[BuildOfflineReplacementGroupKey(first)];
+                        foreach (var replacement in group)
+                        {
+                            if (replacement.KeyColumns.Count != replacement.KeyValues.Count ||
+                                replacement.SourceColumns.Count != replacement.NewValues.Count)
+                                throw new InvalidOperationException("Вариант замены содержит неполный ключ или несовпадающее число полей.");
+                            if (replacement.ExpectedOldValues != null)
+                            {
+                                foreach (var expected in replacement.ExpectedOldValues)
+                                {
+                                    var current = source.GetRecords(replacement.SourceTable).SingleOrDefault(record =>
+                                    {
+                                        for (var keyIndex = 0; keyIndex < replacement.KeyColumns.Count; keyIndex++)
+                                        {
+                                            if (!record.Values.TryGetPropertyValue(replacement.KeyColumns[keyIndex], out var value) ||
+                                                !OfflineObjectDeletionGuard.ValuesEqual(value, replacement.KeyValues[keyIndex])) return false;
+                                        }
+                                        return true;
+                                    });
+                                    if (current == null || !current.Values.TryGetPropertyValue(expected.Key, out var actual) ||
+                                        !OfflineObjectDeletionGuard.ValuesEqual(actual, expected.Value))
+                                        throw new InvalidOperationException("Зависимая запись изменилась после выбора замены. Удаление отменено.");
+                                }
+                            }
+                        }
+                        await source.UpdateRecordAsync(first.SourceTable, first.KeyColumns,
+                            first.KeyColumns.Select((column, index) => (column, first.KeyValues[index]))
+                                .ToDictionary(pair => pair.column, pair => (object?)pair.Item2, StringComparer.OrdinalIgnoreCase), updates);
+                    }
+                    _openedLocalProject.LocalRecords.RemoveAll(recordsToRemove.Contains);
+                    source.InvalidateIndex();
+                });
                 _offlineGridDirty = false;
                 _offlineProjectDirty = true;
                 LogAction($"Offline: удалено строк: {rows.Count} · {_offlineCurrentTableName}",
                     category: "Удаление", source: _offlineCurrentTableName!,
-                    details: $"Локальный проект: {_openedLocalProject.Manifest.Name}",
-                    journalChanges: journalChanges, operationKind: ChangeJournalOperationKind.Delete,
+                    details: $"Локальный проект: {_openedLocalProject.Manifest.Name}" + (replacements.Count > 0 ? $" · замен ссылок: {replacements.Count}" : ""),
+                    journalChanges: journalChanges, operationKind: replacements.Count > 0 ? ChangeJournalOperationKind.Composite : ChangeJournalOperationKind.Delete,
                     databaseName: _openedLocalProject.Manifest.Name);
-                _rightPanel.PageInfo.Text = $"{_offlineCurrentDataTable.Rows.Count:N0} строк · локально";
+                OpenOfflineTable(_offlineCurrentTableName!);
                 SetOfflineEditorButtons();
                 StatusText.Text = "Строки удалены только из локального проекта. SQL Server не изменялся.";
             }
@@ -957,6 +1053,25 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
                     "Удаление остановлено: " + Configurator.Infrastructure.UserErrorMessage.Format(ex),
                     "Offline · удаление", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
+        }
+
+        private static string BuildOfflineReplacementGroupKey(ReferenceReplacement replacement) =>
+            JsonSerializer.Serialize(new
+            {
+                replacement.SourceTable,
+                Identity = replacement.KeyColumns.Select((column, index) => new
+                {
+                    Column = column,
+                    Value = replacement.KeyValues[index]
+                }).ToArray()
+            });
+
+        private static void AssignOfflineReplacementValue(IDictionary<string, object?> values, string column, object? value)
+        {
+            if (values.TryGetValue(column, out var previous) && !OfflineObjectDeletionGuard.ValuesEqual(
+                    previous is JsonNode node ? node : ProjectKeyCodec.ToNode(previous), value))
+                throw new InvalidOperationException($"Для поля «{column}» выбраны разные замены. Удаление отменено.");
+            values[column] = value;
         }
 
         private void SetOfflineEditorButtons()
@@ -1050,6 +1165,7 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
 
         private async Task SwitchToOnlineWorkspaceAsync()
         {
+            if (_currentMode == 4 && !FunctionalBlockEditorControl.ConfirmPendingEdits()) return;
             if (UserAuthorizationService.CurrentUser == null)
             {
                 if (_loginDialogOpen) return;
@@ -1090,13 +1206,16 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
             _isOfflineWorkspace = false;
             _projectDataSource.Set(null);
             _offlineSelectionRequired = false;
-            int modeToRestore = _currentMode is >= 1 and <= 3 ? _currentMode : 1;
+            int modeToRestore = _currentMode is >= 1 and <= 4 &&
+                (_currentMode != 4 || PermissionPolicy.CanEnterMode(UserAuthorizationService.CurrentUser, UserAuthorizationService.CurrentRole, 4))
+                ? _currentMode : 1;
             _currentMode = modeToRestore;
             UpdateWorkspaceModeUi();
             _fieldsBuilder.DisplayPrefix = "";
             EditorModeView.Visibility = modeToRestore == 1 ? Visibility.Visible : Visibility.Collapsed;
             Mode2View.Visibility = modeToRestore == 2 ? Visibility.Visible : Visibility.Collapsed;
             Mode3View.Visibility = modeToRestore == 3 ? Visibility.Visible : Visibility.Collapsed;
+            Mode4View.Visibility = modeToRestore == 4 ? Visibility.Visible : Visibility.Collapsed;
             UpdateModeNavigation(modeToRestore);
             NavDatabase.IsEnabled = NavTemplates.IsEnabled = NavProject.IsEnabled = NavFbEditor.IsEnabled = !_offlineSelectionRequired;
             MenuDatabase.IsEnabled = !_offlineSelectionRequired && _currentMode == 1;

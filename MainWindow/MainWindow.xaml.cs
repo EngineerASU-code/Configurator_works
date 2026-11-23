@@ -2,6 +2,7 @@
 using Configurator.Themes;
 using System;
 using System.Data;
+using System.IO;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -595,7 +596,7 @@ namespace Configurator
             if (Dispatcher.CheckAccess()) CloseCompareWindow();
             else Dispatcher.BeginInvoke(new Action(CloseCompareWindow));
 
-            // Login()/EnterGuest() raises Changed synchronously before LoginWindow sets
+            // Login() raises Changed synchronously before LoginWindow sets
             // DialogResult and closes. Applying permissions here can call ActivateMode(),
             // which may show ProjectSelectionWindow on top of the still-open login dialog.
             if (_loginDialogOpen)
@@ -634,10 +635,73 @@ namespace Configurator
             }
         }
 
-        private void MenuViewTheme_Click(object sender, RoutedEventArgs e)
+        private async void MenuViewTheme_Click(object sender, RoutedEventArgs e)
         {
             var picker = new ThemePickerWindow { Owner = this };
+            if (_isOfflineWorkspace && _openedLocalProject is { } project)
+            {
+                Action<Configurator.Themes.ThemePreset>? saveTheme = null;
+                bool canSave = (UserAuthorizationService.Has(Permission.Mode2Manage) || UserAuthorizationService.Has(Permission.ManageTextLists)) &&
+                    !string.IsNullOrWhiteSpace(_openedLocalProjectPath) &&
+                    File.Exists(_openedLocalProjectPath) &&
+                    (File.GetAttributes(_openedLocalProjectPath) & (FileAttributes.ReadOnly | FileAttributes.ReparsePoint)) == 0;
+                if (canSave)
+                {
+                    saveTheme = preset =>
+                    {
+                        project.ThemePresets.RemoveAll(item => item.Name.Equals(preset.Name, StringComparison.OrdinalIgnoreCase));
+                        project.ThemePresets.Add(preset.Clone());
+                        _offlineProjectDirty = true;
+                        _offlineAutoSaveTimer.Start();
+                        StatusText.Text = $"Тема «{preset.Name}» сохранена в Offline-проект";
+                    };
+                }
+                picker.SetProjectThemes(project.ThemePresets, saveTheme);
+            }
+            else if (_workspaceModeChosen && !string.IsNullOrWhiteSpace(_connection.Server) && !string.IsNullOrWhiteSpace(_selectedDbName))
+            {
+                var store = new Configurator.Infrastructure.Projects.ProjectCompareSettingsStore(_connection.Server, _selectedDbName);
+                Configurator.Core.Compare.ProjectCompareSettings settings;
+                try { settings = await store.LoadAsync(); }
+                catch (Exception ex)
+                {
+                    Configurator.Infrastructure.ModernDialog.Show(this,
+                        "Не удалось прочитать проектные темы и текстовые списки: " + Configurator.Infrastructure.UserErrorMessage.Format(ex),
+                        "Настройки проекта", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+                var projectThemes = settings.ThemePresets.ToList();
+                Action<Configurator.Themes.ThemePreset>? saveTheme = null;
+                bool canSave = UserAuthorizationService.Has(Permission.Mode2Manage) || UserAuthorizationService.Has(Permission.ManageTextLists);
+                if (canSave)
+                {
+                    saveTheme = preset =>
+                    {
+                        projectThemes.RemoveAll(item => item.Name.Equals(preset.Name, StringComparison.OrdinalIgnoreCase));
+                        projectThemes.Add(preset.Clone());
+                        _ = SaveOnlineProjectSettingsAsync(store, new Configurator.Core.Compare.ProjectCompareSettings(settings.TextLists, projectThemes));
+                    };
+                }
+                picker.SetProjectThemes(settings.ThemePresets, saveTheme);
+            }
             picker.ShowDialog();
+        }
+
+        private async Task SaveOnlineProjectSettingsAsync(
+            Configurator.Infrastructure.Projects.ProjectCompareSettingsStore store,
+            Configurator.Core.Compare.ProjectCompareSettings settings)
+        {
+            try
+            {
+                await store.SaveAsync(settings);
+                StatusText.Text = "Настройки темы сохранены локально для выбранной Online-БД";
+            }
+            catch (Exception ex)
+            {
+                Configurator.Infrastructure.ModernDialog.Show(this,
+                    "Не удалось сохранить настройки темы проекта: " + Configurator.Infrastructure.UserErrorMessage.Format(ex),
+                    "Тема проекта", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         private void BtnOpenConnection_Click(object sender, RoutedEventArgs e)
@@ -760,6 +824,7 @@ namespace Configurator
                 return;
             }
             if (!PermissionPolicy.CanShowMode(UserAuthorizationService.CurrentUser, UserAuthorizationService.CurrentRole, mode)) return;
+            if (_currentMode == 4 && mode != 4 && !FunctionalBlockEditorControl.ConfirmPendingEdits()) return;
 
             // The first entry into each project mode always requires an explicit project choice,
             // even if Mode 1 already has a database selected.
@@ -803,7 +868,7 @@ namespace Configurator
             Mode2View.Visibility = mode == 2 ? Visibility.Visible : Visibility.Collapsed;
             Mode3View.Visibility = mode == 3 ? Visibility.Visible : Visibility.Collapsed;
             Mode4View.Visibility = mode == 4 ? Visibility.Visible : Visibility.Collapsed;
-            StatusText.Text = mode switch { 1 => "БД проекта", 2 => "Шаблоны проекта", 3 => "Объекты проекта", 4 => "Редактор FB-блоков (заблокирован)", _ => "БД проекта" };
+            StatusText.Text = mode switch { 1 => "БД проекта", 2 => "Шаблоны проекта", 3 => "Объекты проекта", 4 => "Редактор FB-блоков", _ => "БД проекта" };
             UpdateModeNavigation(mode);
             if (FindName("MenuDatabase") is MenuItem databaseMenu) databaseMenu.IsEnabled = mode == 1 && !_isOfflineWorkspace && !_offlineSelectionRequired;
             string availableProject = string.IsNullOrWhiteSpace(_selectedDbName) || _failedDatabases.Contains(_selectedDbName)
@@ -817,6 +882,11 @@ namespace Configurator
         /// The latter previously changed only the shell flag, leaving Mode 3 bound to SQL.</summary>
         private void ConfigureActiveProjectEditor(int mode, string availableProject)
         {
+            if (mode == 4)
+            {
+                ConfigureMode4Editor(availableProject);
+                return;
+            }
             if (mode is not (2 or 3)) return;
 
             if (Configurator.Core.Workspace.WorkspaceSwitchPolicy.ShouldConfigureOfflineEditor(

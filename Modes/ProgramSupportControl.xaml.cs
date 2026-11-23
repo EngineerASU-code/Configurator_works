@@ -39,6 +39,12 @@ public partial class ProgramSupportControl : UserControl
     }
 
     public async void Configure(string connectionString, ProgramContext? context)
+        => await ConfigureCoreAsync(connectionString, null, context);
+
+    public async void Configure(Configurator.Core.Projects.OfflineProjectDataSource source, ProgramContext? context)
+        => await ConfigureCoreAsync(null, source, context);
+
+    private async Task ConfigureCoreAsync(string? connectionString, Configurator.Core.Projects.OfflineProjectDataSource? offline, ProgramContext? context)
     {
         if (!CommitGridEdits())
         {
@@ -53,7 +59,8 @@ public partial class ProgramSupportControl : UserControl
         ++_contextVersion;
         ++_loadVersion;
         _connectionString = connectionString;
-        _repository = string.IsNullOrWhiteSpace(connectionString) ? null : new ProgramSupportRepository(connectionString);
+        _repository = offline != null ? new ProgramSupportRepository(offline)
+            : string.IsNullOrWhiteSpace(connectionString) ? null : new ProgramSupportRepository(connectionString);
         if (context == null)
         {
             _context = null;

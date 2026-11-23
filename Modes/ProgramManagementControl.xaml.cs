@@ -54,6 +54,7 @@ public partial class ProgramManagementControl : UserControl
     };
 
     private ProgramManagementRepository _repository;
+    private Configurator.Core.Projects.OfflineProjectDataSource _offlineSource;
     private string _connectionString;
     private bool _loading;
     private bool _revertingSelection;
@@ -133,6 +134,13 @@ public partial class ProgramManagementControl : UserControl
     }
 
     public async void Configure(string connectionString, object plcValue, object programClassValue)
+        => await ConfigureCoreAsync(connectionString, null, plcValue, programClassValue);
+
+    public async void Configure(Configurator.Core.Projects.OfflineProjectDataSource source, object plcValue, object programClassValue)
+        => await ConfigureCoreAsync(null, source, plcValue, programClassValue);
+
+    private async Task ConfigureCoreAsync(string connectionString, Configurator.Core.Projects.OfflineProjectDataSource offline,
+        object plcValue, object programClassValue)
     {
         if (_loading || _contextChangePending)
         {
@@ -149,7 +157,8 @@ public partial class ProgramManagementControl : UserControl
         PublishContext();
         ContextText.Text = string.Empty;
         _connectionString = connectionString;
-        _repository = new ProgramManagementRepository(connectionString);
+        _offlineSource = offline;
+        _repository = offline == null ? new ProgramManagementRepository(connectionString) : new ProgramManagementRepository(offline);
         PlcInput.Text = Convert.ToString(plcValue, CultureInfo.InvariantCulture) ?? string.Empty;
         ClassInput.Text = Convert.ToString(programClassValue, CultureInfo.InvariantCulture) ?? string.Empty;
         _loading = false;
@@ -1280,7 +1289,8 @@ public partial class ProgramManagementControl : UserControl
     {
         try
         {
-        var builder = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(_connectionString);
+        bool offline = _offlineSource != null;
+        var builder = offline ? null : new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(_connectionString);
         var identityValues = JournalValues(identity);
         var change = new ChangeJournalRowChange
         {
@@ -1303,11 +1313,11 @@ public partial class ProgramManagementControl : UserControl
             Details = identityText,
             OperationKind = kind,
             RestoreIncludesAllChanges = false,
-            ProjectType = "Online",
-            ProjectId = "online:" + builder.DataSource.Trim().ToLowerInvariant() + "/" + builder.InitialCatalog.Trim().ToLowerInvariant(),
-            ProjectName = builder.InitialCatalog,
-            Server = builder.DataSource,
-            Database = builder.InitialCatalog,
+            ProjectType = offline ? "Offline" : "Online",
+            ProjectId = offline ? _offlineSource.Project.Manifest?.ProjectId ?? "" : "online:" + builder.DataSource.Trim().ToLowerInvariant() + "/" + builder.InitialCatalog.Trim().ToLowerInvariant(),
+            ProjectName = offline ? _offlineSource.Project.Manifest?.Name ?? "" : builder.InitialCatalog,
+            Server = offline ? "" : builder.DataSource,
+            Database = offline ? "" : builder.InitialCatalog,
             Mode = 3,
             UserRole = UserAuthorizationService.CurrentRole?.Name ?? string.Empty,
             EntityType = tableName,

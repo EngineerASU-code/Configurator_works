@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
@@ -7,16 +7,28 @@ using System.Windows.Automation;
 namespace Configurator;
 public partial class UserSettingsWindow : Window
 {
-    private string _originalUser; private string _originalRole; private readonly Dictionary<Permission,CheckBox> _checks=new();
+    private string _originalRole; private readonly Dictionary<Permission,CheckBox> _checks=new();
     public UserSettingsWindow()
     {
         InitializeComponent();
         if (!UserAuthorizationService.IsAdministrator) { Loaded += (_, _) => { Configurator.Infrastructure.ModernDialog.Show("Настройки пользователей доступны только Администратору.", "Доступ запрещён", MessageBoxButton.OK, MessageBoxImage.Warning); Close(); }; return; }
-        Loaded += (_, _) => { AddUserButton.IsEnabled = false; DeleteUserButton.IsEnabled = false; RolesTab.Visibility = Visibility.Visible; RefreshUsers(); RefreshRoles(); };
+        Loaded += (_, _) => { RefreshRoles(); RefreshUsers(); };
     }
-    private void RefreshUsers(){UsersList.ItemsSource=null;UsersList.ItemsSource=UserAuthorizationService.Users.Select(x=>x.UserName.Equals("admin",StringComparison.OrdinalIgnoreCase) ? "Администратор" : x.DisplayName).ToList();if(UsersList.Items.Count>0&&UsersList.SelectedIndex<0)UsersList.SelectedIndex=0;}
+    private void RefreshUsers()
+    {
+        UsersList.ItemsSource = UserAuthorizationService.Users;
+        UsersList.SelectedIndex = UsersList.Items.Count == 0 ? -1 : 0;
+    }
     private void RefreshRoles(){RolesList.ItemsSource=null;RolesList.ItemsSource=UserAuthorizationService.Roles.Select(x=>x.Name).ToList();RoleBox.ItemsSource=UserAuthorizationService.Roles.Select(x=>x.Name).ToList();if(RolesList.Items.Count>0&&RolesList.SelectedIndex<0)RolesList.SelectedIndex=0;}
-    private void UsersList_SelectionChanged(object s,SelectionChangedEventArgs e){var name=UsersList.SelectedItem?.ToString();var userName=name?.Equals("Администратор",StringComparison.OrdinalIgnoreCase)==true ? "admin" : name;var u=UserAuthorizationService.Users.FirstOrDefault(x=>x.UserName.Equals(userName,StringComparison.OrdinalIgnoreCase) || x.DisplayName.Equals(name,StringComparison.OrdinalIgnoreCase));if(u==null)return;AddUserButton.IsEnabled=true;DeleteUserButton.IsEnabled=!UserAuthorizationService.IsBuiltInUser(u.UserName);_originalUser=u.UserName;UserNameBox.Text=u.UserName;UserNameBox.IsReadOnly=u.UserName.Equals("admin",StringComparison.OrdinalIgnoreCase);DisplayNameBox.Text=u.DisplayName;RoleBox.SelectedItem=u.RoleName;EnabledBox.IsChecked=u.Enabled;PasswordBox.Clear();PasswordBox.IsEnabled=true; }
+    private void UsersList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (UsersList.SelectedItem is not UserAccount user) return;
+        UserNameBox.Text = user.UserName;
+        DisplayNameBox.Text = user.DisplayName;
+        RoleBox.SelectedItem = user.RoleName;
+        EnabledBox.IsChecked = user.Enabled;
+        PasswordBox.Clear();
+    }
     private void RolesList_SelectionChanged(object s,SelectionChangedEventArgs e){var name=RolesList.SelectedItem?.ToString();var r=UserAuthorizationService.Roles.FirstOrDefault(x=>x.Name.Equals(name,StringComparison.OrdinalIgnoreCase));if(r==null)return;_originalRole=r.Name;RoleNameBox.Text=r.Name;BuildPermissionChecks(r.Permissions.Select(x => Enum.TryParse<Permission>(x, out var parsed) ? parsed : (Permission?)null).Where(x => x.HasValue).Select(x => x.Value).ToHashSet());}
 
     private void BuildPermissionChecks(HashSet<Permission> selected)
@@ -86,18 +98,23 @@ public partial class UserSettingsWindow : Window
             PermissionsHost.Children.Add(groupPanel);
         }
     }
-    private void AddUser_Click(object s,RoutedEventArgs e)
+    private void SaveUser_Click(object sender, RoutedEventArgs e)
     {
-        _originalUser = null;
-        UsersList.SelectedIndex = -1;
-        UserNameBox.IsReadOnly = false;
-        UserNameBox.Clear(); DisplayNameBox.Clear(); RoleBox.SelectedItem = "Проектировщик";
-        EnabledBox.IsChecked = true; PasswordBox.Clear(); PasswordBox.IsEnabled = true;
-        AddUserButton.IsEnabled = false; DeleteUserButton.IsEnabled = false;
-        UserNameBox.Focus();
+        if (UsersList.SelectedItem is not UserAccount user) return;
+        try
+        {
+            UserAuthorizationService.SaveUser(user.UserName, user.UserName, DisplayNameBox.Text,
+                RoleBox.SelectedItem?.ToString() ?? user.RoleName, EnabledBox.IsChecked == true, PasswordBox.Password);
+            RefreshUsers();
+            UsersList.SelectedValue = user.UserName;
+            Configurator.Infrastructure.ModernDialog.Show("Пользователь сохранён.", "Пользователи", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex),
+                "Пользователи", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
-    private void DeleteUser_Click(object s,RoutedEventArgs e){var name=_originalUser;if(string.IsNullOrWhiteSpace(name))return;try{UserAuthorizationService.DeleteUser(name);RefreshUsers();}catch(Exception ex){Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex),"Пользователи",MessageBoxButton.OK,MessageBoxImage.Warning);}}
-    private void SaveUser_Click(object s,RoutedEventArgs e){try{var savedName=UserNameBox.Text; UserAuthorizationService.SaveUser(_originalUser,UserNameBox.Text,DisplayNameBox.Text,RoleBox.SelectedItem?.ToString()??"Проектировщик",EnabledBox.IsChecked==true,PasswordBox.Password);_originalUser=savedName;RefreshUsers();UsersList.SelectedItem=UserAuthorizationService.Users.FirstOrDefault(u=>u.UserName.Equals(savedName,StringComparison.OrdinalIgnoreCase))?.DisplayName;Configurator.Infrastructure.ModernDialog.Show("Пользователь сохранён.","Пользователи",MessageBoxButton.OK,MessageBoxImage.Information);}catch(Exception ex){Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex),"Пользователи",MessageBoxButton.OK,MessageBoxImage.Warning);}}
     private void AddRole_Click(object s,RoutedEventArgs e){_originalRole=null;RoleNameBox.Text="";BuildPermissionChecks(new HashSet<Permission>());RolesList.SelectedIndex=-1;RoleNameBox.Focus();}
     private void DeleteRole_Click(object s,RoutedEventArgs e){var name=RolesList.SelectedItem?.ToString();if(string.IsNullOrWhiteSpace(name))return;try{UserAuthorizationService.DeleteRole(name);RefreshRoles();}catch(Exception ex){Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex),"Роли",MessageBoxButton.OK,MessageBoxImage.Warning);}}
     private void SaveRole_Click(object s,RoutedEventArgs e){try{var perms=_checks.Where(x=>x.Value.IsChecked==true).Select(x=>x.Key);UserAuthorizationService.SaveRole(_originalRole,RoleNameBox.Text,"",perms);RefreshRoles();RolesList.SelectedItem=RoleNameBox.Text;}catch(Exception ex){Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex),"Роли",MessageBoxButton.OK,MessageBoxImage.Warning);}}

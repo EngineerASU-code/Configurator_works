@@ -12,6 +12,7 @@ using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
 using Microsoft.Win32;
+using Configurator.Core.Projects;
 
 namespace Configurator;
 
@@ -21,6 +22,7 @@ public partial class MatrixCatalogControl : UserControl
     private object? _plcValue;
     private object? _matrixClassValue;
     private ProgramSupportRepository? _repository;
+    private OfflineProjectDataSource? _offlineSource;
     private ProgramSupportTableData? _tableData;
     private IReadOnlyList<MatrixDeviceClassOption> _deviceClasses = Array.Empty<MatrixDeviceClassOption>();
     private DataTable? _commandMapView;
@@ -42,6 +44,7 @@ public partial class MatrixCatalogControl : UserControl
     public MatrixCatalogControl()
     {
         InitializeComponent();
+        RowsGrid.PreparingCellForEdit += (_, _) => UpdateActionState();
         Loaded += MatrixCatalogControl_Loaded;
         Unloaded += MatrixCatalogControl_Unloaded;
         _suppressSelectionEvents = true;
@@ -54,6 +57,14 @@ public partial class MatrixCatalogControl : UserControl
 
     public async void Configure(string connectionString, object plcValue, object matrixClassNumberValue,
         IEnumerable<MatrixDeviceClassOption>? deviceClasses = null)
+        => await ConfigureCoreAsync(connectionString, null, plcValue, matrixClassNumberValue, deviceClasses);
+
+    public async void Configure(OfflineProjectDataSource source, object plcValue, object matrixClassNumberValue,
+        IEnumerable<MatrixDeviceClassOption>? deviceClasses = null)
+        => await ConfigureCoreAsync(null, source, plcValue, matrixClassNumberValue, deviceClasses);
+
+    private async Task ConfigureCoreAsync(string? connectionString, OfflineProjectDataSource? offline, object plcValue,
+        object matrixClassNumberValue, IEnumerable<MatrixDeviceClassOption>? deviceClasses)
     {
         if (!CommitGridEdits())
         {
@@ -68,10 +79,12 @@ public partial class MatrixCatalogControl : UserControl
         int contextVersion = ++_contextVersion;
         ++_loadVersion;
         _connectionString = connectionString;
+        _offlineSource = offline;
         _plcValue = plcValue;
         _matrixClassValue = matrixClassNumberValue;
         if (deviceClasses != null) _deviceClasses = deviceClasses.ToArray();
-        _repository = string.IsNullOrWhiteSpace(connectionString) ? null : new ProgramSupportRepository(connectionString);
+        _repository = offline != null ? new ProgramSupportRepository(offline)
+            : string.IsNullOrWhiteSpace(connectionString) ? null : new ProgramSupportRepository(connectionString);
         _tableData = null;
         _commandMapView = null;
         _commandMapColumns.Clear();
@@ -482,7 +495,7 @@ public partial class MatrixCatalogControl : UserControl
 
     private async void TryLoadPlc()
     {
-        if (_busy || _repository == null || _connectionString == null)
+        if (_busy || _repository == null || (_connectionString == null && _offlineSource == null))
         {
             StatusText.Text = "Сначала загрузите подключение и класс Matrix.";
             return;
@@ -511,7 +524,8 @@ public partial class MatrixCatalogControl : UserControl
             return;
         }
         if (contextVersion != _contextVersion) return;
-        Configure(_connectionString, plcValue, _matrixClassValue);
+        if (_offlineSource != null) Configure(_offlineSource, plcValue, _matrixClassValue);
+        else Configure(_connectionString!, plcValue, _matrixClassValue);
     }
 
     private async System.Threading.Tasks.Task<bool> LoadSelectedAsync(string? requestedId = null, object? requestedMatrixRecord = null)
@@ -899,7 +913,8 @@ public partial class MatrixCatalogControl : UserControl
         }
         AddButton.IsEnabled = !_busy && _canAdd && (assignmentEditor ? canAssign : canAdd);
         DeleteButton.IsEnabled = !_busy && CanDeleteSelected();
-        SaveButton.IsEnabled = !_busy && _canSave && CanSavePendingChanges(false);
+        bool editingRow = RowsGrid.CurrentItem is DataRowView { IsEdit: true } && (canEdit || canAdd);
+        SaveButton.IsEnabled = !_busy && _canSave && (editingRow || CanSavePendingChanges(false));
         RefreshButton.IsEnabled = !_busy && _repository != null;
         ExportButton.IsEnabled = !_busy && _repository != null && HasSelectedMatrix() && UserAuthorizationService.Has(Permission.ExportData);
     }

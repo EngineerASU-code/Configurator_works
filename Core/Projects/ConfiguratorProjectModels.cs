@@ -1,5 +1,6 @@
 ﻿#nullable enable
 using System.Text.Json.Nodes;
+using Configurator.Themes;
 
 namespace Configurator.Core.Projects;
 
@@ -14,6 +15,7 @@ public sealed class ConfiguratorProject
     public JsonObject GraphRelations { get; set; } = new();
     public JsonObject Filters { get; set; } = new();
     public List<ProjectTextList> TextLists { get; set; } = new();
+    public List<ThemePreset> ThemePresets { get; set; } = new();
     /// <summary>Project-scoped accounts. Passwords are represented only as salted password hashes.</summary>
     public List<ProjectUserAccount> Users { get; set; } = new();
     public List<ProjectRecord> LocalRecords { get; set; } = new();

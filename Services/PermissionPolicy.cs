@@ -19,8 +19,6 @@ internal static class PermissionPolicy
         1 => Has(user, role, Permission.Mode1View),
         2 => Has(user, role, Permission.Mode2View),
         3 => Has(user, role, Permission.Mode3View),
-        // Mode 4 is a read-only placeholder today. Its view permission is still explicit;
-        // Mode4Manage will be required by any future editing operation.
         4 => Has(user, role, Permission.Mode4View),
         _ => false
     };
@@ -46,14 +44,15 @@ internal static class PermissionPolicy
         // Backward compatibility for older users.json files: only translate legacy permissions
         // when the role has not opted into the corresponding mode-specific permission set.
         bool hasMode1 = role.Permissions.Any(x => Enum.TryParse<Permission>(x, out var p) && p is Permission.Mode1View or Permission.Mode1Add or Permission.Mode1Edit or Permission.Mode1Delete);
+        bool useLegacyMode1 = !hasMode1 && !UserAuthorizationService.IsCommissioningEngineer(currentUser.UserName);
         bool hasMode2 = role.Permissions.Any(x => Enum.TryParse<Permission>(x, out var p) && p is Permission.Mode2View or Permission.Mode2Manage);
         bool hasMode3 = role.Permissions.Any(x => Enum.TryParse<Permission>(x, out var p) && p is Permission.Mode3View or Permission.Mode3Manage);
         return permission switch
         {
-            Permission.Mode1View => !hasMode1 && role.Has(Permission.ViewData),
-            Permission.Mode1Add => !hasMode1 && role.Has(Permission.AddData),
-            Permission.Mode1Edit => !hasMode1 && !hasMode3 && role.Has(Permission.EditData),
-            Permission.Mode1Delete => !hasMode1 && !hasMode3 && role.Has(Permission.DeleteData),
+            Permission.Mode1View => useLegacyMode1 && role.Has(Permission.ViewData),
+            Permission.Mode1Add => useLegacyMode1 && role.Has(Permission.AddData),
+            Permission.Mode1Edit => useLegacyMode1 && !hasMode3 && role.Has(Permission.EditData),
+            Permission.Mode1Delete => useLegacyMode1 && !hasMode3 && role.Has(Permission.DeleteData),
             Permission.Mode2View => !hasMode2 && (role.Has(Permission.ManageClasses) || role.Has(Permission.ManageRelations)),
             Permission.Mode2Manage => !hasMode2 && (role.Has(Permission.ManageClasses) || role.Has(Permission.ManageRelations)),
             Permission.Mode3View => !hasMode3 && role.Has(Permission.ManageObjects),

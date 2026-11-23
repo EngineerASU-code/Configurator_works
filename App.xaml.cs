@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Globalization;
 using System.Windows;
 using Configurator.Themes;
 
@@ -49,6 +50,7 @@ namespace Configurator
             try
             {
                 var mainWindow = new global::Configurator.MainWindow();
+                SetRequestedWindowPosition(mainWindow, e.Args);
                 MainWindow = mainWindow;
                 ShutdownMode = ShutdownMode.OnMainWindowClose;
                 mainWindow.Show();
@@ -60,6 +62,23 @@ namespace Configurator
                     "Ошибка запуска", MessageBoxButton.OK, MessageBoxImage.Error);
                 Shutdown(-2);
             }
+        }
+
+        private static void SetRequestedWindowPosition(Window window, string[] args)
+        {
+            if (args.Length != 3 || args[0] != "--window-position" ||
+                !int.TryParse(args[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out int left) ||
+                !int.TryParse(args[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out int top))
+                return;
+
+            var desktop = new Rect(SystemParameters.VirtualScreenLeft, SystemParameters.VirtualScreenTop,
+                SystemParameters.VirtualScreenWidth, SystemParameters.VirtualScreenHeight);
+            if (!desktop.Contains(left, top)) return;
+
+            window.WindowState = WindowState.Normal;
+            window.WindowStartupLocation = WindowStartupLocation.Manual;
+            window.Left = left;
+            window.Top = top;
         }
 
         protected override void OnExit(ExitEventArgs e)
