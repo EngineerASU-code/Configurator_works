@@ -12,7 +12,7 @@
     <Path Stroke="#177E80" StrokeThickness="3" Data="M80,300 L180,300 180,212 320,212 320,275 710,275 M240,212 L240,150 412,150 412,275 M350,263 L374,287 374,263 350,287 Z">
      <Path.Clip><RectangleGeometry x:Name="Trace" Rect="0,0,0,480"/></Path.Clip>
     </Path>
-    <Path x:Name="Cursor" Stroke="#4D4677" Data="M-10,0 H10 M0,-10 V10" Canvas.Top="275"><Path.RenderTransform><TranslateTransform x:Name="PenPosition"/></Path.RenderTransform></Path>
+    <Path x:Name="DraftingCursor" Stroke="#4D4677" Data="M-10,0 H10 M0,-10 V10" Canvas.Top="275"><Path.RenderTransform><TranslateTransform x:Name="PenPosition"/></Path.RenderTransform></Path>
     <Path Stroke="#257E80" StrokeThickness="5" StrokeLineJoin="Round" Data="M615,275 L686,234 V176 L763,132 826,168 V230 L899,273 982,225"/>
     <Path Stroke="#486D78" Data="M615,286 L687,245 764,201 826,237 899,280 982,232 M686,234 V299 M826,230 V274 M899,273 V307" />
     <TextBlock Canvas.Left="680" Canvas.Top="66" Text="Модель трассы" Foreground="#302C50" Background="#C2E2DE" FontWeight="Bold" FontSize="25"/>

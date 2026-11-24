@@ -77,7 +77,8 @@ namespace Configurator
                     result[keyColumns[i]] = reader.IsDBNull(i) ? null : reader.GetValue(i);
                 return result;
             }
-#nullable disable
+#nullable restore
+#nullable enable annotations
     
             public async Task UpdateRowAsync(string tableName, List<string> keyColumns, Dictionary<string, object> keyValues, Dictionary<string, object> values, CancellationToken ct = default, Dictionary<string, object> expectedValues = null)
             {

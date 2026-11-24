@@ -40,8 +40,6 @@ public partial class DatabaseGraphView : UserControl
     private const double GraphMinZoom = 0.10;
     private const double GraphMaxZoom = 3.00;
     private bool _overviewMode = true;
-    public event Action<string, string, string>? ActionLogged;
-    public event Action<GraphRelationRestorePayload>? LogicalRelationDeleted;
     public event Action<bool>? OverviewModeChanged;
 
     public DatabaseGraphView()

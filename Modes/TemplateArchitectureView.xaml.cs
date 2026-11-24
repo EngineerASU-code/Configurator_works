@@ -37,8 +37,6 @@ public partial class TemplateArchitectureView : UserControl
         InitializeComponent();
         UserAuthorizationService.Changed += (_, _) => ApplySubmodeVisibility();
         Loaded += (_, _) => ApplySubmodeVisibility();
-        DatabaseGraphControl.ActionLogged += (description, source, details) => LogMode2Action(description, source, details);
-        DatabaseGraphControl.LogicalRelationDeleted += payload => LogicalRelationDeleted?.Invoke(payload);
         DatabaseGraphControl.OverviewModeChanged += overview =>
         {
             BtnGraphMode.Style = (Style)FindResource(overview ? "BtnPrimary" : "BtnSecondary");
@@ -355,12 +353,7 @@ public partial class TemplateArchitectureView : UserControl
     }
 
     public event EventHandler ProjectSelectionRequested;
-    public event EventHandler DatabaseStructureChanged;
-    public event Action<string, string, string> ActionLogged;
-    public event Action<GraphRelationRestorePayload> LogicalRelationDeleted;
 
-    private void LogMode2Action(string description, string source = "", string details = "")
-        => ActionLogged?.Invoke(description, source, details);
     private void SelectProject_Click(object sender, RoutedEventArgs e) => ProjectSelectionRequested?.Invoke(this, EventArgs.Empty);
 
     private void ApplySubmodeVisibility()

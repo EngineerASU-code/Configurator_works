@@ -31,7 +31,7 @@ public partial class EngineeringIntro : UserControl
         var draft = TimeSpan.FromSeconds(2.65);
         Trace.BeginAnimation(RectangleGeometry.RectProperty, new RectAnimation(new Rect(0, 0, 80, 480), new Rect(0, 0, 710, 480), draft));
         PenPosition.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(80, 710, draft));
-        Cursor.BeginAnimation(OpacityProperty, new DoubleAnimation(1, 0, TimeSpan.FromSeconds(.15)) { BeginTime = draft });
+        DraftingCursor.BeginAnimation(OpacityProperty, new DoubleAnimation(1, 0, TimeSpan.FromSeconds(.15)) { BeginTime = draft });
         var slide = new TranslateTransform();
         Modules.RenderTransform = slide;
         slide.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(-35, 0, TimeSpan.FromSeconds(.65)) { BeginTime = TimeSpan.FromSeconds(5.7), FillBehavior = FillBehavior.HoldEnd });

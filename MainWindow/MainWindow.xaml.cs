@@ -42,7 +42,6 @@ namespace Configurator
         private readonly ActionLogService _actionLog = new ActionLogService();
         private readonly SessionTestLog _sessionTestLog = new SessionTestLog();
         private readonly ChangeJournalService _changeJournal = new ChangeJournalService();
-        private GraphRelationRestorePayload _pendingLogicalRelationRestore;
         private TemplateArchitectureView _templateEditor;
         private ProjectModeView _projectEditor;
 
@@ -81,9 +80,6 @@ namespace Configurator
             _projectEditor.ProjectSelectionRequested += ProjectSelectionRequested;
             _projectEditor.OfflineProjectChanged += (_, _) => { if (_isOfflineWorkspace) _offlineProjectDirty = true; };
             _projectEditor.ChangeJournalRequested += ProjectEditor_ChangeJournalRequested;
-            _templateEditor.DatabaseStructureChanged += TemplateEditor_DatabaseStructureChanged;
-            _templateEditor.ActionLogged += TemplateEditor_ActionLogged;
-            _templateEditor.LogicalRelationDeleted += payload => _pendingLogicalRelationRestore = payload;
 
             ThemeManager.InitializeDefault();
             _fieldsBuilder = new DisplayFieldsBuilder(_rightPanel.FieldsContainer);
@@ -373,48 +369,6 @@ namespace Configurator
         }
 
 
-        private async void TemplateEditor_DatabaseStructureChanged(object sender, EventArgs e)
-        {
-            if (_isOfflineWorkspace) _offlineProjectDirty = true;
-            var dbName = _selectedDbName;
-            if (string.IsNullOrWhiteSpace(dbName)) return;
-
-            // A schema change initiated from Mode 2 is a local, known change.
-            // Refresh Mode 1 immediately instead of waiting for the 15-second schema poll.
-            if (_leftPanel.ServerTree != null)
-            {
-                var dbItem = _leftPanel.ServerTree.Items.OfType<TreeViewItem>()
-                    .FirstOrDefault(x => string.Equals(x.Tag?.ToString(), dbName, StringComparison.OrdinalIgnoreCase));
-                if (dbItem != null && dbItem.IsExpanded)
-                {
-                    _loadedTreeNodes.Remove(dbName);
-                    await OnDatabaseExpandedAndKeepStateAsync(dbName, dbItem);
-                }
-            }
-
-            // If the currently opened Mode 1 table was physically dropped, clear its
-            // data/editor immediately as well. Otherwise the right side can keep showing
-            // a table that no longer exists until the next polling cycle.
-            if (_activeVm != null && string.Equals(_activeDbName, dbName, StringComparison.OrdinalIgnoreCase)
-                && !string.IsNullOrWhiteSpace(_activeVm.CurrentTable))
-            {
-                try
-                {
-                    var tables = await _activeVm.GetTableListAsync();
-                    var exists = tables.Rows.Cast<DataRow>().Any(r =>
-                        string.Equals($"{Convert.ToString(r[0])}.{Convert.ToString(r[1])}", _activeVm.CurrentTable, StringComparison.OrdinalIgnoreCase));
-                    if (!exists)
-                        ClearActiveTable();
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"[StructureChange] active table check failed: {ex.Message}");
-                }
-            }
-
-            // Mode 3 gets the same class/table immediately without requiring a mode switch.
-            _projectEditor?.SetProjectDatabase(dbName);
-        }
 
         private async Task OnDatabaseExpandedAndKeepStateAsync(string dbName, TreeViewItem dbItem)
         {
@@ -1027,42 +981,6 @@ namespace Configurator
             "Локальная копия создаётся через «Файл → Сохранить локальную копию». Для работы с ней выберите Offline и откройте файл .cfgproj. Сравнение проектов и проверка Record находятся в меню «Опции» при наличии прав.\n\n" +
             "Доступность действий зависит от роли пользователя. Для сочетаний клавиш откройте «Справка → Горячие клавиши».",
             "Справка", MessageBoxButton.OK, MessageBoxImage.Information);
-    private void TemplateEditor_ActionLogged(string description, string source, string details)
-    {
-        ConfigureJournalContext();
-        if (_isOfflineWorkspace) _offlineProjectDirty = true;
-        _actionLog.Record(description, null, "Структура шаблонов", source, details);
-        var restorePayload = description?.Equals("Удалена логическая связь", StringComparison.OrdinalIgnoreCase) == true
-            ? _pendingLogicalRelationRestore : null;
-        _pendingLogicalRelationRestore = null;
-        var journalSaved = _changeJournal.Record(new ChangeJournalEntry
-        {
-            Database = _selectedDbName ?? "",
-            Server = _connection?.Server ?? "",
-            Category = "Структура шаблонов",
-            User = UserAuthorizationService.CurrentUser?.DisplayName ?? Environment.UserName,
-            UserRole = UserAuthorizationService.CurrentUser?.RoleName ?? "",
-            Mode = _currentMode,
-            ProjectType = _isOfflineWorkspace ? "Offline" : "Online",
-            ProjectId = _isOfflineWorkspace ? (_openedLocalProject?.Manifest.ProjectId ?? "") : "online:" + (_connection?.Server ?? "") + "/" + (_selectedDbName ?? ""),
-            ProjectName = _isOfflineWorkspace ? (_openedLocalProject?.Manifest.Name ?? "") : (_selectedDbName ?? ""),
-            EntityType = "Структура/связь",
-            EntityIdentity = source ?? "",
-            Result = description?.StartsWith("Ошибка", StringComparison.OrdinalIgnoreCase) == true ? "Ошибка" : "Успешно",
-            Source = source ?? "",
-            Description = description ?? "",
-            Details = details ?? "",
-            RestoreKind = restorePayload == null ? "" : "LogicalRelation",
-            RestorePayloadJson = restorePayload == null ? "" : Newtonsoft.Json.JsonConvert.SerializeObject(restorePayload),
-            OperationKind = restorePayload == null ? ChangeJournalOperationKind.Composite : ChangeJournalOperationKind.LogicalRelation,
-            Changes = new List<ChangeJournalRowChange>()
-        });
-        if (!journalSaved)
-            Configurator.Infrastructure.ModernDialog.Show(
-                "Изменение структуры уже выполнено, но запись в журнал не сохранена. Проверьте доступность папки ChangeJournal.",
-                "Предупреждение журнала изменений", MessageBoxButton.OK, MessageBoxImage.Warning);
-        RefreshActionLogUi();
-    }
 
     }
 }
