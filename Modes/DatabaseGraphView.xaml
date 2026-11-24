@@ -136,9 +136,9 @@
                     <Grid Grid.Row="0" Grid.Column="0" Margin="2,0,0,8">
                         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                         <TextBlock Grid.Column="0" Text="Связи и правила" FontSize="20" FontWeight="SemiBold" Foreground="{DynamicResource BrushText}" VerticalAlignment="Center"/>
-                        <Button x:Name="BtnAddGraphRelation" Width="150" Grid.Column="1" Content="＋ Добавить связь" Height="32" Padding="10,0" Margin="6,0,0,0" FontSize="12" Style="{StaticResource BtnPrimary}" Click="AddGraphRelation_Click"/>
-                        <Button x:Name="BtnEditGraphRelation" Width="150" Grid.Column="2" Content="Изменить" Height="32" Padding="10,0" Margin="6,0,0,0" FontSize="12" Style="{StaticResource BtnSecondary}" Click="EditGraphRelation_Click" IsEnabled="False"/>
-                        <Button x:Name="BtnRemoveGraphRelation" Width="150" Grid.Column="3" Content="Удалить" Height="32" Padding="10,0" Margin="6,0,0,0" FontSize="12" Style="{StaticResource BtnSecondary}" Click="RemoveGraphRelation_Click" IsEnabled="False"/>
+                        <Button x:Name="BtnAddGraphRelation" Width="150" Grid.Column="1" Content="＋ Добавить связь" Height="32" Padding="10,0" Margin="6,0,0,0" FontSize="12" Style="{StaticResource BtnPrimary}" IsEnabled="False"/>
+                        <Button x:Name="BtnEditGraphRelation" Width="150" Grid.Column="2" Content="Изменить" Height="32" Padding="10,0" Margin="6,0,0,0" FontSize="12" Style="{StaticResource BtnSecondary}" IsEnabled="False"/>
+                        <Button x:Name="BtnRemoveGraphRelation" Width="150" Grid.Column="3" Content="Удалить" Height="32" Padding="10,0" Margin="6,0,0,0" FontSize="12" Style="{StaticResource BtnSecondary}" IsEnabled="False"/>
                     </Grid>
                     <Grid Grid.Row="1">
                         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>

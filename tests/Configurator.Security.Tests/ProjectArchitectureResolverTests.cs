@@ -6,6 +6,14 @@ namespace Configurator.Security.Tests;
 public sealed class ProjectArchitectureResolverTests
 {
     [Fact]
+    public void LocalSharedMemoryUsesTheExistingProjectsMetadata()
+    {
+        string local = Environment.MachineName;
+        Assert.Equal(ProjectArchitectureResolver.GetProjectIdentity(local, "Project"),
+            ProjectArchitectureResolver.GetProjectIdentity("lpc:" + local, "Project"));
+    }
+
+    [Fact]
     public void SameDatabaseOnDifferentServersHasDifferentProjectIdentity()
     {
         var first = ProjectArchitectureResolver.GetProjectIdentity("server-a", "Project");

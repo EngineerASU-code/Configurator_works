@@ -1,6 +1,7 @@
 #nullable enable annotations
 using System;
 using System.Collections.Generic;
+using System.Data;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -185,16 +186,14 @@ public sealed class ChangeJournalEntry
         {
             if (!RestoreIncludesAllChanges || RestoredUtc.HasValue || !string.Equals(Result, "Успешно", StringComparison.OrdinalIgnoreCase)) return false;
             if ((Changes?.Count ?? 0) > 0)
-                return Changes.All(change => change != null && (change.Kind switch
+                return Changes.All(change => change != null && ProjectWriteGuard.IsDataTableWritable(change.TableName) && (change.Kind switch
                 {
                     ChangeJournalOperationKind.Insert or ChangeJournalOperationKind.Duplicate => change.After.Count > 0 && change.IdentityAfter.Count > 0,
                     ChangeJournalOperationKind.Update => change.Before.Count > 0 && change.After.Count > 0 && (change.IdentityAfter.Count > 0 || change.IdentityBefore.Count > 0),
                     ChangeJournalOperationKind.Delete => change.Before.Count > 0 && change.IdentityBefore.Count > 0,
                     _ => false
                 }));
-            if (string.Equals(ProjectType, "Offline", StringComparison.OrdinalIgnoreCase)) return false;
-            return (string.Equals(RestoreKind, "LogicalRelation", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(RestorePayloadJson)) ||
-                (string.Equals(Description, "Удалена логическая связь", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(Details) && Details.Contains("→"));
+            return false;
         }
     }
     public List<ChangeJournalRowChange> Changes { get; init; } = new();
@@ -259,9 +258,10 @@ public sealed class ChangeJournalService
             _contextServer = server ?? "";
             _contextDatabase = database ?? "";
             _contextProjectName = string.IsNullOrWhiteSpace(projectName) ? (database ?? "") : projectName;
-            _contextProjectId = "online:" + _contextServer.Trim().ToLowerInvariant() + "/" + _contextDatabase.Trim().ToLowerInvariant();
+            var storageServer = ConnectionSettings.ProjectServerName(server);
+            _contextProjectId = "online:" + storageServer.ToLowerInvariant() + "/" + _contextDatabase.Trim().ToLowerInvariant();
             _contextMode = mode;
-            _rootDirectory = Path.Combine(_baseDirectory, "Online", SafePath(_contextServer), SafePath(_contextDatabase));
+            _rootDirectory = Path.Combine(_baseDirectory, "Online", SafePath(storageServer), SafePath(_contextDatabase));
             Directory.CreateDirectory(_rootDirectory);
         }
     }
@@ -543,6 +543,7 @@ public sealed class ChangeJournalService
         if (string.IsNullOrWhiteSpace(change.TableName))
             throw new InvalidOperationException("В записи отсутствует таблица изменённой сущности.");
         var table = ResolveOfflineTable(records, schemas, change.TableName);
+        ProjectWriteGuard.EnsureDataTableWritable(table);
         var tableRows = records.Where(r => r.TableName.Equals(table, StringComparison.OrdinalIgnoreCase)).ToList();
         var identityAfter = Deserialize(change.IdentityAfter ?? new());
         var identityBefore = Deserialize(change.IdentityBefore ?? new());
@@ -689,13 +690,16 @@ public sealed class ChangeJournalService
     {
         if (entry == null) throw new ArgumentNullException(nameof(entry));
         if (entry.Changes.Count == 0) throw new InvalidOperationException("В журнале нет данных для восстановления.");
+        foreach (var change in entry.Changes) ProjectWriteGuard.EnsureDataTableWritable(change.TableName);
+        var schema = await new DatabaseArchitectureAnalyzer(connectionString).AnalyzeAsync(ct);
+        var protection = new DeletionProtectionService(connectionString, schema);
         await using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(connectionString);
         await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection, ct);
-        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(ct);
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable, ct);
         try
         {
             foreach (var change in entry.Changes.AsEnumerable().Reverse())
-                await RestoreRowAsync(connection, transaction, change, ct);
+                await RestoreRowAsync(connection, transaction, protection, change, ct);
             await transaction.CommitAsync(ct);
         }
         catch
@@ -705,13 +709,13 @@ public sealed class ChangeJournalService
         }
     }
 
-    private static async Task RestoreRowAsync(SqlConnection connection, SqlTransaction transaction, ChangeJournalRowChange change, CancellationToken ct)
+    private static async Task RestoreRowAsync(SqlConnection connection, SqlTransaction transaction, DeletionProtectionService protection, ChangeJournalRowChange change, CancellationToken ct)
     {
         switch (change.Kind)
         {
             case ChangeJournalOperationKind.Insert:
             case ChangeJournalOperationKind.Duplicate:
-                await DeleteByIdentityAsync(connection, transaction, change.TableName, Deserialize(change.IdentityAfter), Deserialize(change.After), ct);
+                await protection.DeleteUnreferencedInTransactionAsync(connection, transaction, change.TableName, Deserialize(change.IdentityAfter), Deserialize(change.After), ct);
                 break;
             case ChangeJournalOperationKind.Delete:
                 if (await ExistsByIdentityAsync(connection, transaction, change.TableName, Deserialize(change.IdentityBefore), ct))
@@ -753,23 +757,6 @@ public sealed class ChangeJournalService
         }
         cmd.CommandText = $"SELECT COUNT_BIG(1) FROM {QuoteTable(table)} WHERE {string.Join(" AND ", where)}";
         return Convert.ToInt64(await cmd.ExecuteScalarAsync(ct)) > 0;
-    }
-
-    private static async Task DeleteByIdentityAsync(SqlConnection c, SqlTransaction t, string table, Dictionary<string, object> identity, Dictionary<string, object> expected, CancellationToken ct)
-    {
-        if (identity.Count == 0 || expected.Count == 0) throw new InvalidOperationException($"Недостаточно данных для безопасного восстановления {table}.");
-        await EnsureCurrentValuesMatchAsync(c, t, table, identity, expected, expected.Keys.ToList(), ct);
-        var where = new List<string>();
-        await using var cmd = new SqlCommand { Connection = c, Transaction = t };
-        int i = 0;
-        foreach (var pair in identity)
-        {
-            if (pair.Value == null || pair.Value == DBNull.Value) where.Add($"{QuoteColumn(pair.Key)} IS NULL");
-            else { var p = "@p" + i++; where.Add($"{QuoteColumn(pair.Key)} = {p}"); cmd.Parameters.AddWithValue(p, pair.Value); }
-        }
-        cmd.CommandText = $"DELETE FROM {QuoteTable(table)} WHERE {string.Join(" AND ", where)}";
-        var affected = await cmd.ExecuteNonQueryAsync(ct);
-        if (affected != 1) throw new InvalidOperationException($"Восстановление {table}: удаление затронуло {affected} строк вместо одной.");
     }
 
     private static async Task InsertAsync(SqlConnection c, SqlTransaction t, string table, Dictionary<string, object> values, CancellationToken ct)

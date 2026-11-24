@@ -554,7 +554,7 @@ public sealed class ProjectPackageService
 
         void ValidateRecords(List<ProjectRecord> records, string snapshotName)
         {
-            var keys = new HashSet<string>(StringComparer.Ordinal);
+            var keys = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
             foreach (var record in records)
             {
                 if (record is null || string.IsNullOrWhiteSpace(record.TableName) ||
@@ -562,8 +562,10 @@ public sealed class ProjectPackageService
                     throw new InvalidDataException($"В разделе '{snapshotName}' найдена запись без таблицы, ключа или значений.");
                 if (!ValidIdentifierPath(record.TableName))
                     throw new InvalidDataException($"В разделе '{snapshotName}' запись содержит некорректное имя таблицы '{record.TableName}'.");
-                var unique = CanonicalTable(record.TableName) + "\\u001f" + record.Key;
-                if (!keys.Add(unique))
+                var table = CanonicalTable(record.TableName);
+                if (!keys.TryGetValue(table, out var tableKeys))
+                    keys.Add(table, tableKeys = new HashSet<string>(StringComparer.Ordinal));
+                if (!tableKeys.Add(record.Key))
                     throw new InvalidDataException($"В разделе '{snapshotName}' повторяется ключ '{record.Key}' таблицы '{record.TableName}'.");
                 var valueNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var pair in record.Values)

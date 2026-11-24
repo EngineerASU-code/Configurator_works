@@ -1,4 +1,4 @@
-﻿#nullable enable
+#nullable enable
 using Microsoft.Data.SqlClient;
 using System;
 using System.Collections.Generic;
@@ -13,6 +13,8 @@ public partial class ConnectionWindow : Window
 {
     public Func<string, bool>? OnDatabaseAdded;
     public ConnectionSettings Settings { get; private set; } = new ConnectionSettings();
+
+    private int _connectionGeneration;
 
     private static readonly Brush ErrorBrush = new SolidColorBrush(Color.FromRgb(220, 70, 70));
     private static readonly Brush SuccessBrush = new SolidColorBrush(Color.FromRgb(55, 160, 95));
@@ -36,6 +38,7 @@ public partial class ConnectionWindow : Window
 
     private void InvalidateConnection()
     {
+        _connectionGeneration++;
         CmbDatabase.ItemsSource = null;
         CmbDatabase.Items.Clear();
         CmbDatabase.SelectedIndex = -1;
@@ -58,35 +61,29 @@ public partial class ConnectionWindow : Window
 
         BtnConnect.IsEnabled = false;
         BtnAdd.IsEnabled = false;
+        int generation = _connectionGeneration;
         try
         {
-            var builder = new SqlConnectionStringBuilder
-            {
-                DataSource = server,
-                InitialCatalog = "master",
-                IntegratedSecurity = string.IsNullOrWhiteSpace(user),
-                TrustServerCertificate = true,
-                ConnectTimeout = 5
-            };
-            if (!builder.IntegratedSecurity) { builder.UserID = user; builder.Password = password; }
-
-            using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(builder.ConnectionString);
+            var settings = new ConnectionSettings { Server = server, User = user, Password = password };
+            using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(settings.ToConnectionString("master"));
             await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection);
             var databases = new List<string>();
             using (var command = new SqlCommand("SELECT name FROM sys.databases WHERE state = 0 AND database_id > 4 ORDER BY name", connection))
             using (var reader = await command.ExecuteReaderAsync())
                 while (await reader.ReadAsync()) databases.Add(reader.GetString(0));
 
+            if (generation != _connectionGeneration) return;
             CmbDatabase.ItemsSource = databases;
             if (databases.Count > 0) CmbDatabase.SelectedIndex = 0;
             BtnAdd.IsEnabled = databases.Count > 0;
-            Settings = new ConnectionSettings { Server = server, User = user, Password = password };
+            Settings = settings;
             SaveLastConnection(server, user);
             SetStatus($"Подключение успешно. Найдено баз: {databases.Count}", true);
         }
         catch (Exception ex)
         {
-            SetStatus($"Не удалось подключиться: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", false);
+            if (generation == _connectionGeneration)
+                SetStatus($"Не удалось подключиться. Проверьте данные входа и доверие к сертификату сервера: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", false);
         }
         finally { BtnConnect.IsEnabled = true; }
     }

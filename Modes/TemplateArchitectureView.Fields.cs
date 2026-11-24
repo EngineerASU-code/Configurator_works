@@ -207,39 +207,14 @@ private void RebuildGroups()
             var list = new ListBox { ItemsSource = fields, ItemTemplate = (DataTemplate)FindResource("FieldRowTemplate"), BorderThickness = new Thickness(0), Background = System.Windows.Media.Brushes.Transparent, SelectionMode = SelectionMode.Extended, Tag = groupName };
             list.SelectionChanged += FieldList_SelectionChanged;
             list.PreviewMouseDown += FieldList_PreviewMouseDown;
-            list.AllowDrop = true;
-            list.PreviewMouseMove += FieldList_PreviewMouseMove;
-            list.Drop += FieldList_Drop;
-            list.DragOver += FieldList_DragOver;
             stack.Children.Add(list);
             expander.Content = stack;
             GroupHost.Children.Add(expander);
         }
 
-        // In view-only Mode 2, keep expanders and selection usable while preventing
-        // accidental edits in generated field-row controls.
-        bool canEditFields = UserAuthorizationService.IsAdministrator ||
-            UserAuthorizationService.Has(Permission.Mode2Manage) ||
-            UserAuthorizationService.Has(Permission.ManageClasses);
-        foreach (var child in GroupHost.Children)
-            ApplyFieldEditPermission(child as DependencyObject, canEditFields);
     }
 
-    private static void ApplyFieldEditPermission(DependencyObject element, bool canEdit)
-    {
-        if (element == null) return;
-        if (element is TextBox textBox) textBox.IsReadOnly = !canEdit;
-        if (element is CheckBox checkBox) checkBox.IsEnabled = canEdit;
-        if (element is ListBox listBox)
-        {
-            listBox.AllowDrop = canEdit;
-            if (!canEdit) listBox.SelectionMode = SelectionMode.Single;
-        }
-        for (int i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(element); i++)
-            ApplyFieldEditPermission(System.Windows.Media.VisualTreeHelper.GetChild(element, i), canEdit);
-    }
-
-private static IReadOnlyList<string> GetDisplayGroups(ClassDefinition cls)
+    private static IReadOnlyList<string> GetDisplayGroups(ClassDefinition cls)
     {
         if (cls == null) return Array.Empty<string>();
         var groups = new List<string>(FieldGroupCatalog.GetGroups(cls.Name));
@@ -249,33 +224,7 @@ private static IReadOnlyList<string> GetDisplayGroups(ClassDefinition cls)
         return groups;
     }
 
-    private void FieldList_PreviewMouseMove(object sender, System.Windows.Input.MouseEventArgs e)
-    {
-        if (e.LeftButton != System.Windows.Input.MouseButtonState.Pressed) return;
-        if (sender is not ListBox list || list.SelectedItem is not FieldDefinition field || field.IsInherited) return;
-        DragDrop.DoDragDrop(list, field, DragDropEffects.Move);
-    }
-
-    private static void FieldList_DragOver(object sender, System.Windows.DragEventArgs e)
-    {
-        e.Effects = e.Data.GetDataPresent(typeof(FieldDefinition)) ? DragDropEffects.Move : DragDropEffects.None;
-        e.Handled = true;
-    }
-
-    private void FieldList_Drop(object sender, System.Windows.DragEventArgs e)
-    {
-        if (sender is not ListBox list || !e.Data.GetDataPresent(typeof(FieldDefinition))) return;
-        if (e.Data.GetData(typeof(FieldDefinition)) is not FieldDefinition field) return;
-        var targetGroup = list.Tag?.ToString();
-        if (string.IsNullOrWhiteSpace(targetGroup) || string.Equals(field.Group, targetGroup, StringComparison.OrdinalIgnoreCase)) return;
-        field.Group = targetGroup;
-        RebuildGroups();
-        TxtStatus.Text = $"Поле {field.Name} перенесено в группу «{targetGroup}». Нажмите «Сохранить».";
-        e.Handled = true;
-    }
-
-
-private void FieldList_PreviewMouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    private void FieldList_PreviewMouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
         if (sender is not ListBox list) return;
         bool keepSelection = Keyboard.Modifiers.HasFlag(ModifierKeys.Control) || Keyboard.Modifiers.HasFlag(ModifierKeys.Shift);
@@ -298,25 +247,6 @@ private void FieldList_PreviewMouseDown(object sender, System.Windows.Input.Mous
             foreach (var child in FindFieldLists(System.Windows.Media.VisualTreeHelper.GetChild(root, i))) yield return child;
     }
 
-    private async void FieldRelation_Click(object sender, RoutedEventArgs e)
-    {
-        if (!UserAuthorizationService.Require(Permission.ManageRelations)) return;
-        if (sender is not Button button || button.DataContext is not FieldDefinition field || _connection == null || string.IsNullOrWhiteSpace(_selectedDatabase)) return;
-        try
-        {
-            var db = new DatabaseService(_connection.ToConnectionString(_selectedDatabase));
-            var dialog = new FieldRelationWindow(db, _selectedDatabase, field) { Owner = Window.GetWindow(this) };
-            if (dialog.ShowDialog() == true)
-            {
-                RebuildGroups();
-                TxtStatus.Text = string.IsNullOrWhiteSpace(field.LookupTable)
-                    ? $"Связь поля {field.Name} очищена. Нажмите «Сохранить»."
-                    : $"Поле {field.Name} связано с {field.LookupTable}.{field.LookupKeyField}. Нажмите «Сохранить».";
-            }
-        }
-        catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Связь поля", MessageBoxButton.OK, MessageBoxImage.Error); }
-    }
-
 private static Grid CreateFieldHeader()
     {
         var grid = new Grid { Margin = new Thickness(0, 0, 0, 3) };
@@ -331,24 +261,5 @@ private static Grid CreateFieldHeader()
             grid.Children.Add(text);
         }
         return grid;
-    }
-
-private static TemplateColumn ToTemplateColumn(FieldDefinition field)
-    {
-        string type = string.IsNullOrWhiteSpace(field.DataType) || field.DataType.Equals("auto", StringComparison.OrdinalIgnoreCase) ? "int" : field.DataType;
-        bool text = type.Equals("string", StringComparison.OrdinalIgnoreCase);
-        if (text) type = "nvarchar";
-        return new TemplateColumn
-        {
-            Name = field.Name,
-            DataType = type,
-            MaxLength = field.Size > 0 ? field.Size : (text ? 500 : 0),
-            Precision = 18,
-            Scale = 2,
-            IsNullable = field.Nullable,
-            DefaultDefinition = field.DefaultValue == "DEFAULT" ? "0" : field.DefaultValue,
-            IsExisting = false,
-            IsPrimaryKey = field.Name.Equals("Record", StringComparison.OrdinalIgnoreCase)
-        };
     }
 }

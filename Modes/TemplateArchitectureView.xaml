@@ -8,13 +8,13 @@
             <Border Margin="0,2,0,2" Padding="4" CornerRadius="5" Background="{DynamicResource BrushBase}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1">
                 <Grid MinHeight="40">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="180"/><ColumnDefinition Width="115"/><ColumnDefinition Width="75"/><ColumnDefinition Width="75"/><ColumnDefinition Width="75"/><ColumnDefinition Width="80"/><ColumnDefinition Width="2*" MinWidth="300"/></Grid.ColumnDefinitions>
-                    <TextBox Grid.Column="0" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" MinHeight="30" Margin="2" VerticalContentAlignment="Center"/>
-                    <TextBox Grid.Column="1" Text="{Binding DataType, UpdateSourceTrigger=PropertyChanged}" MinHeight="30" Margin="2" VerticalContentAlignment="Center"/>
-                    <TextBox Grid.Column="2" Text="{Binding Size, UpdateSourceTrigger=PropertyChanged}" MinHeight="30" Margin="2" VerticalContentAlignment="Center"/>
-                    <TextBox Grid.Column="3" Text="{Binding Offset, UpdateSourceTrigger=PropertyChanged}" MinHeight="30" Margin="2" VerticalContentAlignment="Center"/>
-                    <TextBox Grid.Column="4" Text="{Binding BitOffset, UpdateSourceTrigger=PropertyChanged}" MinHeight="30" Margin="2" VerticalContentAlignment="Center"/>
-                    <CheckBox Grid.Column="5" IsChecked="{Binding Nullable, UpdateSourceTrigger=PropertyChanged}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                    <TextBox Grid.Column="6" Text="{Binding Description, UpdateSourceTrigger=PropertyChanged}" MinHeight="30" Margin="2" VerticalContentAlignment="Center" TextWrapping="Wrap" MinWidth="300"/>
+                    <TextBox IsReadOnly="True" Grid.Column="0" Text="{Binding Name, Mode=OneWay}" MinHeight="30" Margin="2" VerticalContentAlignment="Center"/>
+                    <TextBox IsReadOnly="True" Grid.Column="1" Text="{Binding DataType, Mode=OneWay}" MinHeight="30" Margin="2" VerticalContentAlignment="Center"/>
+                    <TextBox IsReadOnly="True" Grid.Column="2" Text="{Binding Size, Mode=OneWay}" MinHeight="30" Margin="2" VerticalContentAlignment="Center"/>
+                    <TextBox IsReadOnly="True" Grid.Column="3" Text="{Binding Offset, Mode=OneWay}" MinHeight="30" Margin="2" VerticalContentAlignment="Center"/>
+                    <TextBox IsReadOnly="True" Grid.Column="4" Text="{Binding BitOffset, Mode=OneWay}" MinHeight="30" Margin="2" VerticalContentAlignment="Center"/>
+                    <CheckBox IsEnabled="False" Grid.Column="5" IsChecked="{Binding Nullable, Mode=OneWay}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    <TextBox IsReadOnly="True" Grid.Column="6" Text="{Binding Description, Mode=OneWay}" MinHeight="30" Margin="2" VerticalContentAlignment="Center" TextWrapping="Wrap" MinWidth="300"/>
 
                 </Grid>
             </Border>
@@ -66,7 +66,7 @@
             <Grid Grid.Row="0" Margin="0,0,0,8">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                 <Button x:Name="BtnGraphMode" Grid.Column="0" Content="Обзор графа" Height="44" Margin="0,0,5,0" Style="{StaticResource BtnSecondary}" Click="GraphMode_Click" ToolTip="Компактная схема без подробных подписей на линиях"/>
-                <Button x:Name="BtnRelationsMode" Grid.Column="1" Content="Связи и правила" Height="44" Margin="5,0,5,0" Style="{StaticResource BtnSecondary}" Click="RelationsMode_Click" ToolTip="Просмотр и изменение логических связей проекта"/>
+                <Button x:Name="BtnRelationsMode" Grid.Column="1" Content="Связи и правила" Height="44" Margin="5,0,5,0" Style="{StaticResource BtnSecondary}" Click="RelationsMode_Click" ToolTip="Просмотр логических связей проекта"/>
                 <Button x:Name="BtnFieldsMode" Grid.Column="2" Content="Классы и поля" Height="44" Margin="5,0,0,0" Style="{StaticResource BtnSecondary}" Click="FieldsMode_Click"/>
             </Grid>
 
@@ -81,7 +81,7 @@
                         <Border Grid.Column="0" Background="{DynamicResource BrushPanel}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="10">
                             <DockPanel>
                                 <TextBlock DockPanel.Dock="Top" Text="Классы" FontSize="14" FontWeight="SemiBold" Margin="12,9,12,5" Foreground="{DynamicResource BrushText}" VerticalAlignment="Center"/>
-                                <Button x:Name="AddClassButton" DockPanel.Dock="Top" Content="＋  Новый класс" Height="36" Margin="9,0,9,8" Style="{StaticResource BtnPrimary}" Click="AddClass_Click" IsEnabled="False"/>
+                                <Button x:Name="AddClassButton" DockPanel.Dock="Top" Content="＋  Новый класс" Height="36" Margin="9,0,9,8" Style="{StaticResource BtnPrimary}" IsEnabled="False"/>
                                 <ListBox x:Name="ClassList" Margin="5,0,5,5" ItemTemplate="{StaticResource ClassItemTemplate}" BorderThickness="0" Background="Transparent" HorizontalContentAlignment="Stretch" SelectionChanged="ClassList_SelectionChanged" PreviewMouseWheel="NestedScroll_PreviewMouseWheel"/>
                             </DockPanel>
                         </Border>
@@ -93,7 +93,7 @@
                                     <StackPanel><TextBlock x:Name="TxtClassName" Text="Выберите класс" FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource BrushText}"/><TextBlock x:Name="TxtClassMeta" Margin="0,2,0,0" Foreground="{DynamicResource BrushTextSecondary}" FontSize="10" TextWrapping="Wrap"/></StackPanel>
                                     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                                         <TextBlock Text="№ класса" VerticalAlignment="Center" Foreground="{DynamicResource BrushTextSecondary}" Margin="0,0,5,0"/>
-                                        <TextBox x:Name="TxtClassNumber" Width="64" Height="32" Margin="0,0,10,0"/>
+                                        <TextBox x:Name="TxtClassNumber" IsReadOnly="True" Width="64" Height="32" Margin="0,0,10,0"/>
                                         <CheckBox x:Name="ChkAvailable" Visibility="Collapsed"/>
                                     </StackPanel>
                                 </Grid>
@@ -118,8 +118,8 @@
                                 </Grid>
                                 <Grid Grid.Row="3" Margin="0,8,0,0">
                                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                    <StackPanel Orientation="Horizontal"><Button x:Name="BtnAddField" Width="140" Height="36" Content="+ Поле" Style="{StaticResource BtnPrimary}" Click="AddField_Click"/><Button x:Name="BtnDeleteField" Width="140" Height="36" Content="Удалить поле" Style="{StaticResource BtnCompact}" Margin="5,0,0,0" Click="DeleteField_Click" IsEnabled="False"/></StackPanel>
-                                    <StackPanel Grid.Column="1" Orientation="Horizontal"><Button x:Name="BtnSaveClass" Content="Сохранить" Style="{StaticResource BtnSecondary}" Height="32" Margin="5,0,0,0" Click="SaveClass_Click" IsEnabled="False"/><Button x:Name="BtnRestoreArchived" Content="Восстановить объекты" Style="{StaticResource BtnSecondary}" Height="32" MinWidth="150" Margin="5,0,0,0" Click="RestoreArchived_Click" Visibility="Collapsed"/><Button x:Name="BtnDeleteClass" Content="Удалить класс" Style="{StaticResource BtnSecondary}" Height="32" Margin="5,0,0,0" Click="DeleteClass_Click"/></StackPanel>
+                                    <StackPanel Orientation="Horizontal"><Button x:Name="BtnAddField" Width="140" Height="36" Content="+ Поле" Style="{StaticResource BtnPrimary}" IsEnabled="False"/><Button x:Name="BtnDeleteField" Width="140" Height="36" Content="Удалить поле" Style="{StaticResource BtnCompact}" Margin="5,0,0,0" IsEnabled="False"/></StackPanel>
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal"><Button x:Name="BtnSaveClass" Content="Сохранить" Style="{StaticResource BtnSecondary}" Height="32" Margin="5,0,0,0" IsEnabled="False"/><Button x:Name="BtnRestoreArchived" Content="Восстановить объекты" Style="{StaticResource BtnSecondary}" Height="32" MinWidth="150" Margin="5,0,0,0" Visibility="Collapsed" IsEnabled="False"/><Button x:Name="BtnDeleteClass" Content="Удалить класс" Style="{StaticResource BtnSecondary}" Height="32" Margin="5,0,0,0" IsEnabled="False"/></StackPanel>
                                 </Grid>
                             </Grid>
                         </Border>

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Linq;
 
 namespace Configurator;
@@ -29,11 +29,6 @@ internal static class PermissionPolicy
     internal static bool Has(UserAccount currentUser, RoleDefinition role, Permission permission)
     {
         if (currentUser == null || !currentUser.Enabled) return false;
-
-        // Visibility is an explicit navigation policy, including for the administrator.
-        // User-management authority remains controlled separately by IsSuperAdmin.
-        if (permission is Permission.Mode1Show or Permission.Mode2Show or Permission.Mode2GraphShow or Permission.Mode2RelationsShow or Permission.Mode2FieldsShow or Permission.Mode3Show or Permission.Mode4Show)
-            return role?.Has(permission) == true;
 
         if (string.Equals(currentUser.UserName, "admin", StringComparison.OrdinalIgnoreCase) &&
             ReferenceEquals(currentUser, UserAuthorizationService.CurrentUser) &&

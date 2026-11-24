@@ -143,61 +143,7 @@ public partial class MainWindow
                 throw;
             }
         }
-        bool isLogicalRelationRestore = string.Equals(entry.RestoreKind, "LogicalRelation", StringComparison.OrdinalIgnoreCase);
-        bool isLegacyRelationRestore = string.Equals(entry.Description, "Удалена логическая связь", StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrWhiteSpace(entry.Details) && entry.Details.Contains("→");
-        if (isLogicalRelationRestore || isLegacyRelationRestore)
-        {
-            GraphRelationRestorePayload payload;
-            if (isLogicalRelationRestore)
-            {
-                payload = Newtonsoft.Json.JsonConvert.DeserializeObject<GraphRelationRestorePayload>(entry.RestorePayloadJson);
-            }
-            else
-            {
-                // Backward compatibility: older journal entries stored only
-                // "schema.Table.Field → schema.OtherTable.Key" in Details.
-                var endpoints = entry.Details.Split('→', 2, StringSplitOptions.TrimEntries);
-                if (endpoints.Length != 2 || !TryParseRelationEndpoint(endpoints[0], out var sourceTable, out var sourceColumn) ||
-                    !TryParseRelationEndpoint(endpoints[1], out var targetTable, out var targetColumn))
-                    throw new InvalidOperationException("Не удалось разобрать старую запись логической связи из журнала.");
-                payload = new GraphRelationRestorePayload
-                {
-                    WasManual = true,
-                    Relation = new GraphRelationDefinition
-                    {
-                        Source = sourceTable, Target = targetTable,
-                        SourceColumn = sourceColumn, TargetColumn = targetColumn,
-                        Rule = "Восстановлено из журнала действий"
-                    }
-                };
-            }
-            if (payload?.Relation == null) throw new InvalidOperationException("В журнале отсутствуют данные логической связи.");
-            if (string.IsNullOrWhiteSpace(entry.Database)) throw new InvalidOperationException("В журнале не указана база данных операции.");
-            var store = new GraphRelationStore(string.IsNullOrWhiteSpace(entry.Server) ? _connection.Server : entry.Server, entry.Database);
-            var document = store.Load();
-            document.ManualRelations ??= new List<GraphRelationDefinition>();
-            document.SuppressedAutomaticRelations ??= new List<string>();
-            if (payload.WasManual)
-            {
-                bool exists = document.ManualRelations.Any(r =>
-                    r.Source.Equals(payload.Relation.Source, StringComparison.OrdinalIgnoreCase) &&
-                    r.Target.Equals(payload.Relation.Target, StringComparison.OrdinalIgnoreCase) &&
-                    r.SourceColumn.Equals(payload.Relation.SourceColumn, StringComparison.OrdinalIgnoreCase) &&
-                    r.TargetColumn.Equals(payload.Relation.TargetColumn, StringComparison.OrdinalIgnoreCase));
-                if (!exists) document.ManualRelations.Add(payload.Relation);
-            }
-            else if (!string.IsNullOrWhiteSpace(payload.SuppressedRelationId))
-            {
-                document.SuppressedAutomaticRelations.RemoveAll(x => x.Equals(payload.SuppressedRelationId, StringComparison.OrdinalIgnoreCase));
-            }
-            store.Save(document);
-            _changeJournal.MarkRestored(entry);
-            if (string.Equals(_selectedDbName, entry.Database, StringComparison.OrdinalIgnoreCase) && !_failedDatabases.Contains(entry.Database))
-                _templateEditor?.Configure(_connection, GetActiveDatabases(), entry.Database);
-            RefreshActionLogUi();
-            return;
-        }
+        if (!entry.CanRestore) throw new InvalidOperationException("Для этой операции восстановление недоступно.");
         if (string.IsNullOrWhiteSpace(entry.Database))
             throw new InvalidOperationException("В журнале не указана база данных операции.");
 
@@ -211,18 +157,6 @@ public partial class MainWindow
         _changeJournal.MarkRestored(entry);
         if (_activeVm != null) await ReloadCurrentPageFastAsync();
         RefreshActionLogUi();
-    }
-
-    private static bool TryParseRelationEndpoint(string value, out string table, out string column)
-    {
-        table = "";
-        column = "";
-        if (string.IsNullOrWhiteSpace(value)) return false;
-        int split = value.Trim().LastIndexOf('.');
-        if (split <= 0 || split >= value.Trim().Length - 1) return false;
-        table = value.Trim()[..split];
-        column = value.Trim()[(split + 1)..];
-        return !string.IsNullOrWhiteSpace(table) && !string.IsNullOrWhiteSpace(column);
     }
 
     private void GlobalButtonClicked(object sender, RoutedEventArgs e)

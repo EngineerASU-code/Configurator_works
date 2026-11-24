@@ -17,9 +17,11 @@ public sealed class ProjectCompareSettingsStore
     public ProjectCompareSettingsStore(string server, string database)
     {
         var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Configurator", "ProjectCompareSettings");
-        var canonicalKey = $"{server.Trim().ToUpperInvariant()}\0{database.Trim().ToUpperInvariant()}";
+        var canonicalKey = $"{ConnectionSettings.ProjectServerName(server).ToUpperInvariant()}\0{database.Trim().ToUpperInvariant()}";
         _path = Path.Combine(root, $"{Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonicalKey)))}.json");
     }
+
+    internal ProjectCompareSettingsStore(string path) => _path = Path.GetFullPath(path);
 
     public async Task<ProjectCompareSettings> LoadAsync(CancellationToken cancellationToken = default)
     {
@@ -30,10 +32,16 @@ public sealed class ProjectCompareSettingsStore
             .ConfigureAwait(false) ?? throw new InvalidDataException("Файл проектных настроек содержит NULL.");
     }
 
-    public async Task SaveAsync(ProjectCompareSettings settings, CancellationToken cancellationToken = default)
+    public async Task SaveAsync(ProjectCompareSettings settings, string expectedFingerprint, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+        // A stable lock file serializes all cooperating processes across the read/check/replace.
+        // It is deliberately retained: deleting it would allow two independent locks on Windows.
+        await using var gate = await AcquireWriteLockAsync(cancellationToken).ConfigureAwait(false);
+        var current = await LoadAsync(cancellationToken).ConfigureAwait(false);
+        if (!CompareMetadataTransferPreview.FingerprintProjectSettings(current).Equals(expectedFingerprint, StringComparison.OrdinalIgnoreCase))
+            throw new CompareTransferException("Проектные настройки изменились после чтения. Повторите операцию.");
         var temp = _path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
@@ -44,6 +52,20 @@ public sealed class ProjectCompareSettingsStore
         finally
         {
             if (File.Exists(temp)) File.Delete(temp);
+        }
+    }
+
+    private async Task<FileStream> AcquireWriteLockAsync(CancellationToken cancellationToken)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try { return new FileStream(_path + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+            catch (IOException) when (DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(50, cancellationToken).ConfigureAwait(false);
+            }
         }
     }
 }

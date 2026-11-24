@@ -55,7 +55,13 @@ namespace Configurator
             }
 
             // === P1-11: Async ===
-            public async Task<DataTable> GetTableDataPageAsync(string tableName, int pageNumber, int pageSize, IReadOnlyList<string> orderColumns, TableFilter filter = null, CancellationToken ct = default)
+            public Task<DataTable> GetTableDataPageAsync(string tableName, int pageNumber, int pageSize, IReadOnlyList<string> orderColumns, TableFilter filter = null, CancellationToken ct = default)
+                => GetColumnViewPageAsync(tableName, pageNumber, pageSize,
+                    orderColumns?.Select(column => new TableColumnSort(column, System.ComponentModel.ListSortDirection.Ascending)).ToArray(),
+                    filter == null ? null : new[] { filter }, ct);
+
+            internal async Task<DataTable> GetColumnViewPageAsync(string tableName, int pageNumber, int pageSize,
+                IReadOnlyList<TableColumnSort> orderColumns, IReadOnlyList<TableFilter> filters, CancellationToken ct = default)
             {
                 using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
                 await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection, ct);
@@ -64,10 +70,10 @@ namespace Configurator
                 if (pageSize < 1) pageSize = 100;
                 long offset = ((long)pageNumber - 1L) * pageSize;
                 var order = orderColumns != null && orderColumns.Count > 0
-                    ? string.Join(", ", orderColumns.Select(QuoteIdentifier))
+                    ? string.Join(", ", orderColumns.Select(BuildColumnOrder))
                     : "(SELECT 0)";
     
-                var where = BuildFilterClause(filter, out var filterValue);
+                var where = BuildFilterClause(filters, out var filterParameters);
                 var query = $@"SELECT *
     FROM {QuoteTableName(tableName)}
     {where}
@@ -75,7 +81,7 @@ namespace Configurator
     OFFSET {offset} ROWS FETCH NEXT {pageSize} ROWS ONLY";
     
                 using var command = new SqlCommand(query, connection);
-                if (filterValue != null) command.Parameters.AddWithValue("@filterValue", filterValue);
+                foreach (var parameter in filterParameters) command.Parameters.Add(parameter);
                 command.CommandTimeout = 60;
                 SessionTestLog.Trace("SQL-ЗАПРОС", $"DatabaseService.GetTableDataPageAsync: {command.CommandText}; parameters=[{string.Join(", ", command.Parameters.Cast<SqlParameter>().Select(p => p.ParameterName + "=" + (p.ParameterName.Contains("password", StringComparison.OrdinalIgnoreCase) ? "<redacted>" : Convert.ToString(p.Value, CultureInfo.InvariantCulture))))}]");
                 using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct);
@@ -105,82 +111,80 @@ namespace Configurator
                 return pageData;
             }
     
-            public async Task<int> GetTableRowCountAsync(string tableName, TableFilter filter = null, CancellationToken ct = default)
+            public Task<int> GetTableRowCountAsync(string tableName, TableFilter filter = null, CancellationToken ct = default)
+                => CountColumnViewRowsAsync(tableName, filter == null ? null : new[] { filter }, ct);
+
+            internal async Task<int> CountColumnViewRowsAsync(string tableName, IReadOnlyList<TableFilter> filters, CancellationToken ct = default)
             {
                 using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
                 await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection, ct);
-                var where = BuildFilterClause(filter, out var filterValue);
+                var where = BuildFilterClause(filters, out var filterParameters);
                 using var command = new SqlCommand($"SELECT COUNT_BIG(*) FROM {QuoteTableName(tableName)} {where}", connection);
-                if (filterValue != null) command.Parameters.AddWithValue("@filterValue", filterValue);
+                foreach (var parameter in filterParameters) command.Parameters.Add(parameter);
                 command.CommandTimeout = 60;
                 long count = Convert.ToInt64(await command.ExecuteScalarAsync(ct));
                 return count > int.MaxValue ? int.MaxValue : (int)count;
             }
     
-            private string BuildFilterClause(TableFilter filter, out string parameterValue)
-        {
-            parameterValue = null;
-            if (filter == null || !filter.IsActive) return string.Empty;
-
-            string column = QuoteIdentifier(filter.Column);
-            string op = filter.Operator ?? "";
-
-            // Русские значения используются новым UI; английские оставлены
-            // для совместимости с фильтрами из старых конфигураций.
-            switch (op)
+            private string BuildColumnOrder(TableColumnSort sort)
             {
-                case "Пусто (NULL)":
-                case "Is Null":
-                    return $"WHERE {column} IS NULL";
-                case "Не пусто (NOT NULL)":
-                case "Is Not Null":
-                    return $"WHERE {column} IS NOT NULL";
-                case "Равно":
-                case "Equals":
-                    parameterValue = filter.Value;
-                    return $"WHERE {column} = @filterValue";
-                case "Не равно":
-                case "Not Equals":
-                    parameterValue = filter.Value;
-                    return $"WHERE {column} <> @filterValue";
-                case "Содержит":
-                case "Contains":
-                    parameterValue = "%" + filter.Value + "%";
-                    return $"WHERE CONVERT(nvarchar(max), {column}) LIKE @filterValue";
-                case "Не содержит":
-                case "Not Contains":
-                    parameterValue = "%" + filter.Value + "%";
-                    return $"WHERE CONVERT(nvarchar(max), {column}) NOT LIKE @filterValue";
-                case "Начинается с":
-                case "Starts With":
-                    parameterValue = filter.Value + "%";
-                    return $"WHERE CONVERT(nvarchar(max), {column}) LIKE @filterValue";
-                case "Заканчивается на":
-                case "Ends With":
-                    parameterValue = "%" + filter.Value;
-                    return $"WHERE CONVERT(nvarchar(max), {column}) LIKE @filterValue";
-                case "Больше":
-                case "Greater":
-                    parameterValue = filter.Value;
-                    return $"WHERE {column} > @filterValue";
-                case "Больше или равно":
-                case "Greater Or Equal":
-                    parameterValue = filter.Value;
-                    return $"WHERE {column} >= @filterValue";
-                case "Меньше":
-                case "Less":
-                    parameterValue = filter.Value;
-                    return $"WHERE {column} < @filterValue";
-                case "Меньше или равно":
-                case "Less Or Equal":
-                    parameterValue = filter.Value;
-                    return $"WHERE {column} <= @filterValue";
-                default:
-                    parameterValue = "%" + filter.Value + "%";
-                    return $"WHERE CONVERT(nvarchar(max), {column}) LIKE @filterValue";
+                var column = QuoteIdentifier(sort.Column);
+                if (sort.CompareAsText) column = $"CONVERT(nvarchar(max), {column})";
+                return column + (sort.Direction == System.ComponentModel.ListSortDirection.Descending ? " DESC" : " ASC");
             }
-        }
 
+            private string BuildFilterClause(IReadOnlyList<TableFilter> filters, out List<SqlParameter> parameters)
+            {
+                parameters = new List<SqlParameter>();
+                if (filters == null || filters.Count == 0) return "";
+                var predicates = new List<string>();
+                foreach (var filter in filters.Where(f => f.IsActive))
+                {
+                    string column = QuoteIdentifier(filter.Column);
+                    string op = filter.Operator;
+                    if (op is "Is Null" or "Пусто (NULL)")
+                    {
+                        predicates.Add($"{column} IS NULL");
+                        continue;
+                    }
+                    if (op is "Is Not Null" or "Не пусто (NOT NULL)")
+                    {
+                        predicates.Add($"{column} IS NOT NULL");
+                        continue;
+                    }
+
+                    string parameter = $"@filter{parameters.Count}";
+                    string comparison = op switch
+                    {
+                        "Equals" or "Равно" => "=",
+                        "Not Equals" or "Не равно" => "<>",
+                        "Greater" or "Больше" => ">",
+                        "Greater Or Equal" or "Больше или равно" => ">=",
+                        "Less" or "Меньше" => "<",
+                        "Less Or Equal" or "Меньше или равно" => "<=",
+                        _ => null
+                    };
+                    if (comparison != null)
+                    {
+                        if (filter.CompareAsText) column = $"CONVERT(nvarchar(max), {column})";
+                        predicates.Add($"{column} {comparison} {parameter}");
+                        parameters.Add(new SqlParameter(parameter, filter.TypedValue ?? filter.Value));
+                        continue;
+                    }
+
+                    string literal = filter.Value.Replace("~", "~~").Replace("%", "~%").Replace("_", "~_").Replace("[", "~[");
+                    string pattern = op switch
+                    {
+                        "Starts With" or "Начинается с" => literal + "%",
+                        "Ends With" or "Заканчивается на" => "%" + literal,
+                        _ => "%" + literal + "%"
+                    };
+                    string like = op is "Not Contains" or "Не содержит" ? "NOT LIKE" : "LIKE";
+                    predicates.Add($"CONVERT(nvarchar(max), {column}) {like} {parameter} ESCAPE '~'");
+                    parameters.Add(new SqlParameter(parameter, pattern));
+                }
+                return predicates.Count == 0 ? "" : "WHERE " + string.Join(" AND ", predicates);
+            }
         public async Task<PagedResult> GetTableDataPagedAsync(string tableName, int pageNumber, int pageSize, CancellationToken ct = default)
             {
                 var orderColumns = await GetRowIdentityColumnsAsync(tableName, ct);

@@ -170,16 +170,8 @@ public partial class FunctionalBlockEditorControl : UserControl
             return false;
         }
 
-        _selected.Name = name;
-        _selected.Description = DescriptionBox.Text;
-        _selected.InterfaceText = InterfaceBox.Text;
-        _selected.SourceText = SourceBox.Text;
-        if (_isNew) _blocks.Add(_selected);
-        if (!Persist())
-        {
-            if (_isNew) _blocks.Remove(_selected);
-            return false;
-        }
+        if (!SaveWithRollback(_blocks, _selected, _isNew, name, DescriptionBox.Text,
+                InterfaceBox.Text, SourceBox.Text, Persist)) return false;
         _isNew = false;
         _dirty = false;
         UpdatePermissions();
@@ -190,6 +182,34 @@ public partial class FunctionalBlockEditorControl : UserControl
         _loading = false;
         StatusText.Text = $"Блок «{name}» сохранён.";
         return true;
+    }
+
+    internal static bool SaveWithRollback(List<FunctionalBlockDefinition> blocks, FunctionalBlockDefinition selected,
+        bool isNew, string name, string description, string interfaceText, string sourceText, Func<bool> persist)
+    {
+        var original = selected.Copy(selected.Name);
+        bool saved = false;
+        try
+        {
+            selected.Name = name;
+            selected.Description = description;
+            selected.InterfaceText = interfaceText;
+            selected.SourceText = sourceText;
+            if (isNew) blocks.Add(selected);
+            saved = persist();
+            return saved;
+        }
+        finally
+        {
+            if (!saved)
+            {
+                if (isNew) blocks.Remove(selected);
+                selected.Name = original.Name;
+                selected.Description = original.Description;
+                selected.InterfaceText = original.InterfaceText;
+                selected.SourceText = original.SourceText;
+            }
+        }
     }
 
     private bool Persist()

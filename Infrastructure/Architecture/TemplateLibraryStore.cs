@@ -50,16 +50,7 @@ public sealed class TemplateLibraryStore
         }
     }
 
-    public void Save(IEnumerable<ClassDefinition> classes)
-    {
-        if (_project != null)
-        {
-            _project.Architecture["classDefinitions"] = JsonSerializer.SerializeToNode(classes.ToList(), new JsonSerializerOptions { WriteIndented = true });
-            _project.Manifest.ModifiedUtc = DateTimeOffset.UtcNow;
-            return;
-        }
-        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
-        var options = new JsonSerializerOptions { WriteIndented = true };
-        File.WriteAllText(_path, JsonSerializer.Serialize(classes.ToList(), options));
-    }
+    public void Save(IEnumerable<ClassDefinition> classes) =>
+        throw new InvalidOperationException(ProjectWriteGuard.ArchitectureReadOnly);
+
 }

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
@@ -316,6 +316,7 @@ public partial class DependencyReplacementWindow : Window
                 SourceTable = row.Option.Hit.SourceTable,
                 SourceColumns = row.Option.Hit.Relation.SourceColumns.ToList(),
                 NewValues = selected.Values.ToList(),
+                TargetValues = selected.TargetValues,
                 KeyColumns = row.Option.Hit.SourceKey.Keys.ToList(),
                 KeyValues = row.Option.Hit.SourceKey.Values.ToList(),
                 ExpectedOldValues = row.Option.Hit.SourceReferenceValues,

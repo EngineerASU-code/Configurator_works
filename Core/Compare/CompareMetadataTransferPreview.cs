@@ -56,6 +56,8 @@ public sealed class CompareMetadataTransferPreview
         if (difference.MetadataKind is null || key.Length == 0 ||
             difference.Status is not (CompareStatus.Changed or CompareStatus.OnlyA or CompareStatus.OnlyB))
             return Block(reason);
+        if (kind is not (CompareMetadataKind.ProjectTextList or CompareMetadataKind.ThemePreset))
+            return Block("Перенос этого типа настроек отключён: архитектура проекта доступна только для просмотра.");
         if (!target.CanWrite || target.Workspace.IsReadOnly)
             return Block("Целевой источник открыт только для чтения.");
         if (kind == CompareMetadataKind.ClassDefinition && difference.Column is not null)
@@ -73,6 +75,7 @@ public sealed class CompareMetadataTransferPreview
                 return Block("Целевой источник не поддерживает сохранение проектных настроек.");
             sourceFingerprint = FingerprintProjectSettings(sourceSettings);
             targetFingerprint = FingerprintProjectSettings(targetSettings);
+            if (!MatchesComparison()) return Block("Проектные настройки изменились. Повторите сравнение.");
             if (kind == CompareMetadataKind.ProjectTextList)
             {
                 var sourceMatches = sourceSettings.TextLists.Where(item => TextListKey(item).Equals(key, StringComparison.OrdinalIgnoreCase)).ToArray();
@@ -103,6 +106,7 @@ public sealed class CompareMetadataTransferPreview
         var targetData = await ReadAsync(target, cancellationToken).ConfigureAwait(false);
         sourceFingerprint = Fingerprint(sourceData.Classes, sourceData.Relations);
         targetFingerprint = Fingerprint(targetData.Classes, targetData.Relations);
+        if (!MatchesComparison()) return Block("Классы или связи изменились. Повторите сравнение.");
 
         if (kind == CompareMetadataKind.ClassDefinition)
         {
@@ -140,6 +144,8 @@ public sealed class CompareMetadataTransferPreview
         string relationDescription = relation is null ? "удалить ручную логическую связь" : "перенести ручную логическую связь";
         return New($"{(aToB ? "A → B" : "B → A")}: {relationDescription} «{difference.Title}».");
 
+        bool MatchesComparison() => difference.FingerprintA == (aToB ? sourceFingerprint : targetFingerprint) &&
+            difference.FingerprintB == (aToB ? targetFingerprint : sourceFingerprint);
         CompareMetadataTransferPreview New(string description) => new(source, target, kind, key, description, null,
             sourceFingerprint, targetFingerprint, classDefinition, relation) { RemoveRelation = removeRelation };
         CompareMetadataTransferPreview Block(string why) => new(source, target, kind, key, why, why,

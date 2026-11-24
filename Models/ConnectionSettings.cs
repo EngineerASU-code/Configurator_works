@@ -26,23 +26,28 @@ namespace Configurator
 
         public bool IsValid() =>
             !string.IsNullOrWhiteSpace(Server) &&
-            !string.IsNullOrWhiteSpace(User) &&
-            !string.IsNullOrWhiteSpace(Password);
+            (string.IsNullOrWhiteSpace(User) || !string.IsNullOrWhiteSpace(Password));
 
         public string ToConnectionString(string databaseName)
         {
             var builder = new SqlConnectionStringBuilder
             {
                 DataSource = Server,
-                UserID = User,
-                Password = Password,
                 InitialCatalog = databaseName,
-                IntegratedSecurity = false,
-                TrustServerCertificate = true,
+                IntegratedSecurity = string.IsNullOrWhiteSpace(User),
+                Encrypt = true,
+                TrustServerCertificate = IsExplicitLocalSharedMemory(Server),
                 ConnectTimeout = 15
             };
+            if (!builder.IntegratedSecurity) { builder.UserID = User; builder.Password = Password; }
             return builder.ConnectionString;
         }
+
+        internal static bool IsExplicitLocalSharedMemory(string server) =>
+            string.Equals(server?.Trim(), "lpc:" + Environment.MachineName, StringComparison.OrdinalIgnoreCase);
+
+        internal static string ProjectServerName(string server) =>
+            IsExplicitLocalSharedMemory(server) ? Environment.MachineName : (server?.Trim() ?? "");
 
         // === P1-11: Async-версия TestConnection ===
         public async Task<bool> TestConnectionAsync(string databaseName, System.Threading.CancellationToken cancellationToken = default)

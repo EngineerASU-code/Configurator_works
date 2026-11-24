@@ -7,6 +7,30 @@ namespace Configurator.Security.Tests;
 public sealed class FunctionalBlockStoreTests
 {
     [Fact]
+    public void FailedSaveRestoresExistingBlockAndDoesNotLeakIntoLaterSave()
+    {
+        var block = new FunctionalBlockDefinition { Name = "old", Description = "old description", InterfaceText = "old interface", SourceText = "old source" };
+        var blocks = new List<FunctionalBlockDefinition> { block };
+        Assert.False(FunctionalBlockEditorControl.SaveWithRollback(blocks, block, false, "new", "changed", "changed", "changed", () => false));
+        Assert.Equal("old", block.Name);
+        Assert.Equal("old description", block.Description);
+        Assert.Equal("old interface", block.InterfaceText);
+        Assert.Equal("old source", block.SourceText);
+        Assert.Same(block, Assert.Single(blocks));
+    }
+
+    [Fact]
+    public void FailedNewBlockSaveRestoresCollectionEvenOnException()
+    {
+        var existing = new FunctionalBlockDefinition { Name = "existing" };
+        var added = new FunctionalBlockDefinition();
+        var blocks = new List<FunctionalBlockDefinition> { existing };
+        Assert.Throws<IOException>(() => FunctionalBlockEditorControl.SaveWithRollback(blocks, added, true, "new", "", "", "", () => throw new IOException()));
+        Assert.Same(existing, Assert.Single(blocks));
+        Assert.Equal("", added.Name);
+    }
+
+    [Fact]
     public async Task OnlineBlocksCopyIntoOfflinePackageAndReopenWithContent()
     {
         var root = Path.Combine(Path.GetTempPath(), "Configurator-FB-" + Guid.NewGuid().ToString("N"));

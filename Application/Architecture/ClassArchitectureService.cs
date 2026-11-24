@@ -39,18 +39,11 @@ public sealed class ClassArchitectureService
         _classes[definition.Id] = definition;
     }
 
-    public void DeleteUserClass(string id)
-    {
-        if (!_classes.TryGetValue(id, out var definition)) return;
-        if (definition.IsSystem) throw new InvalidOperationException("Системный класс нельзя удалить.");
-        _classes.Remove(id);
-    }
+    public void DeleteUserClass(string id) =>
+        throw new InvalidOperationException(Configurator.Core.Projects.ProjectWriteGuard.ArchitectureReadOnly);
 
-    public void Save()
-    {
-        var custom = _classes.Values.ToList();
-        _store.Save(custom);
-    }
+    public void Save() =>
+        throw new InvalidOperationException(Configurator.Core.Projects.ProjectWriteGuard.ArchitectureReadOnly);
 
     public ClassDefinition Find(string id) => id != null && _classes.TryGetValue(id, out var value) ? value : null;
 

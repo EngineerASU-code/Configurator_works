@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
@@ -203,7 +203,7 @@ public partial class LookupSettingsWindow : Window
             string listKey = $"{list.SourceTable.Trim()}|{list.Name.Trim()}";
             var lists = settings.TextLists.Where(item => !$"{item.SourceTable.Trim()}|{item.Name.Trim()}"
                 .Equals(listKey, StringComparison.OrdinalIgnoreCase)).Append(list).ToList();
-            await store.SaveAsync(settings with { TextLists = lists });
+            await store.SaveAsync(settings with { TextLists = lists }, Configurator.Core.Compare.CompareMetadataTransferPreview.FingerprintProjectSettings(settings));
             TxtStatus.Text = $"Список «{list.Name}» сохранён в проектные настройки для Compare · записей: {list.Items.Count}";
         }
         catch (Exception ex)
@@ -233,16 +233,19 @@ public partial class LookupSettingsWindow : Window
     private async void BtnEdit_Click(object sender, RoutedEventArgs e)
     {
         if (_selectedDefinition == null || _db == null || DataGrid.SelectedItem is not DataRowView row) return;
+        var db = _db;
+        var table = _selectedDefinition.LookupTable;
+        var original = row.Row.Table.Columns.Cast<DataColumn>().ToDictionary(c => c.ColumnName, c => row.Row[c], StringComparer.OrdinalIgnoreCase);
         var current = _columns.ToDictionary(c => c.Name, c => row.Row.Table.Columns.Contains(c.Name) && row[c.Name] != DBNull.Value ? Convert.ToString(row[c.Name]) : "", StringComparer.OrdinalIgnoreCase);
         string key = _keys.FirstOrDefault() ?? _columns.FirstOrDefault()?.Name ?? "";
-        var window = new EditRowWindow(_selectedDefinition.LookupTable, _columns, current, key) { Owner = this };
+        var window = new EditRowWindow(table, _columns, current, key) { Owner = this };
         window.ShowDialog();
-        if (!window.Confirmed || window.Values == null) return;
-        var identity = _keys.ToDictionary(k => k, k => row[k], StringComparer.OrdinalIgnoreCase);
+        if (!window.Confirmed || window.Values == null || window.Values.Count == 0) return;
         try
         {
-            await _db.UpdateRowByValuesAsync(_selectedDefinition.LookupTable, identity, window.Values);
-            await LoadSelectedLookupAsync();
+            await db.UpdateRowByValuesAsync(table, original, window.Values);
+            if (ReferenceEquals(_db, db) && _selectedDefinition?.LookupTable == table)
+                await LoadSelectedLookupAsync();
         }
         catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Сохранение списка", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
@@ -262,7 +265,7 @@ public partial class LookupSettingsWindow : Window
                         identity[column] = row[column];
 
             var protection = new DeletionProtectionService(connectionString, schema);
-            var plan = await protection.BuildPlanAsync(new DeletionRequest { TableName = _selectedDefinition.LookupTable, Key = identity });
+            var plan = await protection.BuildPlanAsync(new DeletionRequest { TableName = _selectedDefinition.LookupTable, Key = identity, ExpectedValues = row.Row.Table.Columns.Cast<DataColumn>().ToDictionary(c => c.ColumnName, c => row[c.ColumnName], StringComparer.OrdinalIgnoreCase) });
             IReadOnlyList<ReferenceReplacement> replacements = Array.Empty<ReferenceReplacement>();
             if (plan.RequiresReplacement)
             {

@@ -14,6 +14,35 @@ namespace Configurator.Security.Tests;
 
 public sealed class CompareTransferIntegrationTests
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task EditedFieldPersistsAndCannotOverwriteAConcurrentEdit(bool aToB)
+    {
+        using var files = new CompareTestDirectory();
+        var (a, b) = await CompareTransferPreviewTests.OpenPairAsync(files);
+        using var workspaceA = (IDisposable)a.Workspace;
+        using var workspaceB = (IDisposable)b.Workspace;
+        var difference = CompareTransferPreviewTests.FindDifference(await CompareEngine.CompareAsync(a, b), "Pressure");
+        var original = CompareTransferPreview.Evaluate(a, b, difference, aToB);
+        Assert.True(original.IsAllowed, original.BlockReason);
+        foreach (var invalid in new string?[] { "1.23456", "abc", null })
+            Assert.Throws<InvalidOperationException>(() => original.WithEdits(new Dictionary<string, string?> { ["Pressure"] = invalid }));
+        Assert.Throws<InvalidOperationException>(() => original.WithEdits(new Dictionary<string, string?> { ["Record"] = "2" }));
+        var edited = original.WithEdits(new Dictionary<string, string?> { ["Pressure"] = "24,75" });
+        var target = aToB ? files.B : files.A;
+        var source = aToB ? files.A : files.B;
+        var beforeSource = File.ReadAllBytes(source);
+        await CompareTransfer.ApplyToTargetAsync(edited);
+        var record = Assert.Single((await new ProjectPackageService().OpenAsync(target)).LocalRecords);
+        Assert.Equal(24.75m, record.Values["Pressure"]!.GetValue<decimal>());
+        Assert.Equal(51, record.Values["Neighbour"]!.GetValue<int>());
+        var saved = File.ReadAllBytes(target);
+        await Assert.ThrowsAsync<CompareTransferException>(() => CompareTransfer.ApplyToTargetAsync(original));
+        Assert.Equal(saved, File.ReadAllBytes(target));
+        Assert.Equal(beforeSource, File.ReadAllBytes(source));
+    }
+
     [Fact]
     public async Task OfflineTransfersProjectTextListsAndThemePresetsWithoutApplyingThemToTheApp()
     {
@@ -81,13 +110,33 @@ public sealed class CompareTransferIntegrationTests
         await new ProjectPackageService().SaveAsync(files.B, changedTarget);
         var beforeRejectedWrite = File.ReadAllBytes(files.B);
         await Assert.ThrowsAsync<CompareTransferException>(() => CompareTransfer.ApplyMetadataToTargetAsync(preview));
+        var reopened = await CompareSourceReader.OpenOfflineAsync(files.B, true);
+        using var reopenedWorkspace = (IDisposable)reopened.Workspace;
+        var staleDifference = await CompareMetadataTransferPreview.EvaluateAsync(a, reopened, difference, aToB: true);
+        Assert.False(staleDifference.IsAllowed);
         Assert.Equal(beforeRejectedWrite, File.ReadAllBytes(files.B));
+    }
+
+    [Fact]
+    public async Task UnknownMetadataTypeIsBlockedBeforeAnyWrite()
+    {
+        using var files = new CompareTestDirectory();
+        var (a, b) = await CompareTransferPreviewTests.OpenPairAsync(files);
+        using var workspaceA = (IDisposable)a.Workspace;
+        using var workspaceB = (IDisposable)b.Workspace;
+        var before = await File.ReadAllBytesAsync(files.B);
+        var difference = new CompareDifference("unknown", null, null, CompareStatus.Changed,
+            MetadataKind: (CompareMetadataKind)12345, MetadataKey: "unknown");
+        var preview = await CompareMetadataTransferPreview.EvaluateAsync(a, b, difference, true);
+        Assert.False(preview.IsAllowed);
+        await Assert.ThrowsAsync<CompareTransferException>(() => CompareTransfer.ApplyMetadataToTargetAsync(preview));
+        Assert.Equal(before, await File.ReadAllBytesAsync(files.B));
     }
 
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task OfflineTransfersClassSettingsWithoutChangingSource(bool aToB)
+    public async Task OfflineRejectsClassTransferWithoutChangingEitherPackage(bool aToB)
     {
         using var files = new CompareTestDirectory();
         var projectA = CompareTransferPreviewTests.Sample("Compare A", 10.25m);
@@ -110,25 +159,20 @@ public sealed class CompareTransferIntegrationTests
         string sourcePath = aToB ? files.A : files.B;
         string targetPath = aToB ? files.B : files.A;
         var beforeSource = File.ReadAllBytes(sourcePath);
+        var beforeTarget = File.ReadAllBytes(targetPath);
         var result = await CompareEngine.CompareAsync(a, b);
         var difference = Flatten(result.Architecture).Single(item => item.MetadataKind == CompareMetadataKind.ClassDefinition && item.MetadataKey == "extra");
         var preview = await CompareMetadataTransferPreview.EvaluateAsync(a, b, difference, aToB);
-        Assert.True(preview.IsAllowed, preview.BlockReason);
-        await CompareTransfer.ApplyMetadataToTargetAsync(preview);
-        var restored = await packages.OpenAsync(targetPath);
-        var definitions = JsonSerializer.Deserialize<Configurator.Core.Architecture.ClassDefinition[]>(restored.Architecture["classDefinitions"]!.ToJsonString());
-        Assert.Equal("from A", Assert.Single(definitions!).Description);
-        Assert.Equal(beforeSource, File.ReadAllBytes(sourcePath));
-
-        var afterTarget = File.ReadAllBytes(targetPath);
+        Assert.False(preview.IsAllowed);
         await Assert.ThrowsAsync<CompareTransferException>(() => CompareTransfer.ApplyMetadataToTargetAsync(preview));
-        Assert.Equal(afterTarget, File.ReadAllBytes(targetPath));
+        Assert.Equal(beforeSource, File.ReadAllBytes(sourcePath));
+        Assert.Equal(beforeTarget, File.ReadAllBytes(targetPath));
     }
 
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task OfflineTransfersManualRelationAndLeavesSourceUntouched(bool aToB)
+    public async Task OfflineRejectsManualRelationTransfer(bool aToB)
     {
         using var files = new CompareTestDirectory();
         var projectA = CompareTransferPreviewTests.Sample("Compare A", 10.25m);
@@ -150,6 +194,7 @@ public sealed class CompareTransferIntegrationTests
         string sourcePath = aToB ? files.A : files.B;
         string targetPath = aToB ? files.B : files.A;
         var before = File.ReadAllBytes(sourcePath);
+        var beforeTarget = File.ReadAllBytes(targetPath);
 
         var a = await CompareSourceReader.OpenOfflineAsync(files.A, true);
         var b = await CompareSourceReader.OpenOfflineAsync(files.B, true);
@@ -158,13 +203,10 @@ public sealed class CompareTransferIntegrationTests
         var result = await CompareEngine.CompareAsync(a, b);
         var difference = Flatten(result.Architecture).Single(row => row.MetadataKind == CompareMetadataKind.ManualRelation);
         var preview = await CompareMetadataTransferPreview.EvaluateAsync(a, b, difference, aToB);
-        Assert.True(preview.IsAllowed, preview.BlockReason);
-        await CompareTransfer.ApplyMetadataToTargetAsync(preview);
-
-        var reopened = await packages.OpenAsync(targetPath);
-        var relation = Assert.Single(reopened.GraphRelations.Deserialize<GraphRelationProjectDocument>()!.ManualRelations);
-        Assert.Equal(("Neighbour", "Record", "Explicit neighbour mapping"), (relation.SourceColumn, relation.TargetColumn, relation.Rule));
+        Assert.False(preview.IsAllowed);
+        await Assert.ThrowsAsync<CompareTransferException>(() => CompareTransfer.ApplyMetadataToTargetAsync(preview));
         Assert.Equal(before, File.ReadAllBytes(sourcePath));
+        Assert.Equal(beforeTarget, File.ReadAllBytes(targetPath));
     }
 
     [Fact]
@@ -301,6 +343,24 @@ public sealed class CompareTransferIntegrationTests
     }
 
     [CompareLocalDbFact]
+    public async Task OnlineSourceChangeAfterPreviewRejectsTransferToOffline()
+    {
+        using var files = new CompareTestDirectory();
+        await using var db = await CompareLocalDb.CreateAsync();
+        var (online, offline) = await OpenSqlPairAsync(db, files, 10.25m);
+        using var workspaceOnline = (IDisposable)online.Workspace;
+        using var workspaceOffline = (IDisposable)offline.Workspace;
+        var result = await CompareEngine.CompareAsync(online, offline);
+        var preview = CompareTransferPreview.Evaluate(online, offline,
+            CompareTransferPreviewTests.FindDifference(result, "Pressure"), aToB: true);
+        Assert.True(preview.IsAllowed, preview.BlockReason);
+        var before = await File.ReadAllBytesAsync(files.B);
+        await db.ExecuteAsync("UPDATE dbo.Valves SET Pressure = 16.25 WHERE Record = 1");
+        await Assert.ThrowsAsync<CompareTransferException>(() => CompareTransfer.ApplyToTargetAsync(preview));
+        Assert.Equal(before, await File.ReadAllBytesAsync(files.B));
+    }
+
+    [CompareLocalDbFact]
     public async Task OnlineAndOfflineCanEachBeTheDestination()
     {
         using var files = new CompareTestDirectory();
@@ -310,8 +370,9 @@ public sealed class CompareTransferIntegrationTests
         using var workspaceOffline = (IDisposable)offline.Workspace;
         var beforePackage = File.ReadAllBytes(files.B);
         var result = await CompareEngine.CompareAsync(online, offline);
-        await ApplyAsync(online, offline, CompareTransferPreviewTests.FindDifference(result, "Pressure"), aToB: false);
-        Assert.Equal(10.25m, await db.DecimalAsync("SELECT Pressure FROM dbo.Valves WHERE Record=1"));
+        var preview = CompareTransferPreview.Evaluate(online, offline, CompareTransferPreviewTests.FindDifference(result, "Pressure"), aToB: false);
+        await CompareTransfer.ApplyToTargetAsync(preview.WithEdits(new Dictionary<string, string?> { ["Pressure"] = "12.75" }));
+        Assert.Equal(12.75m, await db.DecimalAsync("SELECT Pressure FROM dbo.Valves WHERE Record=1"));
         Assert.Equal(51m, await db.DecimalAsync("SELECT Neighbour FROM dbo.Valves WHERE Record=1"));
         Assert.Equal(beforePackage, File.ReadAllBytes(files.B));
         var next = await CompareEngine.CompareAsync(online, offline);
@@ -353,6 +414,7 @@ public sealed class CompareTransferIntegrationTests
         var preview = CompareTransferPreview.Evaluate(online, offline,
             CompareTransferPreviewTests.FindDifference(result, "Pressure"), aToB: false);
         Assert.True(preview.IsAllowed, preview.BlockReason);
+        preview = preview.WithEdits(new Dictionary<string, string?> { ["Pressure"] = "22.5" });
         await db.ExecuteAsync("UPDATE dbo.Valves SET Label = N'Tag ' WHERE Record = 1");
 
         await Assert.ThrowsAsync<CompareTransferException>(() => CompareTransfer.ApplyToTargetAsync(preview));

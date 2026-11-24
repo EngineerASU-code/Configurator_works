@@ -1,169 +1,93 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
+using System.ComponentModel;
+using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 
-namespace Configurator
+namespace Configurator;
+
+public partial class TableFilterWindow : Window
 {
-    public partial class TableFilterWindow : Window
+    private sealed record FilterOperator(string Key, string Label);
+    private readonly ColumnInfo _column;
+    private readonly bool _typedComparison;
+
+    internal TableFilter Result { get; private set; }
+    internal TableColumnSort Sort { get; private set; }
+
+    internal TableFilterWindow(ColumnInfo column, TableFilter current, TableColumnSort sort)
     {
-        private readonly List<ColumnInfo> _columns;
-
-        public TableFilter Result { get; private set; }
-
-        public TableFilterWindow(IEnumerable<ColumnInfo> columns, TableFilter current = null)
-        {
-            InitializeComponent();
-
-            _columns = columns?.ToList() ?? new List<ColumnInfo>();
-            // Используем строки в ComboBox, чтобы глобальный WPF style
-            // никогда не показывал ColumnInfo.ToString().
-            CmbColumn.ItemsSource = _columns.Select(c => c.Name).ToList();
-
-            if (current != null)
-            {
-                CmbColumn.SelectedItem = _columns.FirstOrDefault(c => string.Equals(c.Name, current.Column, StringComparison.OrdinalIgnoreCase))?.Name;
-            }
-            if (CmbColumn.SelectedIndex < 0 && _columns.Count > 0)
-                CmbColumn.SelectedIndex = 0;
-
-            // Старые значения фильтра (английские) остаются совместимыми.
-            TxtValue.Text = current?.Value ?? "";
-            UpdateOperators(current?.Operator);
-        }
-
-        private ColumnInfo SelectedColumn
-            => _columns.FirstOrDefault(c => string.Equals(c.Name, CmbColumn.SelectedItem?.ToString(), StringComparison.OrdinalIgnoreCase));
-
-        private static bool IsTextType(string type)
-        {
-            type = (type ?? "").ToLowerInvariant();
-            return type is "char" or "varchar" or "nchar" or "nvarchar" or "text" or "ntext";
-        }
-
-        private static bool IsNumericType(string type)
-        {
-            type = (type ?? "").ToLowerInvariant();
-            return type is "tinyint" or "smallint" or "int" or "bigint" or "decimal" or "numeric" or "money" or "smallmoney" or "float" or "real";
-        }
-
-        private static bool IsDateType(string type)
-        {
-            type = (type ?? "").ToLowerInvariant();
-            return type is "date" or "datetime" or "datetime2" or "smalldatetime" or "datetimeoffset" or "time";
-        }
-
-        private List<string> BuildOperators(string preferred = null)
-        {
-            var result = new List<string>();
-            if (IsTextType(SelectedColumn?.DataType))
-            {
-                result.AddRange(new[] { "Содержит", "Не содержит", "Равно", "Не равно", "Начинается с", "Заканчивается на" });
-            }
-            else if (IsNumericType(SelectedColumn?.DataType) || IsDateType(SelectedColumn?.DataType))
-            {
-                result.AddRange(new[] { "Равно", "Не равно", "Больше", "Больше или равно", "Меньше", "Меньше или равно" });
-            }
-            else
-            {
-                result.AddRange(new[] { "Равно", "Не равно", "Содержит", "Не содержит" });
-            }
-
-            result.Add("Пусто (NULL)");
-            result.Add("Не пусто (NOT NULL)");
-
-            CmbOperator.ItemsSource = result;
-
-            string selected = TranslateOperator(preferred);
-            CmbOperator.SelectedItem = result.Contains(selected) ? selected : result[0];
-            return result;
-        }
-
-        private static string TranslateOperator(string op)
-        {
-            return op switch
-            {
-                "Contains" => "Содержит",
-                "Not Contains" => "Не содержит",
-                "Equals" => "Равно",
-                "Not Equals" => "Не равно",
-                "Starts With" => "Начинается с",
-                "Ends With" => "Заканчивается на",
-                "Greater" => "Больше",
-                "Greater Or Equal" => "Больше или равно",
-                "Less" => "Меньше",
-                "Less Or Equal" => "Меньше или равно",
-                "Is Null" => "Пусто (NULL)",
-                "Is Not Null" => "Не пусто (NOT NULL)",
-                _ => op
-            };
-        }
-
-        private void UpdateOperators(string preferred = null)
-        {
-            BuildOperators(preferred);
-            UpdateValueState();
-        }
-
-        private void UpdateValueState()
-        {
-            string op = CmbOperator.SelectedItem?.ToString() ?? "";
-            bool needsValue = op is not ("Пусто (NULL)" or "Не пусто (NOT NULL)");
-            TxtValue.IsEnabled = needsValue;
-            if (!needsValue) TxtValue.Text = "";
-
-            string type = SelectedColumn?.DataType ?? "";
-            TxtTypeHint.Text = string.IsNullOrWhiteSpace(type) ? "" : $"Тип поля: {type}";
-        }
-
-        private void CmbColumn_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
-            if (!IsLoaded) return;
-            UpdateOperators();
-        }
-
-        private void CmbOperator_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
-            if (!IsLoaded) return;
-            UpdateValueState();
-        }
-
-        private void BtnApply_Click(object sender, RoutedEventArgs e)
-        {
-            var column = SelectedColumn?.Name;
-            var op = CmbOperator.SelectedItem?.ToString();
-
-            if (string.IsNullOrWhiteSpace(column) || string.IsNullOrWhiteSpace(op))
-            {
-                Configurator.Infrastructure.ModernDialog.Show("Выберите поле и условие.", "Фильтр",
-                    MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-
-            bool needsValue = op is not ("Пусто (NULL)" or "Не пусто (NOT NULL)");
-            if (needsValue && string.IsNullOrWhiteSpace(TxtValue.Text))
-            {
-                Configurator.Infrastructure.ModernDialog.Show("Введите значение для фильтра.", "Фильтр",
-                    MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-
-            Result = new TableFilter
-            {
-                Column = column,
-                Operator = op,
-                Value = TxtValue.Text.Trim()
-            };
-            DialogResult = true;
-        }
-
-        private void BtnClear_Click(object sender, RoutedEventArgs e)
-        {
-            Result = null;
-            DialogResult = true;
-        }
-
-        private void BtnCancel_Click(object sender, RoutedEventArgs e) => DialogResult = false;
+        _column = column;
+        InitializeComponent();
+        ColumnTitle.Text = column.Name;
+        var type = column.DataType?.ToLowerInvariant();
+        bool ordered = type is "tinyint" or "smallint" or "int" or "bigint" or "decimal" or "numeric" or
+            "money" or "smallmoney" or "float" or "real" or "date" or "datetime" or "datetime2" or
+            "smalldatetime" or "datetimeoffset" or "time";
+        _typedComparison = ordered || type is "bit" or "uniqueidentifier";
+        var operators = new List<FilterOperator> { new("", "Без фильтра"), new("Equals", "Равно"), new("Not Equals", "Не равно") };
+        if (ordered)
+            operators.AddRange(new FilterOperator[] { new("Greater", "Больше"), new("Greater Or Equal", "Больше или равно"),
+                new("Less", "Меньше"), new("Less Or Equal", "Меньше или равно") });
+        else if (!_typedComparison)
+            operators.AddRange(new FilterOperator[] { new("Contains", "Содержит"), new("Not Contains", "Не содержит"),
+                new("Starts With", "Начинается с"), new("Ends With", "Заканчивается на") });
+        operators.Add(new("Is Null", "Пусто (NULL)"));
+        operators.Add(new("Is Not Null", "Не пусто (NOT NULL)"));
+        CmbOperator.ItemsSource = operators;
+        CmbOperator.SelectedValue = current?.Operator ?? "";
+        if (CmbOperator.SelectedIndex < 0) CmbOperator.SelectedIndex = 0;
+        TxtValue.Text = current?.Value ?? "";
+        CmbSort.ItemsSource = new[] { "Без сортировки", "По возрастанию", "По убыванию" };
+        CmbSort.SelectedIndex = sort == null ? 0 : sort.Direction == ListSortDirection.Ascending ? 1 : 2;
     }
+
+    private void CmbOperator_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (TxtValue != null)
+            TxtValue.IsEnabled = CmbOperator.SelectedValue is string op && op is not ("" or "Is Null" or "Is Not Null");
+    }
+
+    private void BtnApply_Click(object sender, RoutedEventArgs e)
+    {
+        var op = CmbOperator.SelectedValue as string ?? "";
+        string value = TxtValue.Text.Trim();
+        object typedValue = null;
+        if (TxtValue.IsEnabled)
+        {
+            if (value.Length == 0)
+            {
+                ErrorText.Text = "Введите значение фильтра.";
+                return;
+            }
+            if (_typedComparison)
+            {
+                try
+                {
+                    var type = _column.DataType.ToLowerInvariant();
+                    var separator = CultureInfo.CurrentCulture.NumberFormat.NumberDecimalSeparator;
+                    string input = type is "decimal" or "numeric" or "money" or "smallmoney" or "real" or "float"
+                        ? value.Replace(separator, ".")
+                        : value;
+                    typedValue = EditRowWindow.ConvertValue(input, _column);
+                }
+                catch (Exception ex) when (ex is FormatException or OverflowException)
+                {
+                    ErrorText.Text = $"Введите значение типа {_column.DataType}. Для даты используйте формат ГГГГ-ММ-ДД.";
+                    return;
+                }
+            }
+        }
+
+        Result = op.Length == 0 ? null : new TableFilter
+        {
+            Column = _column.Name, Operator = op, Value = TxtValue.IsEnabled ? value : "",
+            TypedValue = typedValue, CompareAsText = !_typedComparison
+        };
+        Sort = CmbSort.SelectedIndex == 0 ? null : new TableColumnSort(_column.Name,
+            CmbSort.SelectedIndex == 1 ? ListSortDirection.Ascending : ListSortDirection.Descending,
+            _column.UsesTextOrdering);
+        DialogResult = true;
+    }
+
+    private void BtnClear_Click(object sender, RoutedEventArgs e) => DialogResult = true;
 }

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
@@ -19,6 +19,8 @@ namespace Configurator
 
         private void ClearActiveTable()
         {
+            _loadGeneration++;
+            _dataLoadCts?.Cancel();
             _activeVm = null;
             _activeDbName = "";
 
@@ -26,8 +28,6 @@ namespace Configurator
             if (_rightPanel.TableTitle != null) _rightPanel.TableTitle.Text = "Выберите таблицу слева";
 
             _fieldsBuilder?.Clear();
-            UpdateFilterButtonState();
-            SafeSetButtonEnabled(_rightPanel.BtnFilter, false);
 
             if (_rightPanel.InputPanel != null)
                 _rightPanel.InputPanel.Visibility = _fieldsPanelExpanded ? Visibility.Visible : Visibility.Collapsed;
@@ -67,23 +67,12 @@ namespace Configurator
 
             try
             {
-                bool filterMissingColumn = vm.Filter?.IsActive == true &&
-                    (vm.Columns == null || !vm.Columns.Any(c => c.Name.Equals(vm.Filter.Column, StringComparison.OrdinalIgnoreCase)));
-
-                if (filterMissingColumn)
-                    ShowFilterNotAppliedNotice(vm.Filter.Column);
-
-                // Первый показ: страница и COUNT запускаются параллельно.
-                // Если сохранённый фильтр не относится к текущей таблице, он
-                // остаётся настроенным, но к данным временно не применяется.
-                var pageTask = filterMissingColumn ? vm.LoadPageIgnoringFilterAsync(ct) : vm.LoadPageAsync(ct);
-                var countTask = filterMissingColumn ? vm.GetTotalCountIgnoringFilterAsync(ct) : vm.GetTotalCountAsync(ct);
+                var pageTask = vm.LoadPageAsync(ct);
+                var countTask = vm.GetTotalCountAsync(ct);
                 var pageData = await pageTask;
                 if (_loadGeneration != generation || ct.IsCancellationRequested) return;
 
                 _rightPanel.TableTitle.Text = tableTitle;
-                UpdateFilterButtonState();
-                SafeSetButtonEnabled(_rightPanel.BtnFilter, vm.Columns?.Count > 0);
                 BindPageData(pageData, preferredRowIndex, preferredIdentity, resetScroll: preferredRowIndex < 0);
 
                 SafeSetButtonEnabled(_rightPanel.BtnAdd, true);
@@ -99,19 +88,9 @@ namespace Configurator
                 UpdatePagination();
                 _ = CompleteCountUpdateAsync(countTask, vm, generation, ct, preferredRowIndex, preferredIdentity);
             }
-            catch (FilterColumnMissingException ex)
-            {
-                ShowFilterNotAppliedNotice(ex.Message);
-                await ReloadWithoutCurrentFilterAsync(vm, ct);
-            }
             catch (OperationCanceledException)
             {
                 // Пользователь сменил таблицу/страницу — старый запрос больше не нужен.
-            }
-            catch (Exception ex) when (vm.Filter?.IsActive == true && ex.Message.Contains("Invalid column name", StringComparison.OrdinalIgnoreCase))
-            {
-                ShowFilterNotAppliedNotice(vm.Filter.Column);
-                await ReloadWithoutCurrentFilterAsync(vm, ct);
             }
             catch (SqlException ex) when (IsConnectionFailure(ex))
             {
@@ -122,6 +101,7 @@ namespace Configurator
             {
                 if (_loadGeneration != generation || ct.IsCancellationRequested) return;
                 _rightPanel.TableTitle.Text = vm.CurrentTable;
+                SessionTestLog.Trace("TABLE-LOAD-ERROR", $"table='{vm.CurrentTable}'; {ex}");
                 System.Diagnostics.Debug.WriteLine(ex);
                 Configurator.Infrastructure.ModernDialog.Show("Не удалось загрузить данные. Проверьте подключение и повторите попытку.",
                     "Ошибка", MessageBoxButton.OK, MessageBoxImage.Error);
@@ -210,6 +190,7 @@ namespace Configurator
             if (grid == null) return;
 
             grid.ItemsSource = null;
+            _rightPanel.HasActiveColumnView = CurrentColumnView?.IsActive == true;
             grid.ItemsSource = pageData?.DefaultView;
             // WPF can retain a recycled DataGridCell's displayed value when a
             // fresh DataView replaces the filtered page. Force item refresh so
@@ -275,6 +256,7 @@ namespace Configurator
         {
             if (btn == null) return;
             if (_currentMode != 1 || !UserAuthorizationService.Has(Permission.Mode1View)) enabled = false;
+            enabled &= Configurator.Core.Projects.ProjectWriteGuard.IsDataTableWritable(_isOfflineWorkspace ? _offlineCurrentTableName : _activeVm?.CurrentTable);
             if (btn == _rightPanel?.BtnAdd || btn == _rightPanel?.BtnDuplicate) enabled &= UserAuthorizationService.Has(Permission.Mode1Add);
             else if (btn == _rightPanel?.BtnUpdate) enabled &= UserAuthorizationService.Has(Permission.Mode1Edit);
             else if (btn == _rightPanel?.BtnDelete) enabled &= UserAuthorizationService.Has(Permission.Mode1Delete);
@@ -428,14 +410,15 @@ namespace Configurator
                 return;
 
             int nextRecord = 0;
-            bool hasPlc = _activeVm.Columns.Any(c => c.Name.Equals("PLC", StringComparison.OrdinalIgnoreCase));
-            bool hasRecord = _activeVm.Columns.Any(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase));
+            var plcColumn = _activeVm.Columns.FirstOrDefault(c => c.Name.Equals("PLC", StringComparison.OrdinalIgnoreCase));
+            var recordColumn = _activeVm.Columns.FirstOrDefault(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase));
+            bool suggestScopedRecord = plcColumn != null && recordColumn is { IsIdentity: false, IsReadOnly: false };
             int? forcedClassNumber = ResolveSystemClassNumber(_activeVm.CurrentTable);
             string classNumberColumn = forcedClassNumber.HasValue ? ResolveClassNumberColumn(_activeVm.Columns) : null;
 
             // Для PLC + Record начальное значение рассчитывается после выбора PLC в окне.
             // Для таблиц без PLC сохраняем прежнюю глобальную автогенерацию Record.
-            if (!hasPlc && hasRecord && !_activeVm.Columns.First(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase)).IsIdentity && !_activeVm.Columns.First(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase)).IsReadOnly)
+            if (plcColumn == null && recordColumn is { IsIdentity: false, IsReadOnly: false })
             {
                 try { nextRecord = await _activeVm.GetNextRecordValueAsync(); }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); Configurator.Infrastructure.ModernDialog.Show("Не удалось получить значение Record. Проверьте подключение к базе."); return; }
@@ -446,12 +429,13 @@ namespace Configurator
                 _activeVm.CurrentTable,
                 _activeVm.Columns,
                 nextRecord,
-                hasRecord ? _activeVm.Columns.First(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase)).Name : "",
+                recordColumn?.Name,
                 _activeDbName.Length > 0 ? _connection.ToConnectionString(_activeDbName) : null,
-                hasPlc ? _activeVm.Columns.First(c => c.Name.Equals("PLC", StringComparison.OrdinalIgnoreCase)).Name : null,
+                plcColumn?.Name,
                 forcedClassNumber,
                 classNumberColumn,
-                addLookupOptions)
+                addLookupOptions,
+                preferFreeScopedRecord: suggestScopedRecord)
             { Owner = this };
 
             addWindow.ShowDialog();
@@ -467,25 +451,25 @@ namespace Configurator
                 var addValues = new Dictionary<string, object>(addWindow.Values);
                 var addIdentity = _activeVm.BuildIdentityValues(addValues);
                 _activeVm.NotifyInserted(1);
-                if (_activeVm.Filter?.IsActive == true)
+                if (_activeVm.ColumnView.HasFilters)
                     await _activeVm.RefreshTotalCountAsync();
 
-                // Добавленная строка логически находится в конце сортировки.
-                // Переходим на последнюю страницу без повторного COUNT(*).
-                _activeVm.CurrentPage = _activeVm.TotalPages;
+                if (!suggestScopedRecord) _activeVm.CurrentPage = _activeVm.TotalPages;
                 var preferred = new Dictionary<string, object>(addWindow.Values);
 
                 string addDetails = string.Join("; ", addValues.Select(x => $"{x.Key}={FormatLogValue(x.Value)}"));
                 LogAction($"Добавлена строка · {addTable}", async () =>
                 {
                     var undoDb = new DatabaseService(_connection.ToConnectionString(addDbName));
-                    await undoDb.DeleteRowsByValuesAsync(addTable, new List<Dictionary<string, object>> { addIdentity });
+                    await undoDb.DeleteRowsByValuesAsync(addTable, new List<Dictionary<string, object>> { addValues });
                 }, category: "Добавление", source: addTable, details: addDetails,
                 journalChanges: new[]
                 {
                     CreateJournalChange(addTable, ChangeJournalOperationKind.Insert, null, addValues, null, addIdentity)
                 }, operationKind: ChangeJournalOperationKind.Insert, databaseName: addDbName);
                 await ReloadCurrentPageFastAsync(-1, preferred);
+                if (suggestScopedRecord && addValues.TryGetValue(recordColumn.Name, out var record))
+                    StatusText.Text = $"Строка добавлена · Record = {FormatLogValue(record)}";
             }
             catch (Exception ex)
             {
@@ -502,8 +486,13 @@ namespace Configurator
             if (!RequireMode1Permission(Permission.Mode1Edit)) return;
             if (_isOfflineWorkspace) { EditOfflineRow(); return; }
             if (_activeVm == null || !_activeVm.HasValidKey) return;
-            if (_rightPanel.DataTableGrid.SelectedItem is not DataRowView) return;
+            if (_rightPanel.DataTableGrid.SelectedItem is not DataRowView selectedRow) return;
 
+            var editVm = _activeVm;
+            var usesValueIdentity = editVm.UsesValueIdentity;
+            var keyColumns = editVm.KeyColumns.ToList();
+            var editColumns = editVm.Columns.ToList();
+            var displayValues = new Dictionary<string, string>(editVm.CurrentRowValues);
             int selectedIndex = Math.Max(0, _rightPanel.DataTableGrid.SelectedIndex);
             var oldIdentity = _activeVm.UsesValueIdentity
                 ? new Dictionary<string, object>(_activeVm.CurrentIdentityValues)
@@ -515,14 +504,26 @@ namespace Configurator
             int? editClassNumber = ResolveSystemClassNumber(_activeVm.CurrentTable);
             string editClassNumberColumn = editClassNumber.HasValue ? ResolveClassNumberColumn(_activeVm.Columns) : null;
             var editLookupOptions = await LoadLookupOptionsForTableAsync(_activeVm.CurrentTable);
+            if (!ReferenceEquals(_activeVm, editVm) || editVm.CurrentTable != updateTable || _activeDbName != updateDbName ||
+                !ReferenceEquals(_rightPanel.DataTableGrid.SelectedItem, selectedRow)) return;
+            var plcColumn = editColumns.FirstOrDefault(c => c.Name.Equals("PLC", StringComparison.OrdinalIgnoreCase));
+            var recordColumn = editColumns.FirstOrDefault(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase));
+            Func<string, CancellationToken, Task<int>> suggestRecord = null;
+            if (plcColumn is { IsReadOnly: false } && recordColumn is { IsIdentity: false, IsReadOnly: false })
+            {
+                var db = new DatabaseService(_connection.ToConnectionString(updateDbName));
+                suggestRecord = (plc, ct) => db.GetFreeScopedRecordValueAsync(updateTable, recordColumn.Name, plcColumn.Name,
+                    plc == null ? DBNull.Value : EditRowWindow.ConvertValue(plc, plcColumn), ct);
+            }
             var editWindow = new EditRowWindow(
-                _activeVm.CurrentTable,
-                _activeVm.Columns,
-                new Dictionary<string, string>(_activeVm.CurrentRowValues),
-                _activeVm.KeyColumn,
+                updateTable,
+                editColumns,
+                displayValues,
+                keyColumns.FirstOrDefault() ?? "",
                 editClassNumberColumn,
                 editClassNumber,
-                editLookupOptions)
+                editLookupOptions,
+                suggestRecord)
             { Owner = this };
 
             editWindow.ShowDialog();
@@ -547,18 +548,20 @@ namespace Configurator
                     if (preferredIdentity.ContainsKey(pair.Key))
                         preferredIdentity[pair.Key] = pair.Value;
 
-                await _activeVm.UpdateAsync(editWindow.Values);
-                if (_activeVm.Filter?.IsActive == true)
-                    await _activeVm.RefreshTotalCountAsync();
+                await editVm.UpdateSnapshotAsync(updateTable, usesValueIdentity, keyColumns, oldIdentity, oldValues, editWindow.Values);
 
                 var afterValues = new Dictionary<string, object>(oldValues);
                 foreach (var pair in editWindow.Values) afterValues[pair.Key] = pair.Value;
-                var afterIdentity = _activeVm.BuildIdentityValues(afterValues);
+                var afterIdentity = usesValueIdentity ? new Dictionary<string, object>(afterValues) :
+                    keyColumns.ToDictionary(key => key, key => afterValues[key]);
                 var changedDetails = string.Join("; ", editWindow.Values.Select(x => $"{x.Key}: {FormatLogValue(oldValues.TryGetValue(x.Key, out var ov) ? ov : null)} → {FormatLogValue(x.Value)}"));
                 LogAction($"Изменена строка · {updateTable}", async () =>
                 {
                     var undoDb = new DatabaseService(_connection.ToConnectionString(updateDbName));
-                    await undoDb.UpdateRowByValuesAsync(updateTable, afterIdentity, oldValues);
+                    var undoValues = oldValues.Where(pair => editColumns.Any(column =>
+                        column.Name.Equals(pair.Key, StringComparison.OrdinalIgnoreCase) && !column.IsReadOnly && !column.IsIdentity))
+                        .ToDictionary(pair => pair.Key, pair => pair.Value);
+                    await undoDb.UpdateRowByValuesAsync(updateTable, afterValues, undoValues);
                 }, category: "Изменение", source: updateTable, details: changedDetails,
                 journalChanges: new[]
                 {
@@ -566,7 +569,14 @@ namespace Configurator
                 }, operationKind: ChangeJournalOperationKind.Update, databaseName: updateDbName);
 
                 // Быстрое обновление: только текущая страница, без COUNT(*).
-                await ReloadCurrentPageFastAsync(selectedIndex, preferredIdentity);
+                if (ReferenceEquals(_activeVm, editVm) && editVm.CurrentTable == updateTable && _activeDbName == updateDbName &&
+                    ReferenceEquals(_rightPanel.DataTableGrid.SelectedItem, selectedRow))
+                {
+                    if (editVm.ColumnView.HasFilters) await editVm.RefreshTotalCountAsync();
+                    if (ReferenceEquals(_activeVm, editVm) && editVm.CurrentTable == updateTable && _activeDbName == updateDbName &&
+                        ReferenceEquals(_rightPanel.DataTableGrid.SelectedItem, selectedRow))
+                        await ReloadCurrentPageFastAsync(selectedIndex, preferredIdentity);
+                }
             }
             catch (Exception ex)
             {
@@ -607,12 +617,11 @@ namespace Configurator
                 }
 
                 _activeVm.NotifyInserted(1);
-                if (_activeVm.Filter?.IsActive == true)
+                if (_activeVm.ColumnView.HasFilters)
                     await _activeVm.RefreshTotalCountAsync();
-                // A duplicated row commonly receives the next Record and therefore belongs
-                // on the last page under key ordering. Go there, but select by key identity,
-                // not by every copied/display/computed column (e.g. computed Area).
-                _activeVm.CurrentPage = _activeVm.TotalPages;
+                bool usedScopedRecord = !string.IsNullOrEmpty(_activeVm.PlcColumn) &&
+                    _activeVm.Columns.Any(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase) && !c.IsReadOnly && !c.IsIdentity);
+                if (!usedScopedRecord) _activeVm.CurrentPage = _activeVm.TotalPages;
 
                 string newRecordMsg = "";
                 if (values.TryGetValue(_activeVm.RecordColumn, out var recordValue))
@@ -623,7 +632,7 @@ namespace Configurator
                 LogAction($"Дублирована строка · {duplicateTable}{newRecordMsg}", async () =>
                 {
                     var undoDb = new DatabaseService(_connection.ToConnectionString(duplicateDbName));
-                    await undoDb.DeleteRowsByValuesAsync(duplicateTable, new List<Dictionary<string, object>> { duplicateIdentity });
+                    await undoDb.DeleteRowsByValuesAsync(duplicateTable, new List<Dictionary<string, object>> { values });
                 }, category: "Дублирование", source: duplicateTable, details: duplicateDetails,
                 journalChanges: new[]
                 {
@@ -633,6 +642,7 @@ namespace Configurator
                 // Ищем копию по тем значениям, которые реально были вставлены.
                 // Это работает и для PLC + Record, и для keyless таблиц.
                 await ReloadCurrentPageFastAsync(-1, duplicateIdentity);
+                if (usedScopedRecord) StatusText.Text = $"Копия строки добавлена.{newRecordMsg}";
             }
             catch (Exception ex)
             {
@@ -645,10 +655,6 @@ namespace Configurator
         private static string FormatLogValue(object value)
             => value == null || value == DBNull.Value ? "NULL" : Convert.ToString(value);
 
-        private sealed class FilterColumnMissingException : Exception
-        {
-            public FilterColumnMissingException(string column) : base(column) { }
-        }
 
     }
 }

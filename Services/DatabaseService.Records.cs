@@ -5,74 +5,84 @@ using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Configurator.Core.Workspace;
 using Microsoft.Data.SqlClient;
 
 namespace Configurator
 {
     public partial class DatabaseService
     {
-        public async Task<List<FreeRecordGroup>> FindFreeRecordsByPlcAsync(string tableName, string plcFilter = null, CancellationToken ct = default)
+        internal async Task<int> GetFreeScopedRecordValueAsync(string tableName, string recordColumn, string plcColumn,
+            object plc, CancellationToken ct)
         {
-            using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
+            var column = QuoteIdentifier(recordColumn);
+            await using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
+            await using var command = new SqlCommand($"SELECT {column} FROM {QuoteTableName(tableName)} WHERE {column} IS NOT NULL", connection)
+            { CommandTimeout = 120 };
+            AddRecordCheckFilter(command, plcColumn, "@plc", plc ?? DBNull.Value);
             await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection, ct);
-
-            var (schema, table) = ParseTableName(tableName);
-            var columns = await GetTableColumnsAsync(tableName, ct);
-            var plcColumn = columns.Select(x => x.Name).FirstOrDefault(n => n.Equals("PLC", StringComparison.OrdinalIgnoreCase));
-            var recordColumn = columns.Select(x => x.Name).FirstOrDefault(n => n.Equals("Record", StringComparison.OrdinalIgnoreCase));
-            if (string.IsNullOrWhiteSpace(plcColumn) || string.IsNullOrWhiteSpace(recordColumn))
-                throw new InvalidOperationException($"В {tableName} отсутствует столбец PLC или Record.");
-
-            var query = $@"SELECT {QuoteIdentifier(plcColumn)} AS PlcValue,
-                                  {QuoteIdentifier(recordColumn)} AS RecordValue
-                           FROM {QuoteIdentifier(schema)}.{QuoteIdentifier(table)}
-                           WHERE {QuoteIdentifier(plcColumn)} IS NOT NULL
-                             AND {QuoteIdentifier(recordColumn)} IS NOT NULL";
-            using var command = new SqlCommand(query, connection) { CommandTimeout = 120 };
-            if (!string.IsNullOrWhiteSpace(plcFilter))
-            {
-                query += $" AND CONVERT(nvarchar(128), {QuoteIdentifier(plcColumn)}) = @Plc";
-                command.CommandText = query;
-                command.Parameters.AddWithValue("@Plc", plcFilter);
-            }
             using var reader = await command.ExecuteReaderAsync(ct);
-
-            var occupiedByPlc = new Dictionary<string, SortedSet<int>>(StringComparer.OrdinalIgnoreCase);
+            var suggestion = new ScopedRecordSuggestion();
             while (await reader.ReadAsync(ct))
-            {
-                if (reader.IsDBNull(0) || reader.IsDBNull(1)) continue;
-                var plc = Convert.ToString(reader.GetValue(0), CultureInfo.InvariantCulture)?.Trim() ?? "";
-                if (string.IsNullOrWhiteSpace(plc)) continue;
-                if (!TryReadIntegralValue(reader.GetValue(1), out int record)) continue;
-                if (!occupiedByPlc.TryGetValue(plc, out var records))
-                {
-                    records = new SortedSet<int>();
-                    occupiedByPlc[plc] = records;
-                }
-                records.Add(record);
-            }
-
-            var result = new List<FreeRecordGroup>();
-            foreach (var pair in occupiedByPlc.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase))
-            {
-                var records = pair.Value;
-                if (records.Count == 0) continue;
-                int min = records.Min;
-                int max = records.Max;
-                var free = new List<int>();
-                int previous = min;
-                foreach (var current in records)
-                {
-                    if (current > previous + 1)
-                        for (int value = previous + 1; value < current; value++) free.Add(value);
-                    previous = current;
-                }
-                if (free.Count > 0)
-                    result.Add(new FreeRecordGroup { Plc = pair.Key, MinRecord = min, MaxRecord = max, FreeRecords = free });
-            }
-            return result;
+                suggestion.Add(reader.GetValue(0));
+            return suggestion.GetValue();
         }
 
+#nullable enable
+        internal async Task<IReadOnlyList<RecordCheckScope>> GetRecordCheckScopesAsync(IReadOnlyList<RecordCheckClass> classes, CancellationToken ct)
+        {
+            var scopes = new List<RecordCheckScope>();
+            if (classes.Count == 0) return scopes;
+            await using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
+            await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection, ct);
+            foreach (var scope in classes)
+            {
+                var column = QuoteIdentifier(scope.PlcColumn);
+                await using var command = new SqlCommand($"SELECT DISTINCT {column} {RecordCheckSource(scope)}", connection);
+                if (scope.ClassColumn != null) AddRecordCheckFilter(command, scope.ClassColumn, "@class", scope.ClassValue);
+                using var reader = await command.ExecuteReaderAsync(ct);
+                while (await reader.ReadAsync(ct))
+                    scopes.Add(new RecordCheckScope(scope, reader.GetValue(0)));
+            }
+            return scopes;
+        }
+
+        internal async Task<RecordCheckResult> CheckRecordsAsync(RecordCheckScope selection, CancellationToken ct)
+        {
+            var scope = selection.Class;
+            var column = QuoteIdentifier(scope.RecordColumn);
+            await using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
+            await using var command = new SqlCommand($"SELECT DISTINCT {column} {RecordCheckSource(scope)}", connection) { CommandTimeout = 120 };
+            AddRecordCheckFilter(command, scope.PlcColumn, "@plc", selection.Plc);
+            if (scope.ClassColumn != null) AddRecordCheckFilter(command, scope.ClassColumn, "@class", scope.ClassValue);
+            await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection, ct);
+            using var reader = await command.ExecuteReaderAsync(ct);
+            var occupied = new SortedSet<int>();
+            while (await reader.ReadAsync(ct))
+            {
+                if (!TryReadIntegralValue(reader.GetValue(0), out int record))
+                    throw new InvalidOperationException($"В {scope.TableName} найдены значения Record вне диапазона целых чисел Int32.");
+                occupied.Add(record);
+            }
+            return RecordCheckResult.FromOccupied(occupied);
+        }
+
+        private string RecordCheckSource(RecordCheckClass scope) =>
+            $"FROM {QuoteTableName(scope.TableName)} WHERE {QuoteIdentifier(scope.PlcColumn)} IS NOT NULL AND {QuoteIdentifier(scope.RecordColumn)} IS NOT NULL";
+
+        private void AddRecordCheckFilter(SqlCommand command, string column, string parameter, object? value)
+        {
+            if (value == null) return;
+            var name = QuoteIdentifier(column);
+            if (value == DBNull.Value) command.CommandText += $" AND {name} IS NULL";
+            else
+            {
+                command.CommandText += $" AND {name} = {parameter}";
+                command.Parameters.AddWithValue(parameter, value);
+            }
+        }
+
+#nullable restore
         private static bool TryReadIntegralValue(object raw, out int value)
         {
             value = 0;
@@ -377,11 +387,4 @@ namespace Configurator
         public int OccupiedBytes { get; set; }
     }
 
-    public sealed class FreeRecordGroup
-    {
-        public string Plc { get; set; } = "";
-        public int MinRecord { get; set; }
-        public int MaxRecord { get; set; }
-        public List<int> FreeRecords { get; set; } = new();
-    }
 }

@@ -64,7 +64,6 @@ namespace Configurator
                     removeUnavailable.Click += (s, e) =>
                     {
                         dbItem.IsSelected = true;
-                        _selectedDbName = dbName;
                         _activeDbName = dbName;
                         RemoveSelectedDatabase();
                         UpdateAddDbButtonState();
@@ -77,7 +76,6 @@ namespace Configurator
                 dbItem.Selected += (s, e) =>
                 {
                     e.Handled = true;
-                    _selectedDbName = dbName;
                     _activeDbName = dbName;
                     UpdateRemoveDbMenuState();
                 };
@@ -192,8 +190,11 @@ namespace Configurator
                 return;
             }
 
+            int selectionGeneration = ++_loadGeneration;
+            _dataLoadCts?.Cancel();
+            _dataLoadCts = new CancellationTokenSource();
+            var selectionToken = _dataLoadCts.Token;
             _activeDbName = dbName;
-            _selectedDbName = dbName;
 
             string cacheKey = VmCacheKey(dbName);
             if (!_vms.ContainsKey(cacheKey))
@@ -206,10 +207,11 @@ namespace Configurator
 
             try
             {
-                await _activeVm.SelectTableAsync($"{schema}.{tableName}");
+                await _activeVm.SelectTableAsync(requestedTable, selectionToken);
             }
             catch (Exception ex)
             {
+                if (_loadGeneration != selectionGeneration || selectionToken.IsCancellationRequested) return;
                 if (ex is Microsoft.Data.SqlClient.SqlException sqlEx && IsConnectionFailure(sqlEx))
                 {
                     MarkDatabaseUnavailable(dbName, ex);
@@ -240,6 +242,7 @@ namespace Configurator
                 return;
             }
 
+            if (_loadGeneration != selectionGeneration || selectionToken.IsCancellationRequested) return;
             _ = LoadDataAsync();
             UpdateRemoveDbMenuState();
         }
@@ -297,7 +300,12 @@ namespace Configurator
                 ClearActiveTable();
             }
 
-            _selectedDbName = "";
+            if (string.Equals(_selectedDbName, dbNameToRemove, StringComparison.OrdinalIgnoreCase))
+            {
+                _selectedDbName = "";
+                _mode2ProjectSelectedOnEntry = _mode3ProjectSelectedOnEntry = false;
+                UpdateCurrentProjectText();
+            }
             UpdateRemoveDbMenuState();
 
             try

@@ -90,7 +90,8 @@ public sealed class OfflineObjectDeletionGuardTests
         var onlineGuard = new DeletionProtectionService(db.ConnectionString, sqlSchema);
         var plan = await onlineGuard.BuildPlanAsync(new DeletionRequest
         {
-            TableName = "dbo.Area", Key = new Dictionary<string, object> { ["AreaId"] = 1 }
+            TableName = "dbo.Area", Key = new Dictionary<string, object> { ["AreaId"] = 1 },
+            ExpectedValues = new Dictionary<string, object> { ["AreaId"] = 1, ["Name"] = "Old" }
         });
         Assert.True(plan.CanCommit);
         var hit = Assert.Single(plan.Dependencies);
@@ -99,7 +100,7 @@ public sealed class OfflineObjectDeletionGuardTests
         await onlineGuard.ExecuteAsync(plan, [new ReferenceReplacement
         {
             SourceTable = hit.SourceTable, SourceColumns = hit.Relation.SourceColumns,
-            NewValues = onlineCandidate.Values, KeyColumns = hit.SourceKey.Keys.ToList(),
+            NewValues = onlineCandidate.Values, TargetValues = onlineCandidate.TargetValues, KeyColumns = hit.SourceKey.Keys.ToList(),
             KeyValues = hit.SourceKey.Values.ToList(), ExpectedOldValues = hit.SourceReferenceValues,
             AdditionalAssignments = onlineCandidate.AutoAssignments
         }], (_, _, _) => System.Threading.Tasks.Task.FromResult(true));

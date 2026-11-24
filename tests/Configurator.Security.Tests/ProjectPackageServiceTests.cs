@@ -77,6 +77,35 @@ public sealed class ProjectPackageServiceTests
     }
 
     [Fact]
+    public async Task RejectsCaseInsensitiveTableDuplicatesOnSaveAndOpenButKeepsKeysCaseSensitive()
+    {
+        var path = NewPath();
+        try
+        {
+            var service = new ProjectPackageService();
+            var project = CreateProject();
+            project.LocalRecords.Add(new ProjectRecord { TableName = "dbo.Items", Key = "Key", Values = new JsonObject { ["Id"] = 1 } });
+            project.LocalRecords.Add(new ProjectRecord { TableName = "DBO.items", Key = "key", Values = new JsonObject { ["Id"] = 2 } });
+            await service.SaveAsync(path, project);
+            Assert.Equal(2, (await service.OpenAsync(path)).LocalRecords.Count);
+            project.LocalRecords[1].Key = "Key";
+            await Assert.ThrowsAsync<InvalidDataException>(() => service.SaveAsync(path, project));
+            using (var archive = ZipFile.Open(path, ZipArchiveMode.Update))
+            {
+                var entry = archive.GetEntry("data/local-snapshot.json")!;
+                JsonNode json;
+                using (var reader = new StreamReader(entry.Open())) json = JsonNode.Parse(reader.ReadToEnd())!;
+                json[1]!["Key"] = "Key";
+                entry.Delete();
+                using var writer = new StreamWriter(archive.CreateEntry("data/local-snapshot.json").Open());
+                writer.Write(json.ToJsonString());
+            }
+            await Assert.ThrowsAsync<InvalidDataException>(() => service.OpenAsync(path));
+        }
+        finally { Delete(path); }
+    }
+
+    [Fact]
     public async Task RejectsUnsupportedFormatVersion()
     {
         var path = NewPath();

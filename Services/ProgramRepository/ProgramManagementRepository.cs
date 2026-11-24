@@ -10,6 +10,12 @@ using Configurator.Core.Projects;
 
 namespace Configurator;
 
+public sealed class SequenceDeletionPreview
+{
+    internal Dictionary<string, IReadOnlyList<IReadOnlyDictionary<string, object>>> Rows { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public IReadOnlyDictionary<string, int> Counts => Rows.ToDictionary(pair => pair.Key, pair => pair.Value.Count, StringComparer.OrdinalIgnoreCase);
+}
+
 /// <summary>
 /// Read and compare-and-swap editing for the first Program/Sequence/Step surfaces.
 /// Every edit is matched against the complete original row and committed by
@@ -171,7 +177,7 @@ public sealed partial class ProgramManagementRepository
         return InsertWithGeneratedRecordAsync(ParameterTable, "Record", scope, scope.Keys.Append("Record").ToArray(), fields, ct);
     }
 
-    public Task DeleteParameterAsync(ProgramContext context, int stepNumber, object type, object record, CancellationToken ct = default)
+    public Task DeleteParameterAsync(ProgramContext context, int stepNumber, object type, object record, CancellationToken ct = default, IReadOnlyDictionary<string, object> expected = null)
     {
         var key = ProgramScope(context, includeSequence: true);
         key["Step_Number"] = stepNumber;
@@ -179,14 +185,14 @@ public sealed partial class ProgramManagementRepository
         key["Record"] = record;
         var dependencies = new (string Table, IReadOnlyDictionary<string, object> Scope)[] { ("dbo.Prog_Recipes", key) };
         return _offline != null
-            ? _offline.ExecuteMutationTransactionAsync(async () => await DeleteOfflineIfUnreferencedAsync(ParameterTable, key, dependencies, ct))
-            : DeleteIfUnreferencedAsync(ParameterTable, key, key.Keys.ToArray(), dependencies, ct);
+            ? _offline.ExecuteMutationTransactionAsync(async () => await DeleteOfflineIfUnreferencedAsync(ParameterTable, key, dependencies, ct, expected))
+            : DeleteIfUnreferencedAsync(ParameterTable, key, key.Keys.ToArray(), dependencies, ct, expected: expected);
     }
 
     public Task<DataTable> GetStepChoicesAsync(object plc, CancellationToken ct = default)
         => GetScopedTableAsync(StepTable, new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase) { ["PLC"] = plc }, ct);
 
-    public async Task DeleteProgramAsync(ProgramContext context, CancellationToken ct = default)
+    public async Task DeleteProgramAsync(ProgramContext context, CancellationToken ct = default, IReadOnlyDictionary<string, object> expected = null)
     {
         EnsureProgram(context);
         var childScope = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
@@ -203,9 +209,9 @@ public sealed partial class ProgramManagementRepository
         };
         if (_offline != null)
         {
-            await DeleteOfflineIfUnreferencedAsync(ProgramTable, new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+            await _offline.ExecuteMutationTransactionAsync(async () => await DeleteOfflineIfUnreferencedAsync(ProgramTable, new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
             { ["PLC"] = context.PlcValue, ["PLC_Class_Number"] = context.ClassNumberValue, ["Record"] = context.RecordValue },
-                dependentTables, ct);
+                dependentTables, ct, expected), ct);
             return;
         }
         await DeleteIfUnreferencedAsync(ProgramTable, new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
@@ -213,10 +219,10 @@ public sealed partial class ProgramManagementRepository
             ["PLC"] = context.PlcValue,
             ["PLC_Class_Number"] = context.ClassNumberValue,
             ["Record"] = context.RecordValue
-        }, new[] { "Record", "PLC", "PLC_Class_Number" }, dependentTables, ct);
+        }, new[] { "Record", "PLC", "PLC_Class_Number" }, dependentTables, ct, expected: expected);
     }
 
-    public async Task<IReadOnlyList<ChangeJournalRowChange>> DeleteSequenceAsync(ProgramContext context, object sequenceRecord, CancellationToken ct = default, bool deleteDependents = false)
+    public async Task<IReadOnlyList<ChangeJournalRowChange>> DeleteSequenceAsync(ProgramContext context, object sequenceRecord, CancellationToken ct = default, bool deleteDependents = false, IReadOnlyDictionary<string, object> expected = null, SequenceDeletionPreview preview = null)
     {
         EnsureProgram(context);
         var scope = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
@@ -235,26 +241,98 @@ public sealed partial class ProgramManagementRepository
         key.Remove("Seq_Record");
         key["Record"] = sequenceRecord;
         var changes = new List<ChangeJournalRowChange>();
+        if (deleteDependents && preview == null)
+            throw new InvalidOperationException("Для удаления связанных данных требуется актуальное подтверждение состава.");
         if (_offline != null)
         {
             await _offline.ExecuteMutationTransactionAsync(async () =>
             {
+                EnsureExpectedOfflineRow(SequenceTable, key, expected);
                 if (deleteDependents)
                 {
+                    foreach (var dependent in dependentTables)
+                        EnsureSnapshotMatches(preview.Rows.TryGetValue(dependent.Table, out var before) ? before : null,
+                            SnapshotOfflineRows(dependent.Table, dependent.Scope));
                     foreach (var dependent in dependentTables)
                         await DeleteOfflineSequenceRowsAsync(dependent.Table, dependent.Scope, changes, ct);
                 }
                 foreach (DataRow row in ReadOfflineTable(SequenceTable, key).Rows)
                     changes.Add(DeletedJournalRow(SequenceTable, row, UniqueKeyColumns[SequenceTable]));
-                await DeleteOfflineIfUnreferencedAsync(SequenceTable, key, dependentTables, ct);
+                await DeleteOfflineIfUnreferencedAsync(SequenceTable, key, dependentTables, ct, expected);
             }, ct);
             return changes;
         }
         await DeleteIfUnreferencedAsync(SequenceTable, key,
             new[] { "Record", "PLC", "PLC_Class_Prog_Number", "Prog_Record" }, dependentTables, ct,
-            deleteDependents: deleteDependents, journal: changes);
+            deleteDependents: deleteDependents, journal: changes, expected: expected, preview: preview);
         return changes;
     }
+
+    public async Task<SequenceDeletionPreview> PrepareSequenceDeletionAsync(ProgramContext context, object sequenceRecord, CancellationToken ct = default)
+    {
+        EnsureProgram(context);
+        var scope = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["PLC"] = context.PlcValue, ["PLC_Class_Prog_Number"] = context.ClassNumberValue,
+            ["Prog_Record"] = context.RecordValue, ["Seq_Record"] = sequenceRecord
+        };
+        var result = new SequenceDeletionPreview();
+        foreach (var table in new[] { "dbo.Prog_QueueSelections", "dbo.Prog_Recipes", "dbo.Prog_Recipe", ParameterTable, TransitionTable })
+        {
+            ct.ThrowIfCancellationRequested();
+            if (_offline != null)
+                result.Rows.Add(table, SnapshotOfflineRows(table, scope));
+            else
+                result.Rows.Add(table, SnapshotRows(await GetScopedTableAsync(table, scope, ct, readAll: true)));
+        }
+        return result;
+    }
+
+    private IReadOnlyList<IReadOnlyDictionary<string, object>> SnapshotOfflineRows(string table, IReadOnlyDictionary<string, object> scope)
+    {
+        if (_offline.GetSchema(table) == null || _offline.GetRecords(table).Count == 0)
+            return Array.Empty<IReadOnlyDictionary<string, object>>();
+        return SnapshotRows(ReadOfflineTable(table, scope));
+    }
+
+    private void EnsureExpectedOfflineRow(string table, IReadOnlyDictionary<string, object> scope, IReadOnlyDictionary<string, object> expected) =>
+        EnsureSnapshotMatches(expected == null ? null : new[] { expected }, SnapshotOfflineRows(table, scope));
+
+    private static IReadOnlyList<IReadOnlyDictionary<string, object>> SnapshotRows(DataTable table) =>
+        table.Rows.Cast<DataRow>().Select(row => (IReadOnlyDictionary<string, object>)table.Columns.Cast<DataColumn>()
+            .ToDictionary(column => column.ColumnName, column => row[column] is byte[] bytes ? (object)bytes.ToArray() : row[column], StringComparer.OrdinalIgnoreCase)).ToArray();
+
+    private static async Task<IReadOnlyList<IReadOnlyDictionary<string, object>>> ReadLockedRowsAsync(
+        Microsoft.Data.SqlClient.SqlConnection connection, Microsoft.Data.SqlClient.SqlTransaction transaction,
+        string table, IReadOnlyDictionary<string, object> scope, CancellationToken ct)
+    {
+        var where = BuildPredicates(scope, "snapshot", out var parameters);
+        using var command = new Microsoft.Data.SqlClient.SqlCommand($"SELECT * FROM {QuoteTable(table)} WITH (UPDLOCK, HOLDLOCK) WHERE {where}", connection, transaction);
+        AddParameters(command, parameters);
+        using var reader = await command.ExecuteReaderAsync(ct);
+        var rows = new DataTable();
+        rows.Load(reader);
+        return SnapshotRows(rows);
+    }
+
+    private static void EnsureSnapshotMatches(IReadOnlyList<IReadOnlyDictionary<string, object>> expected,
+        IReadOnlyList<IReadOnlyDictionary<string, object>> actual)
+    {
+        if (expected == null || expected.Count != actual.Count)
+            throw new InvalidOperationException("Состав или состояние записей изменилось. Повторите подтверждение удаления.");
+        var remaining = actual.ToList();
+        foreach (var row in expected)
+        {
+            int index = remaining.FindIndex(candidate => row.Count == candidate.Count && row.All(pair =>
+                candidate.TryGetValue(pair.Key, out var value) && ExactValueEquals(pair.Value, value)));
+            if (index < 0) throw new InvalidOperationException("Состав или состояние записей изменилось. Повторите подтверждение удаления.");
+            remaining.RemoveAt(index);
+        }
+    }
+
+    private static bool ExactValueEquals(object left, object right) =>
+        left is byte[] a && right is byte[] b ? a.SequenceEqual(b) :
+        (left == null || left == DBNull.Value) ? right == null || right == DBNull.Value : left.Equals(right);
 
     private async Task DeleteOfflineSequenceRowsAsync(string tableName, IReadOnlyDictionary<string, object> scope, List<ChangeJournalRowChange> changes, CancellationToken ct)
     {
@@ -273,7 +351,7 @@ public sealed partial class ProgramManagementRepository
             throw new InvalidOperationException("Удаление связанных строк не подтвердилось. Изменения отменены.");
     }
 
-    public async Task DeleteStepFromSequenceAsync(ProgramContext context, object sequenceStepNumber, CancellationToken ct = default)
+    public async Task DeleteStepFromSequenceAsync(ProgramContext context, object sequenceStepNumber, CancellationToken ct = default, IReadOnlyDictionary<string, object> expected = null)
     {
         var scope = ProgramScope(context, includeSequence: true);
         var parameterScope = new Dictionary<string, object>(scope, StringComparer.OrdinalIgnoreCase)
@@ -286,10 +364,13 @@ public sealed partial class ProgramManagementRepository
         };
         if (_offline != null)
         {
-            EnsureNoOfflineDestinationReferences(scope, sequenceStepNumber);
-            await DeleteOfflineIfUnreferencedAsync(TransitionTable, new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
-            { ["PLC"] = context.PlcValue, ["PLC_Class_Prog_Number"] = context.ClassNumberValue, ["Prog_Record"] = context.RecordValue,
-                ["Seq_Record"] = context.SeqRecordValue, ["SeqStep_Number"] = sequenceStepNumber }, dependentTables, ct);
+            await _offline.ExecuteMutationTransactionAsync(async () =>
+            {
+                EnsureNoOfflineDestinationReferences(scope, sequenceStepNumber);
+                await DeleteOfflineIfUnreferencedAsync(TransitionTable, new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+                { ["PLC"] = context.PlcValue, ["PLC_Class_Prog_Number"] = context.ClassNumberValue, ["Prog_Record"] = context.RecordValue,
+                    ["Seq_Record"] = context.SeqRecordValue, ["SeqStep_Number"] = sequenceStepNumber }, dependentTables, ct, expected);
+            }, ct);
             return;
         }
         await DeleteIfUnreferencedAsync(TransitionTable, new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
@@ -300,7 +381,7 @@ public sealed partial class ProgramManagementRepository
             ["Seq_Record"] = context.SeqRecordValue,
             ["SeqStep_Number"] = sequenceStepNumber
         }, new[] { "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Seq_Record", "SeqStep_Number" }, dependentTables, ct,
-            stepNumberForDestinations: sequenceStepNumber);
+            stepNumberForDestinations: sequenceStepNumber, expected: expected);
     }
 
     /// <summary>Moves an occurrence in an offline snapshot, preserving references as one mutation.</summary>
@@ -560,7 +641,8 @@ public sealed partial class ProgramManagementRepository
     private async Task DeleteIfUnreferencedAsync(string tableName, IReadOnlyDictionary<string, object> keyValues,
         IReadOnlyList<string> uniqueKey,
         IReadOnlyList<(string Table, IReadOnlyDictionary<string, object> Scope)> dependencies,
-        CancellationToken ct, object stepNumberForDestinations = null, bool deleteDependents = false, List<ChangeJournalRowChange> journal = null)
+        CancellationToken ct, object stepNumberForDestinations = null, bool deleteDependents = false, List<ChangeJournalRowChange> journal = null,
+        IReadOnlyDictionary<string, object> expected = null, SequenceDeletionPreview preview = null)
     {
         using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
         await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection, ct);
@@ -568,8 +650,22 @@ public sealed partial class ProgramManagementRepository
         try
         {
             await EnsureUniqueIndexAsync(connection, transaction, tableName, uniqueKey, ct);
+            var actualTarget = await ReadLockedRowsAsync(connection, transaction, tableName, keyValues, ct);
+            EnsureSnapshotMatches(expected == null ? null : new[] { expected }, actualTarget);
             if (stepNumberForDestinations != null)
                 await EnsureNoDestinationReferencesAsync(connection, transaction, keyValues, stepNumberForDestinations, ct);
+
+            if (deleteDependents)
+            {
+                if (preview == null) throw new InvalidOperationException("Для удаления связанных данных требуется подтверждённый состав.");
+                foreach (var dependency in dependencies)
+                {
+                    var actual = await HasScopedRowsAsync(connection, transaction, dependency.Table, dependency.Scope, ct)
+                        ? await ReadLockedRowsAsync(connection, transaction, dependency.Table, dependency.Scope, ct)
+                        : Array.Empty<IReadOnlyDictionary<string, object>>();
+                    EnsureSnapshotMatches(preview.Rows.TryGetValue(dependency.Table, out var before) ? before : null, actual);
+                }
+            }
 
             foreach (var dependency in dependencies)
             {
@@ -585,7 +681,9 @@ public sealed partial class ProgramManagementRepository
                 using var delete = new Microsoft.Data.SqlClient.SqlCommand(
                     $"DELETE FROM {QuoteTable(dependency.Table)} WITH (UPDLOCK, HOLDLOCK) WHERE {dependencyWhere}", connection, transaction);
                 AddParameters(delete, dependencyParameters);
-                await delete.ExecuteNonQueryAsync(ct);
+                int removed = await delete.ExecuteNonQueryAsync(ct);
+                if (preview == null || removed != preview.Rows[dependency.Table].Count)
+                    throw new InvalidOperationException("Состав связанных записей изменился; удаление отменено.");
                 if (await HasScopedRowsAsync(connection, transaction, dependency.Table, dependency.Scope, ct))
                     throw new InvalidOperationException("Удаление связанных строк не подтвердилось. Изменения отменены.");
             }
@@ -598,7 +696,8 @@ public sealed partial class ProgramManagementRepository
             using var command = new Microsoft.Data.SqlClient.SqlCommand(
                 $"DELETE FROM {QuoteTable(tableName)} WITH (UPDLOCK, HOLDLOCK) WHERE {where}", connection, transaction);
             AddParameters(command, parameters);
-            await command.ExecuteNonQueryAsync(ct);
+            if (await command.ExecuteNonQueryAsync(ct) != 1)
+                throw new InvalidOperationException("Удаление строки не подтвердилось; транзакция отменена.");
             if (await CountRowsAsync(connection, transaction, tableName, keyValues, ct) != 0)
                 throw new InvalidOperationException("Удаление не подтвердилось по уникальному ключу; транзакция отменена.");
 
@@ -889,7 +988,8 @@ ORDER BY i.index_id, ic.key_ordinal;";
     };
 
     private async Task DeleteOfflineIfUnreferencedAsync(string tableName, IReadOnlyDictionary<string, object> key,
-        IReadOnlyList<(string Table, IReadOnlyDictionary<string, object> Scope)> dependents, CancellationToken ct)
+        IReadOnlyList<(string Table, IReadOnlyDictionary<string, object> Scope)> dependents, CancellationToken ct,
+        IReadOnlyDictionary<string, object> expected)
     {
         var schema = GetOfflineSchema(tableName);
         if (!schema.HasStableKey || schema.KeyColumns.Count == 0) throw new InvalidOperationException("В локальном снимке нет стабильного ключа для удаления записи.");
@@ -902,6 +1002,7 @@ ORDER BY i.index_id, ic.key_ordinal;";
         }
         var matches = _offline!.GetRecords(schema.TableName).Where(row => key.All(pair => row.Values.TryGetPropertyValue(pair.Key, out var value) && OfflineEquals(value, pair.Value))).Take(2).ToList();
         if (matches.Count != 1) throw new InvalidOperationException("Запись для удаления не найдена или неоднозначна в локальном проекте.");
+        EnsureExpectedOfflineRow(tableName, key, expected);
         var keyValues = schema.KeyColumns.ToDictionary(name => name,
             name => (object?)OfflineValue(matches[0].Values[name], OfflineType(schema.Columns.First(column => column.Name.Equals(name, StringComparison.OrdinalIgnoreCase)).DataType)),
             StringComparer.OrdinalIgnoreCase);

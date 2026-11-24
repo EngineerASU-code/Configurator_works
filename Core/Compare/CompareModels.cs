@@ -22,7 +22,7 @@ public sealed record CompareSource(
     internal ConfiguratorProject? OfflineProject { get; init; }
     internal Func<string, CancellationToken, Task<IReadOnlyList<ProjectRecord>>>? ReadUnkeyedTableAsync { get; init; }
     internal Func<CancellationToken, Task<ProjectCompareSettings>>? ReadProjectSettingsAsync { get; init; }
-    internal Func<ProjectCompareSettings, CancellationToken, Task>? SaveProjectSettingsAsync { get; init; }
+    internal Func<ProjectCompareSettings, string, CancellationToken, Task>? SaveProjectSettingsAsync { get; init; }
 }
 
 public sealed record ProjectCompareSettings(IReadOnlyList<ProjectTextList> TextLists, IReadOnlyList<ThemePreset> ThemePresets);
@@ -53,7 +53,11 @@ public sealed record CompareDifference(
     CompareMetadataKind? MetadataKind = null,
     string? MetadataKey = null,
     string? DetailAValue = null,
-    string? DetailBValue = null);
+    string? DetailBValue = null)
+{
+    internal string? FingerprintA { get; init; }
+    internal string? FingerprintB { get; init; }
+}
 
 public sealed record CompareResult(
     IReadOnlyList<CompareDifference> Architecture,

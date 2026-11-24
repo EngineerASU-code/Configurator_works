@@ -87,22 +87,21 @@ public partial class TableViewModel
                 }
 
                 int? nextRecord = null;
-                if (!string.IsNullOrEmpty(recordColumn))
+                var recordInfo = Columns.FirstOrDefault(c => c.Name.Equals(recordColumn, StringComparison.OrdinalIgnoreCase));
+                if (recordInfo != null && !recordInfo.IsIdentity && !recordInfo.IsReadOnly)
                 {
                     if (!string.IsNullOrEmpty(plcColumn) && hasPlcValue)
                     {
                         // PLC + Record — составная логика.
                         // PLC 1 / Record 1 и PLC 2 / Record 1 не конфликтуют.
-                        nextRecord = await _db.GetNextScopedRecordValueAsync(
+                        nextRecord = await _db.GetFreeScopedRecordValueAsync(
                             CurrentTable, recordColumn, plcColumn, plcValue, ct);
                     }
                     else
                     {
                         // Если PLC нет, Record всё равно должен получить новое значение,
                         // если это не identity/computed поле.
-                        var recordInfo = Columns.First(c => c.Name.Equals(recordColumn, StringComparison.OrdinalIgnoreCase));
-                        if (!recordInfo.IsIdentity && !recordInfo.IsReadOnly)
-                            nextRecord = await _db.GetMaxRecordValueAsync(CurrentTable, recordColumn, ct) + 1;
+                        nextRecord = await _db.GetMaxRecordValueAsync(CurrentTable, recordColumn, ct) + 1;
                     }
                 }
 
@@ -184,15 +183,11 @@ public partial class TableViewModel
 
                 // Если Record обязателен, но мы почему-то не смогли его определить,
                 // лучше остановить дублирование с понятной ошибкой, чем отправить NULL в INSERT.
-                if (!string.IsNullOrEmpty(recordColumn))
+                if (recordInfo != null && !recordInfo.IsIdentity && !recordInfo.IsReadOnly && !recordInfo.IsNullable &&
+                    !values.ContainsKey(recordColumn))
                 {
-                    var recordInfo = Columns.First(c => c.Name.Equals(recordColumn, StringComparison.OrdinalIgnoreCase));
-                    if (!recordInfo.IsIdentity && !recordInfo.IsReadOnly && !recordInfo.IsNullable &&
-                        !values.ContainsKey(recordColumn))
-                    {
-                        throw new InvalidOperationException(
-                            $"Не удалось автоматически определить новое значение поля {recordColumn}. Дублирование отменено.");
-                    }
+                    throw new InvalidOperationException(
+                        $"Не удалось автоматически определить новое значение поля {recordColumn}. Дублирование отменено.");
                 }
 
                 return values;

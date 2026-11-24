@@ -1,243 +1,146 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
-using Microsoft.Win32;
+#nullable enable
+using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
-using Configurator.Core.Architecture;
+using Configurator.Core.Projects;
+using Configurator.Infrastructure;
+using Configurator.Infrastructure.Projects;
 
 namespace Configurator;
 
 public partial class FreeRecordCheckWindow : Window
 {
-    private readonly ConnectionSettings _connection;
-    private readonly List<string> _databases;
-    private List<RecordCheckClassOption> _classes = new();
-    private bool _loadingPlcOptions;
-    private List<FreeRecordGroup> _lastResults = new();
+    private readonly Func<string, string> _getConnectionString;
+    private readonly CancellationTokenSource _lifetime = new();
+    private bool _busy;
+    private DatabaseService? _database;
 
-    public FreeRecordCheckWindow(ConnectionSettings connection, IEnumerable<string> databases, string selectedDatabase)
+    internal FreeRecordCheckWindow(Func<string, string> getConnectionString, IEnumerable<string> databases, string selectedDatabase)
     {
+        _getConnectionString = getConnectionString;
         InitializeComponent();
-        _connection = connection;
-        _databases = databases?.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
-                     ?? new List<string>();
-
-        CmbDatabase.ItemsSource = _databases;
-        if (!string.IsNullOrWhiteSpace(selectedDatabase) && _databases.Any(x => x.Equals(selectedDatabase, StringComparison.OrdinalIgnoreCase)))
-            CmbDatabase.SelectedItem = _databases.First(x => x.Equals(selectedDatabase, StringComparison.OrdinalIgnoreCase));
-        else if (_databases.Count > 0)
-            CmbDatabase.SelectedIndex = 0;
-
-        BuildClassList();
-        Loaded += FreeRecordCheckWindow_Loaded;
+        var names = databases.ToList();
+        CmbDatabase.ItemsSource = names;
+        CmbDatabase.SelectedItem = names.FirstOrDefault(name => name.Equals(selectedDatabase, StringComparison.OrdinalIgnoreCase))
+            ?? names.FirstOrDefault();
+        Loaded += LoadWindow;
     }
 
-    private async void FreeRecordCheckWindow_Loaded(object sender, RoutedEventArgs e)
+    protected override void OnClosed(EventArgs e)
     {
-        Loaded -= FreeRecordCheckWindow_Loaded;
-        if (CmbDatabase.SelectedItem == null || CmbClass.SelectedItem == null) return;
-        await VerifyDatabaseAsync();
-        await LoadPlcOptionsAsync();
+        _lifetime.Cancel();
+        _lifetime.Dispose();
+        base.OnClosed(e);
     }
 
-    private void BuildClassList()
+    private async void LoadWindow(object sender, RoutedEventArgs e)
     {
-        _classes = SystemClassCatalog.CreateDefaults()
-            .Where(x => x.PrimaryStorage != null && !string.IsNullOrWhiteSpace(x.PrimaryStorage.TableName))
-            .OrderBy(x => x.ClassNumber)
-            .Select(x => new RecordCheckClassOption(x.Name, x.PrimaryStorage.TableName, x.ClassNumber))
-            .ToList();
-        CmbClass.ItemsSource = _classes;
-        if (_classes.Count > 0) CmbClass.SelectedIndex = 0;
+        Loaded -= LoadWindow;
+        await LoadDatabaseAsync();
     }
 
     private async void CmbDatabase_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (!IsLoaded || CmbDatabase.SelectedItem == null) return;
-        await VerifyDatabaseAsync();
-        await LoadPlcOptionsAsync();
+        if (IsLoaded && !_busy) await LoadDatabaseAsync();
     }
 
-    private async void CmbClass_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private async Task LoadDatabaseAsync()
     {
-        if (!IsLoaded || CmbClass.SelectedItem == null || _loadingPlcOptions) return;
-        await LoadPlcOptionsAsync();
-    }
-
-    private async Task LoadPlcOptionsAsync()
-    {
-        var dbName = CmbDatabase.SelectedItem?.ToString();
-        var option = CmbClass.SelectedItem as RecordCheckClassOption;
-        if (string.IsNullOrWhiteSpace(dbName) || option == null) return;
-
-        try
+        if (CmbDatabase.SelectedItem is not string name) return;
+        ResetResult();
+        await RunAsync("Загружаем PLC…", async ct =>
         {
-            _loadingPlcOptions = true;
+            _database = null;
             CmbPlc.ItemsSource = null;
-            CmbPlc.IsEnabled = false;
-            var db = new DatabaseService(_connection.ToConnectionString(dbName));
-            var values = await db.GetDistinctColumnValuesAsync(option.TableName, "PLC");
-            var items = new List<string> { "Все PLC" };
-            items.AddRange(values);
-            CmbPlc.ItemsSource = items;
-            CmbPlc.SelectedIndex = 0;
-            TxtPlcStatus.Text = values.Count == 0 ? "PLC не найдены" : $"Доступно PLC: {values.Count}";
-        }
-        catch
-        {
-            CmbPlc.ItemsSource = new List<string> { "Все PLC" };
-            CmbPlc.SelectedIndex = 0;
-            TxtPlcStatus.Text = "Не удалось загрузить PLC";
-        }
-        finally
-        {
-            _loadingPlcOptions = false;
-            CmbPlc.IsEnabled = true;
-        }
+            CmbClass.ItemsSource = null;
+            var connectionString = _getConnectionString(name);
+            var source = new OnlineProjectDataSource(connectionString, name);
+            using var workspace = new ProjectWorkspace(source,
+                architecture: new ProjectArchitectureDataSource(source.Server, source.Database), allowWrite: false);
+            var classes = await RecordCheckCatalog.LoadAsync(workspace, ct);
+            var database = new DatabaseService(connectionString);
+            var scopes = await database.GetRecordCheckScopesAsync(classes, ct);
+            ct.ThrowIfCancellationRequested();
+            var controllers = scopes.GroupBy(scope => Convert.ToString(scope.Plc, CultureInfo.InvariantCulture) ?? "")
+                .Where(group => !string.IsNullOrWhiteSpace(group.Key))
+                .OrderBy(group => group.Key, StringComparer.CurrentCulture)
+                .Select(group => new PlcChoice(group.Key, group.ToList())).ToList();
+            _database = database;
+            CmbPlc.ItemsSource = controllers;
+            TxtStatus.Text = controllers.Count == 0 ? "PLC с записями для проверки не найдены." : "Выберите PLC.";
+        });
     }
 
-    private async Task VerifyDatabaseAsync()
+    private void CmbPlc_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        var dbName = CmbDatabase.SelectedItem?.ToString();
-        if (string.IsNullOrWhiteSpace(dbName)) return;
+        if (_busy) return;
+        ResetResult();
+        CmbClass.ItemsSource = (CmbPlc.SelectedItem as PlcChoice)?.Classes;
+        TxtStatus.Text = CmbPlc.SelectedItem != null ? "Выберите класс." : "Выберите PLC.";
+        UpdateControls();
+    }
 
-        try
-        {
-            TxtStatus.Text = "Проверка подключения…";
-            var ok = await _connection.TestConnectionAsync(dbName);
-            if (!ok)
-            {
-                TxtStatus.Text = "База недоступна";
-                Configurator.Infrastructure.ModernDialog.Show($"Связь с БД «{dbName}» потеряна. Выберите активную базу.",
-                    "Проверить свободные поля", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-            TxtStatus.Text = "База доступна";
-        }
-        catch (Exception ex)
-        {
-            TxtStatus.Text = "Ошибка подключения";
-            Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Проверить свободные поля", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
+    private void CmbClass_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_busy) return;
+        ResetResult();
+        TxtStatus.Text = CmbClass.SelectedItem != null ? "" : "Выберите класс.";
+        UpdateControls();
     }
 
     private async void Check_Click(object sender, RoutedEventArgs e)
     {
-        var dbName = CmbDatabase.SelectedItem?.ToString();
-        var option = CmbClass.SelectedItem as RecordCheckClassOption;
-        var plc = CmbPlc.SelectedItem?.ToString();
-        if (string.IsNullOrWhiteSpace(dbName) || option == null) return;
+        if (!BtnCheck.IsEnabled || CmbClass.SelectedItem is not RecordCheckScope scope || CmbPlc.SelectedItem is not PlcChoice plc) return;
+        ResetResult();
+        await RunAsync("Проверяем Record…", async ct =>
+        {
+            var result = await _database!.CheckRecordsAsync(scope, ct);
+            ct.ThrowIfCancellationRequested();
+            TxtResultHeader.Text = $"{scope.Class.Title} · PLC {plc.Label}";
+            TxtResult.Text = result.MinRecord == null ? "Записи не найдены."
+                : $"Диапазон Record {result.MinRecord}–{result.MaxRecord}{Environment.NewLine}{Environment.NewLine}"
+                    + (result.Gaps.Count == 0 ? "Свободных Record нет." : $"Свободные Record ({result.FreeCount}): {string.Join(", ", result.Gaps)}");
+            TxtStatus.Text = "Проверка завершена";
+        });
+    }
 
-        if (string.Equals(plc, "Все PLC", StringComparison.OrdinalIgnoreCase)) plc = null;
-
-        ResultsPanel.Children.Clear();
-        BtnExport.IsEnabled = false;
-        _lastResults = new();
-        TxtResultHeader.Text = $"Проверка {option.Title} · {option.TableName}" + (plc == null ? " · все PLC" : $" · PLC {plc}");
-        TxtStatus.Text = plc == null ? "Читаем Record…" : $"Читаем Record PLC {plc}…";
-        SetBusy(true);
-
+    private async Task RunAsync(string status, Func<CancellationToken, Task> action)
+    {
+        var ct = _lifetime.Token;
+        _busy = true;
+        UpdateControls();
+        TxtStatus.Text = status;
         try
         {
-            var db = new DatabaseService(_connection.ToConnectionString(dbName));
-            var result = await db.FindFreeRecordsByPlcAsync(option.TableName, plc);
-            _lastResults = result;
-
-            if (result.Count == 0)
-            {
-                ResultsPanel.Children.Add(new TextBlock
-                {
-                    Text = "Свободных Record в диапазонах не найдено.",
-                    Foreground = (System.Windows.Media.Brush)FindResource("BrushTextSecondary"),
-                    Margin = new Thickness(0, 4, 0, 4)
-                });
-                TxtStatus.Text = "Готово";
-                return;
-            }
-
-            foreach (var group in result)
-            {
-                var border = new Border
-                {
-                    Background = (System.Windows.Media.Brush)FindResource("BrushBase"),
-                    BorderBrush = (System.Windows.Media.Brush)FindResource("BrushBorder"),
-                    BorderThickness = new Thickness(1),
-                    CornerRadius = new CornerRadius(7),
-                    Padding = new Thickness(10),
-                    Margin = new Thickness(0, 0, 0, 8)
-                };
-                var panel = new StackPanel();
-                panel.Children.Add(new TextBlock
-                {
-                    Text = $"PLC {group.Plc} · диапазон {group.MinRecord}–{group.MaxRecord}",
-                    FontWeight = FontWeights.SemiBold,
-                    Foreground = (System.Windows.Media.Brush)FindResource("BrushText")
-                });
-                panel.Children.Add(new TextBlock
-                {
-                    Text = $"Свободные Record: {string.Join(", ", group.FreeRecords.Select(x => x.ToString()))}",
-                    Margin = new Thickness(0, 5, 0, 0),
-                    TextWrapping = TextWrapping.Wrap,
-                    Foreground = (System.Windows.Media.Brush)FindResource("BrushTextSecondary")
-                });
-                border.Child = panel;
-                ResultsPanel.Children.Add(border);
-            }
-
-            TxtStatus.Text = $"Найдено групп: {result.Count}";
-            BtnExport.IsEnabled = result.Count > 0;
+            await action(ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
         }
         catch (Exception ex)
         {
-            TxtStatus.Text = "Ошибка";
-            Configurator.Infrastructure.ModernDialog.Show($"Не удалось проверить Record: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}",
-                "Проверить свободные поля", MessageBoxButton.OK, MessageBoxImage.Error);
+            if (!ct.IsCancellationRequested) TxtStatus.Text = UserErrorMessage.Format(ex);
         }
         finally
         {
-            SetBusy(false);
+            _busy = false;
+            if (!ct.IsCancellationRequested) UpdateControls();
         }
     }
 
-    private void SetBusy(bool busy)
+    private void ResetResult()
     {
-        CmbDatabase.IsEnabled = !busy;
-        CmbClass.IsEnabled = !busy;
-        CmbPlc.IsEnabled = !busy;
-        BtnExport.IsEnabled = !busy && _lastResults.Count > 0;
+        TxtResultHeader.Text = "Результат проверки";
+        TxtResult.Text = "";
     }
 
-    private void Export_Click(object sender, RoutedEventArgs e)
+    private void UpdateControls()
     {
-        if (_lastResults.Count == 0) return;
-        var option = CmbClass.SelectedItem as RecordCheckClassOption;
-        var dialog = new SaveFileDialog
-        {
-            Title = "Экспорт проверки полей",
-            Filter = "Excel (*.xlsx)|*.xlsx",
-            DefaultExt = ".xlsx",
-            AddExtension = true,
-            FileName = $"Проверка_полей_{option?.Title ?? "результат"}.xlsx"
-        };
-        if (dialog.ShowDialog(this) != true) return;
-        try
-        {
-            var rows = _lastResults.Select(g => (IReadOnlyList<object>)new object[]
-            {
-                g.Plc, g.MinRecord, g.MaxRecord, string.Join(", ", g.FreeRecords)
-            }).ToList();
-            ExcelExportService.Export(dialog.FileName, "Record", new[] { "PLC", "Минимальный Record", "Максимальный Record", "Свободные Record" }, rows);
-            TxtStatus.Text = "Экспорт Excel выполнен";
-        }
-        catch (Exception ex)
-        {
-            Configurator.Infrastructure.ModernDialog.Show($"Не удалось экспортировать результат: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", "Экспорт Excel", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+        CmbDatabase.IsEnabled = !_busy;
+        CmbClass.IsEnabled = !_busy && CmbClass.HasItems;
+        CmbPlc.IsEnabled = !_busy && CmbPlc.HasItems;
+        BtnCheck.IsEnabled = !_busy && _database != null && CmbClass.SelectedItem != null;
     }
 
-    private void Close_Click(object sender, RoutedEventArgs e) => Close();
-
-    private sealed record RecordCheckClassOption(string Title, string TableName, int ClassNumber);
+    private sealed record PlcChoice(string Label, IReadOnlyList<RecordCheckScope> Classes);
 }

@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Configurator.Core.Architecture;
+using Configurator.Core.Projects;
 using Microsoft.Data.SqlClient;
 
 namespace Configurator;
@@ -24,6 +25,7 @@ public sealed class DeletionProtectionService
     public async Task<DeletionPlan> BuildPlanAsync(DeletionRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+        ProjectWriteGuard.EnsureDataTableWritable(request.TableName);
         var plan = new DeletionPlan { Request = request };
         if (_schema.Relations.Any(relation => relation == null))
             plan.ValidationErrors.Add("Удаление заблокировано: карта зависимостей содержит пустую связь, которую невозможно проверить.");
@@ -95,15 +97,40 @@ public sealed class DeletionProtectionService
 
         await using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
         await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection, cancellationToken);
-        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
         try
         {
             foreach (var item in items)
             {
+                ProjectWriteGuard.EnsureDataTableWritable(item.Plan.Request.TableName);
+                await EnsureSnapshotAsync(connection, transaction, item.Plan.Request.TableName, item.Plan.Request.Key,
+                    item.Plan.Request.ExpectedValues, cancellationToken);
+                foreach (var hit in item.Plan.Dependencies)
+                {
+                    ProjectWriteGuard.EnsureDataTableWritable(hit.SourceTable);
+                    await EnsureSnapshotAsync(connection, transaction, hit.SourceTable, hit.SourceKey, hit.SourceValues, cancellationToken);
+                }
+            }
+            foreach (var item in items)
+            {
                 foreach (var replacement in item.Replacements ?? Array.Empty<ReferenceReplacement>())
+                {
+                    var matches = item.Plan.Dependencies.Where(hit => hit.SourceTable.Equals(replacement.SourceTable, StringComparison.OrdinalIgnoreCase) &&
+                        hit.Relation.SourceColumns.SequenceEqual(replacement.SourceColumns, StringComparer.OrdinalIgnoreCase) &&
+                        hit.SourceKey.Count == replacement.KeyColumns.Count && replacement.KeyColumns.Select((key, index) =>
+                            hit.SourceKey.TryGetValue(key, out var value) && SnapshotValueEquals(value, replacement.KeyValues[index])).All(equal => equal)).ToList();
+                    if (matches.Count == 0 || matches.Select(hit => hit.TargetTable + "|" + string.Join("|", hit.Relation.TargetColumns)).Distinct(StringComparer.OrdinalIgnoreCase).Count() != 1)
+                        throw new InvalidOperationException("Замена не соответствует одной подготовленной зависимости.");
+                    var relation = matches[0].Relation;
+                    if (replacement.NewValues.Count != relation.TargetColumns.Count || replacement.TargetValues == null || replacement.TargetValues.Count == 0)
+                        throw new InvalidOperationException("Нет исходного состояния выбранной замены. Повторите выбор.");
+                    var targetKey = relation.TargetColumns.Select((key, index) => (key, index)).ToDictionary(x => x.key, x => replacement.NewValues[x.index], StringComparer.OrdinalIgnoreCase);
+                    await EnsureSnapshotAsync(connection, transaction, relation.TargetTable, targetKey, replacement.TargetValues, cancellationToken);
                     await ApplyReplacementAsync(connection, transaction, replacement, cancellationToken);
+                }
                 if (!await validateAfterReplacement(connection, transaction, cancellationToken))
                     throw new InvalidOperationException("Проверка после переинициализации не пройдена. Изменения пакета удалений откатываются.");
+                await EnsureNoCurrentDependentsAsync(connection, transaction, item.Plan.Request, cancellationToken);
                 await DeleteTargetAsync(connection, transaction, item.Plan.Request, cancellationToken);
             }
             await transaction.CommitAsync(cancellationToken);
@@ -112,6 +139,79 @@ public sealed class DeletionProtectionService
         {
             try { await transaction.RollbackAsync(CancellationToken.None); } catch { /* Preserve the original failure. */ }
             throw;
+        }
+    }
+
+    internal async Task DeleteUnreferencedInTransactionAsync(SqlConnection connection, SqlTransaction transaction,
+        string tableName, IReadOnlyDictionary<string, object> identity, IReadOnlyDictionary<string, object> expected, CancellationToken ct)
+    {
+        ProjectWriteGuard.EnsureDataTableWritable(tableName);
+        if (_schema.Relations.Any(relation => relation == null))
+            throw new InvalidOperationException("Карта зависимостей неполна. Удаление отменено.");
+        await EnsureSnapshotAsync(connection, transaction, tableName, identity, expected, ct);
+        var request = new DeletionRequest { TableName = tableName, Key = expected, ExpectedValues = expected };
+        await EnsureNoCurrentDependentsAsync(connection, transaction, request, ct);
+        await DeleteTargetAsync(connection, transaction, new DeletionRequest { TableName = tableName, Key = identity }, ct);
+    }
+
+    private async Task EnsureSnapshotAsync(SqlConnection connection, SqlTransaction transaction, string tableName,
+        IReadOnlyDictionary<string, object> identity, IReadOnlyDictionary<string, object> expected, CancellationToken ct)
+    {
+        var table = _schema.FindTable(tableName);
+        if (table == null || identity == null || identity.Count == 0 || expected == null ||
+            expected.Count != table.Columns.Count || table.Columns.Any(c => !expected.ContainsKey(c.Name)))
+            throw new InvalidOperationException("Нет полного исходного состояния строки. Обновите данные и повторите удаление.");
+        await using var cmd = new SqlCommand { Connection = connection, Transaction = transaction };
+        var predicates = new List<string>(); int i = 0;
+        foreach (var pair in identity)
+        {
+            if (!table.Columns.Any(c => c.Name.Equals(pair.Key, StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidOperationException("Ключ содержит неизвестный столбец.");
+            var col = QuoteColumn(tableName, pair.Key);
+            if (pair.Value == null || pair.Value == DBNull.Value) predicates.Add(col + " IS NULL");
+            else { var parameter = "@key" + i++; predicates.Add(col + " = " + parameter); cmd.Parameters.AddWithValue(parameter, pair.Value); }
+        }
+        cmd.CommandText = $"SELECT * FROM {QuoteTable(tableName)} WITH (UPDLOCK, HOLDLOCK) WHERE {string.Join(" AND ", predicates)}";
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct) || reader.FieldCount != expected.Count)
+            throw new InvalidOperationException("Исходная строка изменилась или удалена. Удаление отменено.");
+        for (int n = 0; n < reader.FieldCount; n++)
+        {
+            if (!expected.TryGetValue(reader.GetName(n), out var value) || !SnapshotValueEquals(value, reader.IsDBNull(n) ? null : reader.GetValue(n)))
+                throw new InvalidOperationException("Исходная или зависимая строка изменилась. Удаление отменено.");
+        }
+        if (await reader.ReadAsync(ct)) throw new InvalidOperationException("Идентификатор строки неоднозначен. Удаление отменено.");
+    }
+
+    private static bool SnapshotValueEquals(object a, object b)
+    {
+        if (a == DBNull.Value) a = null;
+        if (b == DBNull.Value) b = null;
+        if (a is byte[] left && b is byte[] right) return left.SequenceEqual(right);
+        return Equals(a, b);
+    }
+
+    private async Task EnsureNoCurrentDependentsAsync(SqlConnection connection, SqlTransaction transaction, DeletionRequest request, CancellationToken ct)
+    {
+        foreach (var relation in _schema.Relations.Where(r => r != null && r.TargetTable.Equals(request.TableName, StringComparison.OrdinalIgnoreCase)))
+        {
+            if (!relation.IsUsableForDeletionProtection || relation.SourceColumns.Count == 0 || relation.SourceColumns.Count != relation.TargetColumns.Count)
+                throw new InvalidOperationException("Связь невозможно повторно проверить. Удаление отменено.");
+            await using var cmd = new SqlCommand { Connection = connection, Transaction = transaction };
+            var where = new List<string>();
+            for (int i = 0; i < relation.SourceColumns.Count; i++)
+            {
+                if (!request.Key.TryGetValue(relation.TargetColumns[i], out var value))
+                    throw new InvalidOperationException("Нет значения для проверки зависимости. Удаление отменено.");
+                if (value == null || value == DBNull.Value) { where.Clear(); break; }
+                var p = "@ref" + i;
+                where.Add(QuoteColumn(relation.SourceTable, relation.SourceColumns[i]) + " = " + p);
+                cmd.Parameters.AddWithValue(p, value);
+            }
+            if (where.Count == 0) continue;
+            cmd.CommandText = $"SELECT TOP (1) 1 FROM {QuoteTable(relation.SourceTable)} WITH (UPDLOCK, HOLDLOCK) WHERE {string.Join(" AND ", where)}";
+            if (await cmd.ExecuteScalarAsync(ct) != null)
+                throw new InvalidOperationException("Зависимости изменились после подготовки удаления. Обновите данные и повторите операцию.");
         }
     }
 
@@ -179,7 +279,9 @@ public sealed class DeletionProtectionService
             var sourceReferenceValues = relation.SourceColumns
                 .Where(available.Contains)
                 .ToDictionary(column => column, column => reader[column] == DBNull.Value ? null : reader[column], StringComparer.OrdinalIgnoreCase);
-            hits.Add(new DependencyHit { SourceTable = relation.SourceTable, SourceKey = sourceKey, SourceReferenceValues = sourceReferenceValues, SourceColumnDescription = string.Join(", ", relation.SourceColumns), TargetTable = relation.TargetTable, Relation = relation });
+            var sourceValues = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < reader.FieldCount; i++) sourceValues[reader.GetName(i)] = reader.IsDBNull(i) ? DBNull.Value : reader.GetValue(i);
+            hits.Add(new DependencyHit { SourceTable = relation.SourceTable, SourceKey = sourceKey, SourceValues = sourceValues, SourceReferenceValues = sourceReferenceValues, SourceColumnDescription = string.Join(", ", relation.SourceColumns), TargetTable = relation.TargetTable, Relation = relation });
         }
         return hits;
     }
@@ -205,30 +307,21 @@ public sealed class DeletionProtectionService
             ?? targetColumns.Select(c => c.Name).FirstOrDefault(n => n.Equals("Name_L1", StringComparison.OrdinalIgnoreCase))
             ?? targetColumns.Select(c => c.Name).FirstOrDefault(n => n.Equals("Name", StringComparison.OrdinalIgnoreCase))
             ?? targetColumns.Select(c => c.Name).FirstOrDefault(n => n.Equals("DescriptionL1", StringComparison.OrdinalIgnoreCase));
-        var selectColumns = columns.Select(QuoteIdentifier).ToList();
-        if (!string.IsNullOrWhiteSpace(displayColumn) && !columns.Contains(displayColumn, StringComparer.OrdinalIgnoreCase))
-            selectColumns.Add(QuoteIdentifier(displayColumn));
-        var sql = $"SELECT DISTINCT {string.Join(", ", selectColumns)} FROM {QuoteTable(dependency.TargetTable)}";
-        var candidateValues = new List<(List<object> Values, string DisplayName)>();
+        var sql = $"SELECT * FROM {QuoteTable(dependency.TargetTable)}";
+        var candidateValues = new List<(List<object> Values, string DisplayName, Dictionary<string, object> Snapshot)>();
         await using (var command = new SqlCommand(sql, connection))
         await using (var reader = await command.ExecuteReaderAsync(ct))
         {
             while (await reader.ReadAsync(ct))
             {
-                var values = new List<object>();
-                bool skip = true;
-                for (int i = 0; i < columns.Count; i++)
-                {
-                    var value = reader.GetValue(i);
-                    values.Add(value == DBNull.Value ? null : value);
-                    if (!deletedTargetKey.TryGetValue(columns[i], out var oldValue) || !ValuesEqual(oldValue, value)) skip = false;
-                }
+                var snapshot = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+                for (int i = 0; i < reader.FieldCount; i++) snapshot[reader.GetName(i)] = reader.IsDBNull(i) ? DBNull.Value : reader.GetValue(i);
+                var values = columns.Select(column => snapshot[column] == DBNull.Value ? null : snapshot[column]).ToList();
+                bool skip = columns.Select((column, index) => deletedTargetKey.TryGetValue(column, out var oldValue) && ValuesEqual(oldValue, values[index])).All(equal => equal);
                 if (!skip)
                 {
-                    var display = string.Empty;
-                    if (!string.IsNullOrWhiteSpace(displayColumn) && !columns.Contains(displayColumn, StringComparer.OrdinalIgnoreCase))
-                        display = reader.IsDBNull(columns.Count) ? string.Empty : Convert.ToString(reader.GetValue(columns.Count)) ?? string.Empty;
-                    candidateValues.Add((values, display));
+                    var display = !string.IsNullOrWhiteSpace(displayColumn) && snapshot.TryGetValue(displayColumn, out var value) && value != DBNull.Value ? Convert.ToString(value) ?? "" : "";
+                    candidateValues.Add((values, display, snapshot));
                 }
             }
         }
@@ -249,6 +342,7 @@ public sealed class DeletionProtectionService
             var candidate = new ReplacementCandidate
             {
                 Values = values,
+                TargetValues = candidateValue.Snapshot,
                 Display = displayValue
             };
             await AnalyzeCandidateConflictsAsync(connection, dependency, sourceTable, sourceRow, candidate, ct);
@@ -378,6 +472,7 @@ public sealed class DeletionProtectionService
 
     private async Task ApplyReplacementAsync(SqlConnection connection, SqlTransaction transaction, ReferenceReplacement replacement, CancellationToken ct)
     {
+        ProjectWriteGuard.EnsureDataTableWritable(replacement.SourceTable);
         if (replacement.SourceColumns.Count != replacement.NewValues.Count || replacement.KeyColumns.Count != replacement.KeyValues.Count)
             throw new ArgumentException("Количество полей и значений в замене не совпадает.");
         if (replacement.ExpectedOldValues == null || replacement.SourceColumns.Any(column => !replacement.ExpectedOldValues.ContainsKey(column)))
@@ -512,6 +607,7 @@ public sealed class DeletionProtectionService
 public sealed class ReplacementCandidate
 {
     public IReadOnlyList<object> Values { get; init; } = Array.Empty<object>();
+    public IReadOnlyDictionary<string, object> TargetValues { get; init; } = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
     public string Display { get; init; } = "";
     public bool IsConflict { get; set; }
     public string ConflictDescription { get; set; } = "";
@@ -525,6 +621,7 @@ public sealed class ReferenceReplacement
     public IReadOnlyList<object> NewValues { get; init; } = Array.Empty<object>();
     public IReadOnlyList<string> KeyColumns { get; init; } = Array.Empty<string>();
     public IReadOnlyList<object> KeyValues { get; init; } = Array.Empty<object>();
+    public IReadOnlyDictionary<string, object> TargetValues { get; init; } = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
     public IReadOnlyDictionary<string, object> ExpectedOldValues { get; init; } = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
     public IReadOnlyDictionary<string, object> AdditionalAssignments { get; init; } = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
 }

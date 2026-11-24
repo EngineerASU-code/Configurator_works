@@ -1246,11 +1246,12 @@ public partial class ProgramManagementControl : UserControl
         if (!UserAuthorizationService.Require(Permission.DeleteData)) return;
         if (CurrentContext?.RecordValue == null) { SetStatus("Выберите программу для удаления."); return; }
         var targetContext = CopyContext(CurrentContext);
-        if (MessageBox.Show("Программа будет удалена только если у неё нет последовательностей, параметров и других зависимых данных. Продолжить?",
-                "Удаление программы", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         if (!await CanChangeContextAsync()) return;
         var deletedProgram = ProgramsGrid.SelectedItem as DataRowView;
         var deletedProgramValues = deletedProgram == null ? null : ToValues(deletedProgram.Row, DataRowVersion.Current);
+        if (deletedProgramValues == null) { SetStatus("Не удалось определить исходную строку программы."); return; }
+        if (MessageBox.Show("Программа будет удалена только если у неё нет последовательностей, параметров и других зависимых данных. Продолжить?",
+                "Удаление программы", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         bool ownsChangeLock = false;
         bool?[] enabledBeforeOperation = null;
         try
@@ -1258,7 +1259,7 @@ public partial class ProgramManagementControl : UserControl
             _contextChangePending = true;
             ownsChangeLock = true;
             enabledBeforeOperation = SetContextGridsEnabled(false);
-            await _repository.DeleteProgramAsync(targetContext);
+            await _repository.DeleteProgramAsync(targetContext, expected: deletedProgramValues);
             string journalWarning = null;
             if (deletedProgramValues != null)
                 journalWarning = RaiseJournal(ProgramManagementRepository.ProgramTable, ChangeJournalOperationKind.Delete, deletedProgramValues,
@@ -1286,8 +1287,6 @@ public partial class ProgramManagementControl : UserControl
         var targetContext = CopyContext(CurrentContext);
         object sequenceRecord = GetValue(row.Row, "Record") ?? GetValue(row.Row, "Seq_Record");
         if (sequenceRecord == null) { SetStatus("В строке последовательности нет Record."); return; }
-        if (Configurator.Infrastructure.ModernDialog.Show(Window.GetWindow(this), $"Удалить последовательность № {sequenceRecord}? Вместе с ней будут удалены её вхождения шагов и переходы, параметры программы и шага, рецепты и их значения, а также элементы очередей этой последовательности.",
-                "Удаление последовательности", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         if (!await CanChangeContextAsync()) return;
         var deletedSequenceValues = ToValues(row.Row, DataRowVersion.Current);
         bool ownsChangeLock = false;
@@ -1297,7 +1296,11 @@ public partial class ProgramManagementControl : UserControl
             _contextChangePending = true;
             ownsChangeLock = true;
             enabledBeforeOperation = SetContextGridsEnabled(false);
-            var deletedRows = await _repository.DeleteSequenceAsync(targetContext, sequenceRecord, deleteDependents: true);
+            var preview = await _repository.PrepareSequenceDeletionAsync(targetContext, sequenceRecord);
+            var counts = string.Join("\n", preview.Counts.Select(pair => $"{pair.Key}: {pair.Value}"));
+            if (Configurator.Infrastructure.ModernDialog.Show(Window.GetWindow(this), $"Удалить последовательность № {sequenceRecord} и связанные записи?\n\n{counts}",
+                    "Удаление последовательности", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+            var deletedRows = await _repository.DeleteSequenceAsync(targetContext, sequenceRecord, deleteDependents: true, expected: deletedSequenceValues, preview: preview);
             string journalWarning = RaiseJournal(ProgramManagementRepository.SequenceTable, ChangeJournalOperationKind.Delete, deletedSequenceValues,
                 null, IdentityFor(ProgramManagementRepository.SequenceTable, deletedSequenceValues), "Удалена последовательность со связанными данными", deletedRows);
             bool refreshed = await LoadSequencesAsync(contextChangeApproved: true, afterCommittedChange: true, postCommitWarning: journalWarning);
@@ -1324,14 +1327,14 @@ public partial class ProgramManagementControl : UserControl
         var targetContext = CopyContext(CurrentContext);
         object stepNumber = GetValue(row.Row, "SeqStep_Number");
         if (stepNumber == null) { SetStatus("В переходе нет SeqStep_Number."); return; }
+        var deletedStepValues = ToValues(row.Row, DataRowVersion.Current);
         if (MessageBox.Show("Шаг будет удалён из последовательности только если на него не ссылаются переходы и нет зависимых параметров, рецептов или выборов очереди. Продолжить?",
                 "Удаление шага", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-        var deletedStepValues = ToValues(row.Row, DataRowVersion.Current);
         _contextChangePending = true;
         bool?[] enabledBeforeOperation = SetContextGridsEnabled(false);
         try
         {
-            await _repository.DeleteStepFromSequenceAsync(targetContext, stepNumber);
+            await _repository.DeleteStepFromSequenceAsync(targetContext, stepNumber, expected: deletedStepValues);
             string journalWarning = RaiseJournal(ProgramManagementRepository.TransitionTable, ChangeJournalOperationKind.Delete, deletedStepValues,
                 null, IdentityFor(ProgramManagementRepository.TransitionTable, deletedStepValues), "Удалён шаг из последовательности");
             bool refreshed = await LoadSequenceChildrenAsync(afterCommittedChange: true, postCommitWarning: journalWarning);
@@ -1750,10 +1753,10 @@ public partial class ProgramManagementControl : UserControl
             }
             else
             {
+                var before = ToValues(selected.Row, DataRowVersion.Current);
                 if (MessageBox.Show(Window.GetWindow(this), "Удалить выбранный параметр?", "Параметр",
                     MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-                var before = ToValues(selected.Row, DataRowVersion.Current);
-                await _repository.DeleteParameterAsync(context, step.Value, GetValue(selected.Row, "Type"), GetValue(selected.Row, "Record"));
+                await _repository.DeleteParameterAsync(context, step.Value, GetValue(selected.Row, "Type"), GetValue(selected.Row, "Record"), expected: before);
                 RaiseJournal(ProgramManagementRepository.ParameterTable, ChangeJournalOperationKind.Delete, before, null,
                     IdentityFor(ProgramManagementRepository.ParameterTable, before), "Удалён параметр");
             }

@@ -33,13 +33,13 @@ public partial class TemplateArchitectureView
       <ColumnDefinition Width='220'/>
       <ColumnDefinition Width='1.6*'/>
     </Grid.ColumnDefinitions>
-    <TextBox Grid.Column='0' Text='{Binding Name, UpdateSourceTrigger=PropertyChanged}' Height='28' Margin='2'/>
-    <TextBox Grid.Column='1' Text='{Binding DataType, UpdateSourceTrigger=PropertyChanged}' Height='28' Margin='2'/>
-    <TextBox Grid.Column='2' Text='{Binding Size, UpdateSourceTrigger=PropertyChanged}' Height='28' Margin='2'/>
-    <TextBox Grid.Column='3' Text='{Binding Offset, UpdateSourceTrigger=PropertyChanged}' Height='28' Margin='2'/>
-    <TextBox Grid.Column='4' Text='{Binding BitOffset, UpdateSourceTrigger=PropertyChanged}' Height='28' Margin='2'/>
-    <CheckBox Grid.Column='5' IsChecked='{Binding Nullable, UpdateSourceTrigger=PropertyChanged}' HorizontalAlignment='Center' VerticalAlignment='Center'/>
-    <TextBox Grid.Column='6' Text='{Binding Description, UpdateSourceTrigger=PropertyChanged}' Height='28' Margin='2' TextWrapping='Wrap'/>
+    <TextBox IsReadOnly='True' Grid.Column='0' Text='{Binding Name, Mode=OneWay}' Height='28' Margin='2'/>
+    <TextBox IsReadOnly='True' Grid.Column='1' Text='{Binding DataType, Mode=OneWay}' Height='28' Margin='2'/>
+    <TextBox IsReadOnly='True' Grid.Column='2' Text='{Binding Size, Mode=OneWay}' Height='28' Margin='2'/>
+    <TextBox IsReadOnly='True' Grid.Column='3' Text='{Binding Offset, Mode=OneWay}' Height='28' Margin='2'/>
+    <TextBox IsReadOnly='True' Grid.Column='4' Text='{Binding BitOffset, Mode=OneWay}' Height='28' Margin='2'/>
+    <CheckBox IsEnabled='False' Grid.Column='5' IsChecked='{Binding Nullable, Mode=OneWay}' HorizontalAlignment='Center' VerticalAlignment='Center'/>
+    <TextBox IsReadOnly='True' Grid.Column='6' Text='{Binding Description, Mode=OneWay}' Height='28' Margin='2' TextWrapping='Wrap'/>
   </Grid>
 </DataTemplate>";
 

@@ -17,15 +17,9 @@ public partial class CompareWindow : Window
     private readonly Func<CompareDifference, bool>? _isTransferAuthorized;
     private readonly bool _canUseOnline;
     private readonly bool _canRequestWrite;
-    private readonly bool _canShowMode2;
-    private readonly bool _canShowMode3;
-    private readonly bool _canShowGraph;
-    private readonly bool _canShowRelations;
-    private readonly bool _canShowFields;
     private readonly List<CompareDifference> _graphDifferences = new();
     private readonly List<CompareDifference> _relationDifferences = new();
     private readonly List<CompareDifference> _fieldDifferences = new();
-    private readonly List<CompareDifference> _settingsDifferences = new();
     private readonly List<CompareDifference> _objectDifferences = new();
     private CompareSource? _sourceA;
     private CompareSource? _sourceB;
@@ -68,11 +62,6 @@ public partial class CompareWindow : Window
         _isTransferAuthorized = isTransferAuthorized;
         _canUseOnline = canUseOnline && _onlineDatabases.Length > 0 && resolveConnectionString is not null;
         _canRequestWrite = canRequestWrite;
-        _canShowMode2 = canShowMode2;
-        _canShowMode3 = canShowMode3;
-        _canShowGraph = canShowGraph;
-        _canShowRelations = canShowRelations;
-        _canShowFields = canShowFields;
 
         ScenarioBox.ItemsSource = _canUseOnline
             ? new[] { new ScenarioChoice("Онлайн и офлайн", true), new ScenarioChoice("Офлайн и офлайн", false) }
@@ -92,13 +81,13 @@ public partial class CompareWindow : Window
         OnlineDatabaseA.SelectedItem = _selectedOnlineDatabase;
         OnlineDatabaseB.SelectedItem = _selectedOnlineDatabase;
 
-        ArchitectureTab.Visibility = _canShowMode2 && (_canShowGraph || _canShowRelations || _canShowFields)
-            ? Visibility.Visible : Visibility.Collapsed;
-        ObjectsTab.Visibility = _canShowMode3 ? Visibility.Visible : Visibility.Collapsed;
-        GraphTab.Visibility = _canShowGraph ? Visibility.Visible : Visibility.Collapsed;
-        RelationsTab.Visibility = _canShowRelations ? Visibility.Visible : Visibility.Collapsed;
-        FieldsTab.Visibility = _canShowFields ? Visibility.Visible : Visibility.Collapsed;
-        SettingsTab.Visibility = Visibility.Collapsed;
+        var sections = new List<ComparisonSection>();
+        if (canShowMode3) sections.Add(new("Объекты и данные", _objectDifferences));
+        if (canShowMode2 && canShowGraph) sections.Add(new("Граф и таблицы", _graphDifferences));
+        if (canShowMode2 && canShowRelations) sections.Add(new("Связи", _relationDifferences));
+        if (canShowMode2 && canShowFields) sections.Add(new("Классы и поля", _fieldDifferences));
+        SectionBox.ItemsSource = sections;
+        SectionBox.SelectedIndex = 0;
 
         _isInitializing = false;
         RefreshScenarioControls();
@@ -362,7 +351,6 @@ public partial class CompareWindow : Window
         _graphDifferences.Clear();
         _relationDifferences.Clear();
         _fieldDifferences.Clear();
-        _settingsDifferences.Clear();
         _objectDifferences.Clear();
         _graphDifferences.AddRange(SelectArchitecture(result.Architecture,
             "Tables", "Таблицы", "table", "таблиц", "physical metadata", "физическ"));
@@ -370,15 +358,17 @@ public partial class CompareWindow : Window
             "Relations", "Связи", "relation", "связ"));
         _fieldDifferences.AddRange(SelectArchitecture(result.Architecture,
             "Classes", "Классы", "class", "класс"));
-        _settingsDifferences.AddRange(result.Architecture.Where(item =>
-            item.MetadataKind is CompareMetadataKind.ProjectTextList or CompareMetadataKind.ThemePreset ||
-            item.Title.Contains("проектные текстовые списки", StringComparison.OrdinalIgnoreCase)));
         _objectDifferences.AddRange(result.Objects);
         _resultIsStale = false;
-        RefreshTransferAvailability();
-        RefreshRows();
-        GraphGrid.SelectedItem = RelationsGrid.SelectedItem = FieldsGrid.SelectedItem = SettingsGrid.SelectedItem = ObjectsGrid.SelectedItem = null;
-        ClearDetails();
+        SetSourceHeader(HeaderA, "A", _sourceA!);
+        SetSourceHeader(HeaderB, "B", _sourceB!);
+    }
+
+    private static void SetSourceHeader(TextBlock header, string side, CompareSource source)
+    {
+        string name = source.PackagePath is string path ? Path.GetFileName(path) : source.Workspace.DisplayName;
+        header.Text = $"{side} · {name}";
+        header.ToolTip = source.PackagePath ?? source.Workspace.DisplayName;
     }
 
     private static IEnumerable<CompareDifference> SelectArchitecture(
@@ -403,11 +393,7 @@ public partial class CompareWindow : Window
         title.Equals(russianName, StringComparison.OrdinalIgnoreCase);
 
     private bool HasVisibleDifferences() =>
-        (GraphTab.Visibility == Visibility.Visible && _graphDifferences.Any(IsDifference)) ||
-        (RelationsTab.Visibility == Visibility.Visible && _relationDifferences.Any(IsDifference)) ||
-        (FieldsTab.Visibility == Visibility.Visible && _fieldDifferences.Any(IsDifference)) ||
-        (SettingsTab.Visibility == Visibility.Visible && _settingsDifferences.Any(IsDifference)) ||
-        (ObjectsTab.Visibility == Visibility.Visible && _objectDifferences.Any(IsDifference));
+        SectionBox.Items.Cast<ComparisonSection>().Any(section => section.Rows.Any(IsDifference));
 
     private static bool IsDifference(CompareDifference difference) => difference.Status != CompareStatus.Equal;
 
@@ -417,21 +403,22 @@ public partial class CompareWindow : Window
         _graphDifferences.Clear();
         _relationDifferences.Clear();
         _fieldDifferences.Clear();
-        _settingsDifferences.Clear();
         _objectDifferences.Clear();
-        GraphGrid.ItemsSource = RelationsGrid.ItemsSource = FieldsGrid.ItemsSource = SettingsGrid.ItemsSource = ObjectsGrid.ItemsSource = null;
+        LeftGrid.ItemsSource = null;
+        HeaderA.Text = "A · Проект";
+        HeaderB.Text = "B · Проект";
+        HeaderA.ToolTip = HeaderB.ToolTip = null;
         ClearDetails();
     }
 
     private void RefreshRows()
     {
-        GraphGrid.ItemsSource = FilterRows(_graphDifferences);
-        RelationsGrid.ItemsSource = FilterRows(_relationDifferences);
-        FieldsGrid.ItemsSource = FilterRows(_fieldDifferences);
-        SettingsGrid.ItemsSource = FilterRows(_settingsDifferences);
-        var objects = new System.Windows.Data.ListCollectionView(FilterRows(_objectDifferences));
-        objects.GroupDescriptions.Add(new System.Windows.Data.PropertyGroupDescription(nameof(CompareRow.Group)));
-        ObjectsGrid.ItemsSource = objects;
+        if (_isInitializing || SectionBox.SelectedItem is not ComparisonSection section) return;
+        ClearDetails();
+        var view = new System.Windows.Data.ListCollectionView(FilterRows(section.Rows));
+        if (section.Rows == _objectDifferences)
+            view.GroupDescriptions.Add(new System.Windows.Data.PropertyGroupDescription(nameof(CompareRow.Group)));
+        LeftGrid.ItemsSource = view;
     }
 
     private List<CompareRow> FilterRows(IEnumerable<CompareDifference> differences)
@@ -550,7 +537,11 @@ public partial class CompareWindow : Window
 
     private void DifferenceGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (sender is not DataGrid grid || grid.SelectedItem is not CompareRow row) return;
+        if (LeftGrid.SelectedItem is not CompareRow row)
+        {
+            ClearDetails();
+            return;
+        }
         string title = string.IsNullOrWhiteSpace(row.ObjectIdentity) ||
             row.Difference.Title.StartsWith(row.ObjectIdentity, StringComparison.OrdinalIgnoreCase)
             ? row.Difference.Title
@@ -589,14 +580,47 @@ public partial class CompareWindow : Window
 
     private void FilterBox_SelectionChanged(object sender, SelectionChangedEventArgs e) => RefreshRows();
 
-    private void CompareTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void SectionBox_SelectionChanged(object sender, SelectionChangedEventArgs e) => RefreshRows();
+
+    private void SideGrid_Loaded(object sender, RoutedEventArgs e)
     {
-        if (ReferenceEquals(e.OriginalSource, sender)) RefreshRows();
+        var grid = (DataGrid)sender;
+        if (grid.Template.FindName("DG_ScrollViewer", grid) is not ScrollViewer viewer ||
+            viewer.Template.FindName("PART_ScrollContentPresenter", viewer) is not ScrollContentPresenter viewport) return;
+        // Grouped WPF rows can retain their previous extent after the window shrinks.
+        // Size the columns to the visible area, excluding the vertical scrollbar.
+        viewport.SizeChanged -= SideViewport_SizeChanged;
+        viewport.SizeChanged += SideViewport_SizeChanged;
+        FitColumns(grid, viewport.ActualWidth);
     }
 
-    private void ArchitectureSections_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void SideViewport_SizeChanged(object sender, SizeChangedEventArgs e)
     {
-        if (ReferenceEquals(e.OriginalSource, sender)) RefreshRows();
+        if (e.WidthChanged && VisualTreeHelper.FindParent<DataGrid>((ScrollContentPresenter)sender) is { } grid)
+            FitColumns(grid, e.NewSize.Width);
+    }
+
+    private static void FitColumns(DataGrid grid, double width)
+    {
+        if (width <= 0) return;
+        double dataWidth = Math.Floor(width / (grid.Columns.Count == 2 ? 2 : 2.5));
+        grid.Columns[0].Width = dataWidth;
+        grid.Columns[1].Width = grid.Columns.Count == 2 ? width - dataWidth : dataWidth;
+        if (grid.Columns.Count == 3) grid.Columns[2].Width = width - 2 * dataWidth;
+    }
+
+    private void SideGrid_ScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        if (e.VerticalChange == 0 || e.OriginalSource is not ScrollViewer origin) return;
+        var other = sender == LeftGrid ? RightGrid : LeftGrid;
+        if (other?.Template.FindName("DG_ScrollViewer", other) is ScrollViewer peer &&
+            Math.Abs(peer.VerticalOffset - origin.VerticalOffset) > 0.01)
+            peer.ScrollToVerticalOffset(origin.VerticalOffset);
+    }
+
+    private sealed record ComparisonSection(string Label, List<CompareDifference> Rows)
+    {
+        public override string ToString() => Label;
     }
 
     private async void TransferAtoB_Click(object sender, RoutedEventArgs e) => await RunTransferAsync(sender, aToB: true);
@@ -604,7 +628,7 @@ public partial class CompareWindow : Window
 
     private async Task RunTransferAsync(object sender, bool aToB)
     {
-        if (_resultIsStale || _isBusy || _isApplying || _closed || _applyTransferAsync is null || _sourceA is null || _sourceB is null ||
+        if (_resultIsStale || _isBusy || _isApplying || _closed || _sourceA is null || _sourceB is null ||
             sender is not FrameworkElement { DataContext: CompareRow row })
             return;
 
@@ -622,6 +646,7 @@ public partial class CompareWindow : Window
             return;
         }
 
+        if (_applyTransferAsync is null) return;
         var preview = CompareTransferPreview.Evaluate(_sourceA, _sourceB, row.Difference, aToB);
         if (!preview.IsAllowed)
         {
@@ -629,22 +654,14 @@ public partial class CompareWindow : Window
             SessionTestLog.Trace("ПЕРЕНОС", $"{(aToB ? "A → B" : "B → A")} · {ProgressText.Text}");
             return;
         }
-        if (MessageBox.Show(this, preview.Description, "Подтвердите перенос", MessageBoxButton.YesNo,
-                MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes)
-            return;
+        var editor = new CompareWriteWindow(preview) { Owner = this };
+        if (editor.ShowDialog() != true) return;
+        preview = editor.Preview;
 
         if (_closed || _isBusy || _isApplying || _isTransferAuthorized?.Invoke(row.Difference) != true)
         {
             ProgressText.Text = "Разрешение изменилось. Запустите сравнение и проверьте доступ ещё раз.";
             MarkResultStale("Результат устарел после изменения разрешений.");
-            return;
-        }
-
-        preview = CompareTransferPreview.Evaluate(_sourceA, _sourceB, row.Difference, aToB);
-        if (!preview.IsAllowed)
-        {
-            ProgressText.Text = preview.BlockReason ?? "Целевое состояние изменилось. Запустите сравнение ещё раз.";
-            MarkResultStale("Результат устарел. Запустите сравнение ещё раз.");
             return;
         }
 
@@ -685,30 +702,32 @@ public partial class CompareWindow : Window
     private async Task RunMetadataTransferAsync(CompareRow row, bool aToB)
     {
         if (_sourceA is null || _sourceB is null || _applyMetadataTransferAsync is null) return;
-        var preview = await CompareMetadataTransferPreview.EvaluateAsync(_sourceA, _sourceB, row.Difference, aToB, CancellationToken.None);
-        if (!preview.IsAllowed) { ProgressText.Text = preview.BlockReason ?? "Перенос недоступен."; return; }
-        if (MessageBox.Show(this, preview.Description, "Подтвердите перенос", MessageBoxButton.YesNo,
-                MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes) return;
-        if (_closed || _isBusy || _isApplying || _isTransferAuthorized?.Invoke(row.Difference) != true)
-        {
-            ProgressText.Text = "Разрешение изменилось. Запустите сравнение ещё раз.";
-            MarkResultStale("Результат устарел после изменения разрешений.");
-            return;
-        }
-        preview = await CompareMetadataTransferPreview.EvaluateAsync(_sourceA, _sourceB, row.Difference, aToB, CancellationToken.None);
-        if (!preview.IsAllowed) { MarkResultStale(preview.BlockReason ?? "Настройки изменились. Запустите сравнение ещё раз."); return; }
+        bool applied = false;
         SetApplying(true);
-        RefreshTransferAvailability();
         try
         {
+            var preview = await CompareMetadataTransferPreview.EvaluateAsync(_sourceA, _sourceB, row.Difference, aToB);
+            if (!preview.IsAllowed) { MarkResultStale(preview.BlockReason ?? "Перенос недоступен."); return; }
+            if (_closeAfterTransfer) return;
+            var direction = aToB ? "A → B" : "B → A";
+            string message = $"{preview.Description}\n\nСейчас в цели\n{(aToB ? row.B : row.A)}\n\nИз источника\n{(aToB ? row.A : row.B)}";
+            if (MessageBox.Show(this, message, $"Записать изменения · {direction}", MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes) return;
+            if (_closeAfterTransfer || _isTransferAuthorized?.Invoke(row.Difference) != true) return;
             await _applyMetadataTransferAsync(preview, CancellationToken.None);
-            MarkResultStale("Настройки изменены. Запустите сравнение ещё раз.");
+            applied = true;
         }
         catch (CompareTransferException ex) { MarkResultStale($"{ex.Message} Результат устарел. Запустите сравнение ещё раз."); }
         catch (IOException) { MarkResultStale("Не удалось записать настройки. Результат устарел; проверьте проект и запустите сравнение ещё раз."); }
         catch (UnauthorizedAccessException) { MarkResultStale("Нет доступа для записи. Результат устарел; проверьте права и запустите сравнение ещё раз."); }
         catch { MarkResultStale("Перенос не завершён. Проверьте целевой источник и запустите сравнение ещё раз."); }
-        finally { SetApplying(false); if (_closeAfterTransfer) Close(); else RefreshTransferAvailability(); }
+        finally
+        {
+            SetApplying(false);
+            if (_closeAfterTransfer) Close();
+            else if (applied) CompareButton_Click(CompareButton, new RoutedEventArgs());
+            else RefreshTransferAvailability();
+        }
     }
 
     private void MarkResultStale(string message)
@@ -791,12 +810,6 @@ public partial class CompareWindow : Window
         public bool CanTransferBtoA { get; private set; }
         public string TransferAtoBReason { get; private set; } = string.Empty;
         public string TransferBtoAReason { get; private set; } = string.Empty;
-        public string TransferAtoBAccessibilityName => $"Перенести {TransferItemName} из проекта A в проект B";
-        public string TransferBtoAAccessibilityName => $"Перенести {TransferItemName} из проекта B в проект A";
-        private string TransferItemName => string.IsNullOrWhiteSpace(ObjectIdentity)
-            ? Difference.Title
-            : $"{ObjectIdentity} · {Difference.Title}";
-
         public void SetTransfer(bool canAtoB, string reasonAtoB, bool canBtoA, string reasonBtoA)
         {
             CanTransferAtoB = canAtoB;

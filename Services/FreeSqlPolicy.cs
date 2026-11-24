@@ -16,6 +16,9 @@ public static class FreeSqlPolicy
     public static void Validate(string sql) => ValidateAndGetReturnsRows(sql);
 
     public static bool ValidateAndGetReturnsRows(string sql)
+        => Analyze(sql).Table == null;
+
+    internal static (string Schema, string Table) Analyze(string sql)
     {
         if (string.IsNullOrWhiteSpace(sql))
             throw new InvalidOperationException("SQL-запрос пуст.");
@@ -61,7 +64,22 @@ public static class FreeSqlPolicy
         if (visitor.Error != null)
             throw new InvalidOperationException(visitor.Error);
 
-        return statements[0] is SelectStatement;
+        DataModificationSpecification modification = statements[0] switch
+        {
+            InsertStatement insert => insert.InsertSpecification,
+            UpdateStatement update => update.UpdateSpecification,
+            DeleteStatement delete => delete.DeleteSpecification,
+            _ => null
+        };
+        if (modification == null) return (null, null);
+        if (modification.Target is not NamedTableReference target ||
+            target.SchemaObject.Identifiers.Count != 2 || modification.OutputIntoClause != null ||
+            modification is UpdateDeleteSpecificationBase { FromClause: not null })
+            throw new InvalidOperationException("Для записи укажите одну таблицу в виде схема.таблица без косвенных целей.");
+        string schema = target.SchemaObject.SchemaIdentifier.Value;
+        string table = target.SchemaObject.BaseIdentifier.Value;
+        Configurator.Core.Projects.ProjectWriteGuard.EnsureDataTableWritable(schema + "." + table);
+        return (schema, table);
     }
 
     private static string FindBoundaryViolation(TSqlFragment fragment, HashSet<TSqlFragment> visited)
@@ -110,6 +128,12 @@ public static class FreeSqlPolicy
     private sealed class BoundaryVisitor : TSqlFragmentVisitor
     {
         public string Error { get; private set; }
+
+        public override void ExplicitVisit(DataModificationTableReference node) =>
+            Error ??= "Вложенное изменение данных запрещено.";
+
+        public override void ExplicitVisit(NextValueForExpression node) =>
+            Error ??= "Изменение счётчика последовательности в свободном SQL запрещено.";
 
         public override void ExplicitVisit(NamedTableReference node)
         {

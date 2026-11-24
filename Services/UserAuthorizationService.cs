@@ -28,181 +28,134 @@ public static class UserAuthorizationService
     public static event EventHandler Changed;
 
     public static bool NeedsInitialSetup { get; private set; }
-    private static bool _isNewInstallation;
+    private static readonly string[] EngineerNames = { "Инженер" };
     public static bool HasAdministratorAccount => _document?.Users?.Any(u => u.UserName.Equals("admin", StringComparison.OrdinalIgnoreCase)) == true;
 
     public static void Initialize()
     {
         lock (Sync)
         {
-            Directory.CreateDirectory(DirectoryPath);
-            bool storeExists = File.Exists(FilePath);
-            _isNewInstallation = !storeExists;
-            if (storeExists)
-            {
-                try
-                {
-                    _document = DeserializeDocument(File.ReadAllText(FilePath));
-                    if (_document == null || _document.Users == null || _document.Roles == null)
-                        throw new InvalidDataException("Хранилище пользователей не содержит обязательные разделы.");
-                }
-                catch (Exception ex)
-                {
-                    _document = null;
-                    throw new InvalidDataException($"Не удалось прочитать хранилище учётных записей '{FilePath}'. Оно не было перезаписано. Восстановите файл из резервной копии или обратитесь к администратору.", ex);
-                }
-            }
-            else
-            {
-                _document = new UserStoreDocument();
-            }
-
-            int loadedSchemaVersion = _document.SchemaVersion;
-            _document.Users ??= new List<UserAccount>();
-            _document.Roles ??= new List<RoleDefinition>();
-            foreach (var role in _document.Roles)
-            {
-                if (role == null || string.IsNullOrWhiteSpace(role.Name))
-                    throw new InvalidDataException("Хранилище пользователей содержит роль без имени. Файл не был перезаписан.");
-                role.Permissions ??= new List<string>();
-            }
-            if (_document.Users.Any(u => u == null || string.IsNullOrWhiteSpace(u.UserName)))
-                throw new InvalidDataException("Хранилище пользователей содержит некорректную учётную запись. Файл не был перезаписан.");
-
-            if (!_document.Roles.Any(r => r.Name.Equals("Администратор", StringComparison.OrdinalIgnoreCase)))
-                _document.Roles.Add(new RoleDefinition { Name = "Администратор", Description = "Полный доступ, включая управление пользователями", BuiltIn = true, Permissions = Enum.GetValues<Permission>().Select(x => x.ToString()).ToList() });
-            if (!_document.Roles.Any(r => r.Name.Equals("Проектировщик", StringComparison.OrdinalIgnoreCase)))
-            {
-                var engineerPermissions = Enum.GetValues<Permission>()
-                    .Where(p => p is not (Permission.Mode1Add or Permission.Mode1Edit or Permission.Mode1Delete or Permission.AddData or Permission.EditData or Permission.DeleteData or Permission.ManageUsers or Permission.RestoreJournal or Permission.FreeSql))
-                    .Select(x => x.ToString()).ToList();
-                _document.Roles.Add(new RoleDefinition { Name = "Проектировщик", Description = "Просмотр и управление объектной структурой; права на изменение экземпляров назначаются отдельно", BuiltIn = true, Permissions = engineerPermissions });
-            }
-            // The commissioning engineer is intended to operate Mode 3 fully.
-            // Keep elevated user administration, unrestricted SQL and journal restore separate.
-            bool commissioningRoleNeedsSave = false;
-            if (!_document.Roles.Any(r => r.Name.Equals("Инженер ПНР", StringComparison.OrdinalIgnoreCase)))
-            {
-                commissioningRoleNeedsSave = true;
-                var commissioningPermissions = new[]
-                {
-                    Permission.Mode3Show, Permission.Mode3View, Permission.Mode3Manage,
-                    Permission.Mode4Show, Permission.Mode4View, Permission.Mode4Manage,
-                    Permission.ManageObjects, Permission.ViewData, Permission.AddData,
-                    Permission.EditData, Permission.DeleteData
-                }.Select(x => x.ToString()).ToList();
-                _document.Roles.Add(new RoleDefinition
-                {
-                    Name = "Инженер ПНР",
-                    Description = "Полная работа с объектами в режиме 3: создание, просмотр, изменение, дублирование и удаление",
-                    BuiltIn = true,
-                    Permissions = commissioningPermissions
-                });
-            }
-
-            var commissioningRole = _document.Roles.First(r => r.Name.Equals("Инженер ПНР", StringComparison.OrdinalIgnoreCase));
-            commissioningRoleNeedsSave |= EnsureCommissioningRolePermissions(commissioningRole);
-
-            if (!_document.Users.Any(u => u.UserName.Equals("Инженер-ПНР", StringComparison.OrdinalIgnoreCase)))
-            {
-                _document.Users.Add(new UserAccount
-                {
-                    UserName = "Инженер-ПНР",
-                    DisplayName = "Инженер",
-                    RoleName = "Инженер ПНР",
-                    Enabled = false
-                });
-                commissioningRoleNeedsSave = true;
-            }
-
-            var administratorRole = _document.Roles.First(r => r.Name.Equals("Администратор", StringComparison.OrdinalIgnoreCase));
-            administratorRole.BuiltIn = true;
-            var designerRole = _document.Roles.First(r => r.Name.Equals("Проектировщик", StringComparison.OrdinalIgnoreCase));
-            designerRole.BuiltIn = true;
-            // Keep existing customized permissions intact, but ensure the two explicitly
-            // required capabilities are present even in older user stores that already
-            // contain a Project Designer role with an incomplete permission list.
-            foreach (var requiredPermission in new[] { Permission.Mode1Show, Permission.Mode1View, Permission.ManageDatabases })
-                if (!designerRole.Permissions.Contains(requiredPermission.ToString(), StringComparer.OrdinalIgnoreCase))
-                    designerRole.Permissions.Add(requiredPermission.ToString());
-
-            // One-time schema migration: keep instance edit/delete permissions separate from object-structure management.
-            // Do not add EditData/DeleteData to the built-in designer role.
-            if (_document.SchemaVersion < 4)
-            {
-                designerRole.Permissions.RemoveAll(x => string.Equals(x, Permission.AddData.ToString(), StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(x, Permission.EditData.ToString(), StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(x, Permission.DeleteData.ToString(), StringComparison.OrdinalIgnoreCase));
-                _document.SchemaVersion = 4;
-            }
-
-            // Never manufacture a known-password administrator or silently repair a missing password.
-            var admin = _document.Users.FirstOrDefault(u => u.UserName.Equals("admin", StringComparison.OrdinalIgnoreCase));
-            if (storeExists && admin == null)
-                throw new InvalidDataException("В существующем хранилище отсутствует учётная запись администратора. Файл не перезаписан; восстановите резервную копию users.json.");
-            if (admin != null && !HasValidCredentialEncoding(admin))
-                throw new InvalidDataException("Данные пароля административной учётной записи повреждены. Файл не перезаписан; восстановите резервную копию users.json.");
-            NeedsInitialSetup = admin == null || !admin.Enabled || IsDefaultAdminPassword(admin);
-            if (admin != null)
-            {
-                // Preserve the stored enabled state. Initialization must never silently reactivate
-                // a disabled administrator account. Its explicit recovery path is described in docs.
-                admin.DisplayName = "Администратор";
-                admin.RoleName = "Администратор";
-            }
-
-            // Compatibility migration: preserve the visibility of modes for existing roles.
-            // New visibility rights remain independent from view/edit permissions after migration.
-            if (loadedSchemaVersion < 5)
-            foreach (var role in _document.Roles)
-            {
-                bool hasMode1Visibility = role.Permissions.Contains(nameof(Permission.Mode1Show), StringComparer.OrdinalIgnoreCase);
-                bool hasMode2Visibility = role.Permissions.Contains(nameof(Permission.Mode2Show), StringComparer.OrdinalIgnoreCase);
-                bool hadMode1Access = role.Permissions.Any(x => x.Equals(nameof(Permission.Mode1View), StringComparison.OrdinalIgnoreCase)
-                    || x.Equals(nameof(Permission.Mode1Add), StringComparison.OrdinalIgnoreCase)
-                    || x.Equals(nameof(Permission.Mode1Edit), StringComparison.OrdinalIgnoreCase)
-                    || x.Equals(nameof(Permission.Mode1Delete), StringComparison.OrdinalIgnoreCase)
-                    || x.Equals(nameof(Permission.ViewData), StringComparison.OrdinalIgnoreCase)
-                    || x.Equals(nameof(Permission.AddData), StringComparison.OrdinalIgnoreCase)
-                    || x.Equals(nameof(Permission.EditData), StringComparison.OrdinalIgnoreCase)
-                    || x.Equals(nameof(Permission.DeleteData), StringComparison.OrdinalIgnoreCase));
-                bool hadMode2Access = role.Permissions.Any(x => x.Equals(nameof(Permission.Mode2View), StringComparison.OrdinalIgnoreCase)
-                    || x.Equals(nameof(Permission.Mode2Manage), StringComparison.OrdinalIgnoreCase)
-                    || x.Equals(nameof(Permission.ManageClasses), StringComparison.OrdinalIgnoreCase)
-                    || x.Equals(nameof(Permission.ManageRelations), StringComparison.OrdinalIgnoreCase));
-                if (!hasMode1Visibility && hadMode1Access && role != commissioningRole) role.Permissions.Add(nameof(Permission.Mode1Show));
-                if (!hasMode2Visibility && hadMode2Access) role.Permissions.Add(nameof(Permission.Mode2Show));
-            }
-            // Schema 6: preserve legacy navigation without inventing data/management rights.
-            // Mode 4 is still a stub; legacy roles receive visibility only, never View/Manage.
-            if (loadedSchemaVersion < 6)
-            {
-                MigrateMode4Permissions(_document, loadedSchemaVersion);
-                _document.SchemaVersion = 6;
-            }
-            // Schema 7: make each Mode 2 submode and Mode 3 navigation explicitly visible.
-            // Preserve the previous UI for existing roles by granting the new visibility flags
-            // only during migration; subsequent user changes remain authoritative.
-            if (loadedSchemaVersion < 7)
-            {
-                foreach (var role in _document.Roles)
-                {
-                    bool hadMode2 = role.Permissions.Contains(nameof(Permission.Mode2Show), StringComparer.OrdinalIgnoreCase)
-                        || role.Permissions.Any(x => x.Equals(nameof(Permission.Mode2View), StringComparison.OrdinalIgnoreCase)
-                            || x.Equals(nameof(Permission.Mode2Manage), StringComparison.OrdinalIgnoreCase)
-                            || x.Equals(nameof(Permission.ManageClasses), StringComparison.OrdinalIgnoreCase)
-                            || x.Equals(nameof(Permission.ManageRelations), StringComparison.OrdinalIgnoreCase));
-                    if (hadMode2)
-                        foreach (var permission in new[] { nameof(Permission.Mode2GraphShow), nameof(Permission.Mode2RelationsShow), nameof(Permission.Mode2FieldsShow) })
-                            if (!role.Permissions.Contains(permission, StringComparer.OrdinalIgnoreCase)) role.Permissions.Add(permission);
-                    if (!role.Permissions.Contains(nameof(Permission.Mode3Show), StringComparer.OrdinalIgnoreCase))
-                        role.Permissions.Add(nameof(Permission.Mode3Show));
-                }
-                _document.SchemaVersion = 7;
-            }
-            _document.SchemaVersion = Math.Max(_document.SchemaVersion, 7);
-            if (!NeedsInitialSetup && (!storeExists || loadedSchemaVersion < 7 || commissioningRoleNeedsSave)) Save();
+            _document = LoadStore(FilePath, out bool needsSetup);
+            NeedsInitialSetup = needsSetup;
         }
+    }
+
+    internal static UserStoreDocument LoadStore(string filePath, out bool needsSetup)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
+        UserStoreDocument document;
+        bool storeExists = File.Exists(filePath);
+        if (storeExists)
+        {
+            try
+            {
+                document = DeserializeDocument(File.ReadAllText(filePath));
+                if (document == null || document.Users == null || document.Roles == null)
+                    throw new InvalidDataException("Хранилище пользователей не содержит обязательные разделы.");
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidDataException($"Не удалось прочитать хранилище учётных записей '{filePath}'. Оно не было перезаписано. Восстановите файл из резервной копии или обратитесь к администратору.", ex);
+            }
+        }
+        else
+        {
+            document = new UserStoreDocument
+            {
+                Users = { new UserAccount
+                {
+                    UserName = "admin", DisplayName = "Администратор", RoleName = "Администратор",
+                    PasswordHashVersion = 1, PasswordIterations = 600_000,
+                    PasswordSalt = "VbwGHwR9sLxOtK6B+wrUig==",
+                    PasswordHash = "QYx6esuZDl8WHNpEicNTVoWMkyp6y1uuCIEsHGlGT5o="
+                } }
+            };
+        }
+
+        document.Users ??= new List<UserAccount>();
+        document.Roles ??= new List<RoleDefinition>();
+        foreach (var role in document.Roles)
+        {
+            if (role == null || string.IsNullOrWhiteSpace(role.Name))
+                throw new InvalidDataException("Хранилище пользователей содержит роль без имени. Файл не был перезаписан.");
+            role.Permissions ??= new List<string>();
+        }
+        if (document.Users.Any(u => u == null || string.IsNullOrWhiteSpace(u.UserName)))
+            throw new InvalidDataException("Хранилище пользователей содержит некорректную учётную запись. Файл не был перезаписан.");
+
+        var admin = document.Users.FirstOrDefault(u => u.UserName.Equals("admin", StringComparison.OrdinalIgnoreCase));
+        if (admin == null)
+            throw new InvalidDataException("В хранилище отсутствует учётная запись администратора. Файл не перезаписан; восстановите резервную копию users.json.");
+        if (!HasValidCredentialEncoding(admin))
+            throw new InvalidDataException("Данные пароля административной учётной записи повреждены. Файл не перезаписан; восстановите резервную копию users.json.");
+        needsSetup = !admin.Enabled || IsDefaultAdminPassword(admin);
+        string beforeNormalization = JsonConvert.SerializeObject(document, Formatting.Indented);
+        NormalizeAccounts(document);
+        string normalized = JsonConvert.SerializeObject(document, Formatting.Indented);
+        if (!needsSetup && (!storeExists || beforeNormalization != normalized))
+            WriteAtomically(filePath, normalized);
+        return document;
+    }
+
+    internal static void AddEngineerProfiles(UserStoreDocument document)
+    {
+        var permissions = new[]
+        {
+            Permission.Mode1Show, Permission.Mode1View, Permission.Mode1Add, Permission.Mode1Edit, Permission.Mode1Delete,
+            Permission.Mode3Show, Permission.Mode3View, Permission.Mode3Manage,
+            Permission.Mode4Show, Permission.Mode4View, Permission.Mode4Manage,
+            Permission.ViewData, Permission.AddData, Permission.EditData, Permission.DeleteData, Permission.ManageObjects,
+            Permission.ManageTextLists, Permission.ManageDatabases, Permission.CheckTools, Permission.ExportData,
+            Permission.FreeSql, Permission.RestoreJournal
+        };
+        foreach (string name in EngineerNames)
+        {
+            var user = document.Users.FirstOrDefault(u => u.UserName.Equals(name, StringComparison.OrdinalIgnoreCase));
+            var oldRole = document.Roles.FirstOrDefault(r => r.Name.Equals(user?.RoleName, StringComparison.OrdinalIgnoreCase));
+            bool hasSharedRole = oldRole?.BuiltIn == true && (oldRole.Name == "Инженер" || oldRole.Name.StartsWith("Инженер (", StringComparison.Ordinal));
+            var role = document.Roles.FirstOrDefault(r => r.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+            if (role == null)
+            {
+                role = new RoleDefinition
+                {
+                    Name = name, BuiltIn = true,
+                    Permissions = hasSharedRole ? oldRole.Permissions.ToList() : permissions.Select(p => p.ToString()).ToList()
+                };
+                document.Roles.Add(role);
+            }
+
+            if (user == null)
+                document.Users.Add(new UserAccount { UserName = name, DisplayName = name, RoleName = role.Name, Enabled = false });
+            else if (hasSharedRole && role.BuiltIn)
+                user.RoleName = role.Name;
+        }
+    }
+
+    internal static void NormalizeAccounts(UserStoreDocument document)
+    {
+        var admin = document.Users.FirstOrDefault(u => u.UserName.Equals("admin", StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidDataException("В хранилище отсутствует учётная запись администратора; файл не изменён.");
+        var engineer = document.Users.FirstOrDefault(u => u.UserName.Equals("Инженер", StringComparison.OrdinalIgnoreCase));
+        if (engineer == null || !HasValidCredentialEncoding(engineer))
+        {
+            engineer = new UserAccount { UserName = "Инженер", PasswordHashVersion = 1, PasswordIterations = 600_000,
+                PasswordSalt = "gYKlsdbS22sKFZiRXPzjOw==",
+                PasswordHash = "0mat/x5zuoB9h0UIuaWvRJQ7tc1gj1MeWNfooOGnZpI=" };
+        }
+        engineer.DisplayName = engineer.RoleName = "Инженер";
+        engineer.Enabled = true;
+        admin.DisplayName = admin.RoleName = "Администратор";
+        var engineerPermissions = Enum.GetValues<Permission>().Where(p => p is not
+            (Permission.Mode2Show or Permission.Mode2View or Permission.Mode2Manage or Permission.Mode2GraphShow or
+             Permission.Mode2RelationsShow or Permission.Mode2FieldsShow or Permission.ManageClasses or
+             Permission.ManageRelations or Permission.ManageUsers)).Select(p => p.ToString()).ToList();
+        document.Users = new List<UserAccount> { engineer, admin };
+        document.Roles = new List<RoleDefinition>
+        {
+            new() { Name = "Инженер", BuiltIn = true, Permissions = engineerPermissions },
+            new() { Name = "Администратор", BuiltIn = true, Permissions = Enum.GetValues<Permission>().Select(p => p.ToString()).ToList() }
+        };
+        document.SchemaVersion = 10;
     }
 
     internal static UserStoreDocument DeserializeDocument(string json)
@@ -246,30 +199,17 @@ public static class UserAuthorizationService
     {
         lock (Sync)
         {
-            ValidatePassword(newAdminPassword, "Новый пароль администратора");
+            ValidateAdministratorPassword(newAdminPassword);
 
             string originalDocument = JsonConvert.SerializeObject(_document);
             bool originalNeedsSetup = NeedsInitialSetup;
             try
             {
                 var admin = _document.Users.FirstOrDefault(u => u.UserName.Equals("admin", StringComparison.OrdinalIgnoreCase));
-                if (admin != null)
-                {
-                    if (!VerifyPassword(admin, currentAdminPassword ?? ""))
-                        throw new UnauthorizedAccessException("Текущий пароль администратора не подтверждён. Учётная запись не изменена.");
-                    SetPassword(admin, newAdminPassword);
-                    admin.DisplayName = "Администратор";
-                    admin.RoleName = "Администратор";
-                    admin.Enabled = true;
-                }
-                else
-                {
-                    if (!_isNewInstallation)
-                        throw new InvalidOperationException("В существующем хранилище отсутствует учётная запись администратора. Для безопасного восстановления верните резервную копию users.json; новая административная учётная запись не создана.");
-                    admin = new UserAccount { UserName = "admin", DisplayName = "Администратор", RoleName = "Администратор", Enabled = true };
-                    SetPassword(admin, newAdminPassword);
-                    _document.Users.Add(admin);
-                }
+                if (admin == null || !VerifyPassword(admin, currentAdminPassword ?? ""))
+                    throw new UnauthorizedAccessException("Текущий пароль администратора не подтверждён.");
+                SetPassword(admin, newAdminPassword);
+                admin.Enabled = true;
 
                 _document.SchemaVersion = Math.Max(_document.SchemaVersion, 5);
                 Save();
@@ -327,12 +267,13 @@ public static class UserAuthorizationService
                 return false;
             }
 
-            bool needsRehash = user.PasswordHashVersion != CurrentHashVersion || GetIterations(user) != CurrentIterations;
+            bool needsRehash = !user.UserName.Equals("admin", StringComparison.OrdinalIgnoreCase) &&
+                (user.PasswordHashVersion != CurrentHashVersion || GetIterations(user) != CurrentIterations);
             if (needsRehash)
             {
                 string oldHash = user.PasswordHash, oldSalt = user.PasswordSalt;
                 int oldVersion = user.PasswordHashVersion, oldIterations = user.PasswordIterations;
-                SetPassword(user, password);
+                RehashVerifiedPassword(user, password);
                 try { Save(); }
                 catch
                 {
@@ -390,6 +331,13 @@ public static class UserAuthorizationService
     }
 
     private static int GetIterations(UserAccount user) => user.PasswordIterations <= 0 ? LegacyIterations : user.PasswordIterations;
+
+    internal static void ValidateAdministratorPassword(string password)
+    {
+        ValidatePassword(password, "Новый пароль администратора");
+        if (password.Length < 12)
+            throw new ArgumentException("Новый пароль администратора: используйте не менее 12 символов.");
+    }
 
     public static void ValidatePassword(string password, string fieldName = "Пароль")
     {
@@ -458,7 +406,7 @@ public static class UserAuthorizationService
 
     public static IReadOnlyList<UserAccount> Users => _document.Users.Where(u => IsBuiltInUser(u.UserName)).ToList();
     public static IReadOnlyList<RoleDefinition> Roles => _document.Roles;
-    public static bool IsBuiltInUser(string name) => string.Equals(name, "admin", StringComparison.OrdinalIgnoreCase) || IsCommissioningEngineer(name);
+    public static bool IsBuiltInUser(string name) => string.Equals(name, "admin", StringComparison.OrdinalIgnoreCase) || EngineerNames.Contains(name, StringComparer.OrdinalIgnoreCase);
     internal static bool IsCommissioningEngineer(string name) => string.Equals(name, "Инженер-ПНР", StringComparison.OrdinalIgnoreCase);
 
     internal static bool EnsureCommissioningRolePermissions(RoleDefinition role)
@@ -491,7 +439,8 @@ public static class UserAuthorizationService
             ?? throw new InvalidOperationException("Пользователь не найден.");
 
         bool isAdmin = user.UserName.Equals("admin", StringComparison.OrdinalIgnoreCase);
-        string requestedRole = isAdmin ? "Администратор" : (role ?? "Проектировщик").Trim();
+        string requestedRole = isAdmin ? "Администратор" : "Инженер";
+        if (!enabled) throw new InvalidOperationException("Системную учётную запись нельзя отключить.");
         if (!_document.Roles.Any(r => r.Name.Equals(requestedRole, StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException("Выбранная роль не существует. Обновите список ролей и повторите попытку.");
         if (!isAdmin && requestedRole.Equals("Администратор", StringComparison.OrdinalIgnoreCase))
@@ -501,8 +450,12 @@ public static class UserAuthorizationService
         EnsureAdministratorRemainsEnabled(isAdmin, enabled);
         if (!wasEnabled && enabled && string.IsNullOrEmpty(newPassword))
             throw new InvalidOperationException("Перед включением пользователя задайте новый пароль.");
-        if (!string.IsNullOrEmpty(newPassword)) ValidatePassword(newPassword);
-        if (string.IsNullOrEmpty(newPassword) && (string.IsNullOrWhiteSpace(user.PasswordSalt) || string.IsNullOrWhiteSpace(user.PasswordHash)))
+        if (!string.IsNullOrEmpty(newPassword))
+        {
+            if (isAdmin) ValidateAdministratorPassword(newPassword);
+            else ValidatePassword(newPassword);
+        }
+        if (enabled && string.IsNullOrEmpty(newPassword) && (string.IsNullOrWhiteSpace(user.PasswordSalt) || string.IsNullOrWhiteSpace(user.PasswordHash)))
             throw new InvalidOperationException("Для учётной записи необходимо задать пароль перед включением.");
 
         user.DisplayName = isAdmin ? "Администратор" : (string.IsNullOrWhiteSpace(displayName) ? user.UserName : displayName.Trim());
@@ -527,6 +480,12 @@ public static class UserAuthorizationService
     internal static void SetPassword(UserAccount user, string password)
     {
         ValidatePassword(password);
+        RehashVerifiedPassword(user, password);
+    }
+
+    // This path is only used after verification: legacy credentials may predate the current policy.
+    internal static void RehashVerifiedPassword(UserAccount user, string password)
+    {
         var salt = RandomNumberGenerator.GetBytes(SaltSize);
         byte[] hash = Rfc2898DeriveBytes.Pbkdf2(Encoding.UTF8.GetBytes(password), salt, CurrentIterations, HashAlgorithmName.SHA256, HashSize);
         user.PasswordSalt = Convert.ToBase64String(salt);
@@ -557,46 +516,7 @@ public static class UserAuthorizationService
     public static void SaveRole(string originalName, string name, string description, IEnumerable<Permission> permissions)
     {
         RequireAdministrativeSession();
-        string beforeMutation = JsonConvert.SerializeObject(_document);
-        string sessionUserName = CurrentUser?.UserName;
-        name = (name ?? "").Trim();
-        if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("Укажите название роли.");
-        var selectedPermissions = (permissions ?? Enumerable.Empty<Permission>()).Select(x => x.ToString()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        var role = string.IsNullOrWhiteSpace(originalName)
-            ? null
-            : _document.Roles.FirstOrDefault(r => r.Name.Equals(originalName, StringComparison.OrdinalIgnoreCase));
-
-        if (role == null && !string.IsNullOrWhiteSpace(originalName))
-            throw new InvalidOperationException("Роль не найдена. Обновите список и повторите попытку.");
-        if (_document.Roles.Any(r => !ReferenceEquals(r, role) && r.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
-            throw new InvalidOperationException("Роль с таким названием уже существует.");
-
-        if (role != null && role.BuiltIn && !role.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("Название системной роли нельзя менять, но её права можно настраивать.");
-        if (name.Equals("Администратор", StringComparison.OrdinalIgnoreCase) && (role == null || !role.BuiltIn))
-            throw new InvalidOperationException("Название «Администратор» зарезервировано для системной роли.");
-
-        if (role == null)
-        {
-            role = new RoleDefinition { Name = name, BuiltIn = false };
-            _document.Roles.Add(role);
-        }
-        else if (!role.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
-        {
-            string oldName = role.Name;
-            foreach (var user in _document.Users.Where(u => u.RoleName.Equals(oldName, StringComparison.OrdinalIgnoreCase)))
-                user.RoleName = name;
-        }
-        role.Name = name;
-        role.Description = description ?? "";
-        role.Permissions = selectedPermissions;
-        try { Save(); }
-        catch
-        {
-            RestoreDocumentAfterFailedMutation(beforeMutation, sessionUserName);
-            throw;
-        }
-        Changed?.Invoke(null, EventArgs.Empty);
+        throw new InvalidOperationException("Права системных ролей фиксированы.");
     }
 
     public static void DeleteRole(string name)
@@ -606,7 +526,7 @@ public static class UserAuthorizationService
         string sessionUserName = CurrentUser?.UserName;
         var role = _document.Roles.FirstOrDefault(r => r.Name.Equals(name ?? "", StringComparison.OrdinalIgnoreCase));
         if (role == null) return;
-        if (role.BuiltIn) throw new InvalidOperationException("Системные роли «Администратор» и «Проектировщик» нельзя удалить.");
+        if (role.BuiltIn) throw new InvalidOperationException("Системные роли «Администратор» и «Инженер» нельзя удалить.");
         if (_document.Users.Any(u => u.RoleName.Equals(role.Name, StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException("Эта роль назначена пользователю. Сначала назначьте ему другую роль.");
         _document.Roles.Remove(role);
@@ -633,6 +553,7 @@ public static class UserAuthorizationService
     /// <summary>Exports the complete user/role store, including password hashes required for account portability.</summary>
     public static void ExportSettings(string destinationPath)
     {
+        RequireAdministrativeSession();
         if (string.IsNullOrWhiteSpace(destinationPath)) throw new ArgumentException("Не указан путь для экспорта.", nameof(destinationPath));
         lock (Sync)
         {
@@ -659,6 +580,7 @@ public static class UserAuthorizationService
     /// <summary>Validates a complete portable user store and replaces the current store transactionally.</summary>
     public static string ImportSettings(string sourcePath)
     {
+        RequireAdministrativeSession();
         if (string.IsNullOrWhiteSpace(sourcePath)) throw new ArgumentException("Не указан файл для импорта.", nameof(sourcePath));
         lock (Sync)
         {
@@ -668,7 +590,10 @@ public static class UserAuthorizationService
             catch (Exception ex) { throw new InvalidDataException("Файл настроек пользователей повреждён или имеет неподдерживаемый формат. Текущие настройки не изменены.", ex); }
 
             ValidateImportedDocument(imported);
-            imported.SchemaVersion = Math.Max(imported.SchemaVersion, 7);
+            var existingAdmin = _document.Users.First(u => u.UserName.Equals("admin", StringComparison.OrdinalIgnoreCase));
+            imported.Users.RemoveAll(u => u.UserName.Equals("admin", StringComparison.OrdinalIgnoreCase));
+            imported.Users.Add(existingAdmin);
+            NormalizeAccounts(imported);
             string json = JsonConvert.SerializeObject(imported, Formatting.Indented);
             string backupPath = null;
             if (File.Exists(FilePath))
@@ -680,7 +605,6 @@ public static class UserAuthorizationService
             // Persist first. The in-memory authorization state is swapped only after the file write succeeds.
             WriteAtomically(FilePath, json);
             _document = imported;
-            _isNewInstallation = false;
             NeedsInitialSetup = false;
             var previousUserName = CurrentUser?.UserName;
             CurrentUser = string.IsNullOrWhiteSpace(previousUserName)
@@ -708,7 +632,8 @@ public static class UserAuthorizationService
         {
             if (!roleNames.Contains(user.RoleName))
                 throw new InvalidDataException($"Для пользователя '{user.UserName}' не найдена роль '{user.RoleName}'. Текущие настройки не изменены.");
-            if (!HasValidCredentialEncoding(user))
+            bool awaitingPassword = !user.Enabled && string.IsNullOrEmpty(user.PasswordSalt) && string.IsNullOrEmpty(user.PasswordHash);
+            if (!awaitingPassword && !HasValidCredentialEncoding(user))
                 throw new InvalidDataException($"Данные пароля пользователя '{user.UserName}' имеют неверный формат. Текущие настройки не изменены.");
         }
 

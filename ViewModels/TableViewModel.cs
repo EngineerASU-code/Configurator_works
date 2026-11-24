@@ -1,4 +1,4 @@
-﻿using System.Data;
+using System.Data;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -9,6 +9,8 @@ namespace Configurator
     public partial class TableViewModel
     {
         private readonly DatabaseService _db;
+        private readonly Func<string, CancellationToken, Task<List<ColumnInfo>>> _loadColumns;
+        private readonly Func<string, CancellationToken, Task<List<string>>> _loadKeys;
 
         public string CurrentTable { get; private set; } = "";
         public List<ColumnInfo> Columns { get; private set; }
@@ -16,8 +18,6 @@ namespace Configurator
         public string KeyColumn => KeyColumns.Count > 0 ? KeyColumns[0] : "";
         public bool UsesValueIdentity { get; private set; }
         public bool HasValidKey => KeyColumns.Count > 0 || UsesValueIdentity;
-        private bool HasApplicableFilter => Filter?.IsActive == true &&
-            Columns?.Any(c => c.Name.Equals(Filter.Column, StringComparison.OrdinalIgnoreCase)) == true;
         public bool CanDuplicateCurrentRow => KeyColumns.Count > 0 || Columns?.Any(c =>
             c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase) &&
             !c.IsIdentity && !c.IsReadOnly && IsNumericRecordType(c.DataType)) == true;
@@ -25,7 +25,16 @@ namespace Configurator
         public int CurrentPage { get; set; } = 1;
         public int PageSize { get; } = 100;
         public int TotalCount { get; set; }
-        public TableFilter Filter { get; private set; }
+        private readonly Dictionary<string, TableColumnViewSettings> _columnViews = new(StringComparer.OrdinalIgnoreCase);
+        internal TableColumnViewSettings ColumnView
+        {
+            get
+            {
+                if (!_columnViews.TryGetValue(CurrentTable, out var settings))
+                    _columnViews.Add(CurrentTable, settings = new TableColumnViewSettings());
+                return settings;
+            }
+        }
         public DataTable CurrentPageData { get; private set; }
 
         public Dictionary<string, string> CurrentRowValues { get; private set; } = new();
@@ -47,6 +56,15 @@ namespace Configurator
         public TableViewModel(string connectionString)
         {
             _db = new DatabaseService(connectionString);
+            _loadColumns = _db.GetTableColumnsAsync;
+            _loadKeys = _db.GetPrimaryKeyColumnsAsync;
+        }
+
+        internal TableViewModel(Func<string, CancellationToken, Task<List<ColumnInfo>>> loadColumns,
+            Func<string, CancellationToken, Task<List<string>>> loadKeys)
+        {
+            _loadColumns = loadColumns;
+            _loadKeys = loadKeys;
         }
 
         // === P1-11: Async ===
@@ -66,6 +84,7 @@ namespace Configurator
 
             CurrentTable = tableName;
             CurrentPage = 1;
+            _metadataLoaded = false;
 
             if (_metadataCache.TryGetValue(tableName, out var cached))
             {
@@ -77,9 +96,12 @@ namespace Configurator
             }
 
             // Метаданные двух независимых запросов получаем параллельно только при первом открытии таблицы.
-            var columnsTask = _db.GetTableColumnsAsync(tableName, ct);
-            var keysTask = _db.GetPrimaryKeyColumnsAsync(tableName, ct);
+            var columnsTask = _loadColumns(tableName, ct);
+            var keysTask = _loadKeys(tableName, ct);
             await Task.WhenAll(columnsTask, keysTask);
+            ct.ThrowIfCancellationRequested();
+            if (!string.Equals(CurrentTable, tableName, StringComparison.OrdinalIgnoreCase))
+                throw new OperationCanceledException();
             Columns = columnsTask.Result;
             KeyColumns = keysTask.Result;
             UpdateIdentityMode();
@@ -88,12 +110,12 @@ namespace Configurator
         }
 
         private void UpdateIdentityMode()
-            => UsesValueIdentity = KeyColumns.Count == 0 && Columns?.Any(IsValueIdentityColumn) == true;
+            => UsesValueIdentity = KeyColumns.Count == 0 && Columns?.Count > 0 && Columns.All(IsValueIdentityColumn);
 
         internal static bool IsValueIdentityColumn(ColumnInfo column)
         {
             string type = (column.DataType ?? string.Empty).Trim().ToLowerInvariant();
-            return !column.IsComputed && type is not ("timestamp" or "rowversion" or "text" or "ntext" or "image" or "xml");
+            return type is not ("text" or "ntext" or "image" or "xml");
         }
 
         private static bool IsNumericRecordType(string dataType)
@@ -101,19 +123,19 @@ namespace Configurator
                 "tinyint" or "smallint" or "int" or "bigint" or "decimal" or "numeric" or "money" or "smallmoney" or "float" or "real";
 
         // === P1-11: Async ===
-        public Task<DataTable> LoadPageAsync(CancellationToken ct = default)
-            => LoadPageWithFilterAsync(HasApplicableFilter ? Filter : null, ct);
-
-        public Task<DataTable> LoadPageIgnoringFilterAsync(CancellationToken ct = default)
-            => LoadPageWithFilterAsync(null, ct);
-
-        private async Task<DataTable> LoadPageWithFilterAsync(TableFilter filter, CancellationToken ct)
+        public async Task<DataTable> LoadPageAsync(CancellationToken ct = default)
         {
-            var orderColumns = KeyColumns.Count > 0
-                ? KeyColumns
-                : (Columns?.Count > 0 ? new List<string> { Columns[0].Name } : new List<string>());
+            var sorts = ColumnView.Sorts.ToList();
+            var fallback = KeyColumns.Count > 0 ? KeyColumns : Columns?.Take(1).Select(column => column.Name) ?? Enumerable.Empty<string>();
+            foreach (var name in fallback)
+            {
+                if (sorts.Any(sort => sort.Column.Equals(name, StringComparison.OrdinalIgnoreCase))) continue;
+                var column = Columns?.FirstOrDefault(c => c.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+                sorts.Add(new TableColumnSort(name, System.ComponentModel.ListSortDirection.Ascending, column?.UsesTextOrdering == true));
+            }
 
-            var data = await _db.GetTableDataPageAsync(CurrentTable, CurrentPage, PageSize, orderColumns, filter, ct);
+            var data = await _db.GetColumnViewPageAsync(CurrentTable, CurrentPage, PageSize, sorts, ColumnView.Filters, ct);
+            ct.ThrowIfCancellationRequested();
             CurrentPageData = data;
             return data;
         }
@@ -145,43 +167,23 @@ namespace Configurator
         }
 
         public Task<int> GetTotalCountAsync(CancellationToken ct = default)
-            => GetTotalCountWithFilterAsync(HasApplicableFilter ? Filter : null, ct);
+            => ReadTotalCountAsync(useCache: true, ct);
 
-        public Task<int> GetTotalCountIgnoringFilterAsync(CancellationToken ct = default)
-            => GetTotalCountWithFilterAsync(null, ct);
+        public Task<int> GetFreshTotalCountAsync(CancellationToken ct = default)
+            => ReadTotalCountAsync(useCache: false, ct);
 
-        public async Task<int> GetFreshTotalCountAsync(CancellationToken ct = default)
+        private async Task<int> ReadTotalCountAsync(bool useCache, CancellationToken ct)
         {
-            if (string.IsNullOrWhiteSpace(CurrentTable)) return 0;
-            var count = await _db.GetTableRowCountAsync(CurrentTable, HasApplicableFilter ? Filter : null, ct);
-            TotalCount = count;
-            return count;
-        }
+            string table = CurrentTable;
+            if (string.IsNullOrWhiteSpace(table)) return 0;
+            var filters = ColumnView.Filters;
+            if (useCache && filters.Length == 0 && _countCache.TryGetValue(table, out int cached))
+                return TotalCount = cached;
 
-        private async Task<int> GetTotalCountWithFilterAsync(TableFilter filter, CancellationToken ct)
-        {
-            if (string.IsNullOrWhiteSpace(CurrentTable)) return 0;
-
-            string cacheKey = filter == null || !filter.IsActive
-                ? CurrentTable + "|ALL"
-                : CurrentTable + "|" + filter.Column + "|" + filter.Operator + "|" + filter.Value;
-            if (_countCache.TryGetValue(cacheKey, out int cached))
-            {
-                TotalCount = cached;
-                return cached;
-            }
-
-            int count = await _db.GetTableRowCountAsync(CurrentTable, filter, ct);
-            _countCache[cacheKey] = count;
-            TotalCount = count;
-            return count;
-        }
-
-        private string BuildCountCacheKey()
-        {
-            if (Filter == null || !Filter.IsActive)
-                return CurrentTable + "|ALL";
-            return CurrentTable + "|" + Filter.Column + "|" + Filter.Operator + "|" + Filter.Value;
+            int count = await _db.CountColumnViewRowsAsync(table, filters, ct);
+            ct.ThrowIfCancellationRequested();
+            if (filters.Length == 0) _countCache[table] = count;
+            return TotalCount = count;
         }
 
         private void InvalidateCountCache() => _countCache.Clear();
@@ -234,18 +236,6 @@ namespace Configurator
             }
         }
 
-
-        public void SetFilter(TableFilter filter)
-        {
-            Filter = filter?.IsActive == true ? filter : null;
-            CurrentPage = 1;
-        }
-
-        public void ClearFilter()
-        {
-            Filter = null;
-            CurrentPage = 1;
-        }
 
         public void ClearCurrentRow()
         {
@@ -329,7 +319,7 @@ namespace Configurator
                 }
                 catch (SqlException ex) when ((ex.Number == 2601 || ex.Number == 2627) && attempt < maxAttempts)
                 {
-                    // Duplicate key. Перечитываем MAX(Record) и пробуем ещё раз.
+                    // Duplicate key. Перечитываем занятые Record и пробуем ещё раз.
                 }
             }
 
@@ -342,27 +332,37 @@ namespace Configurator
             if (!HasValidKey)
                 throw new System.Exception("Не удалось определить идентификатор строки.");
 
-            if (UsesValueIdentity)
+            await UpdateSnapshotAsync(CurrentTable, UsesValueIdentity, KeyColumns.ToList(),
+                new Dictionary<string, object>(UsesValueIdentity ? CurrentIdentityValues : CurrentKeyValues),
+                new Dictionary<string, object>(CurrentRawRowValues), values, ct);
+        }
+
+        public async Task UpdateSnapshotAsync(string table, bool usesValueIdentity, List<string> keyColumns,
+            Dictionary<string, object> identity, Dictionary<string, object> originalValues,
+            Dictionary<string, object> values, CancellationToken ct = default)
+        {
+
+            if (usesValueIdentity)
             {
-                if (CurrentIdentityValues.Count == 0)
+                if (identity.Count == 0)
                     throw new InvalidOperationException("Не удалось определить исходное состояние строки.");
-                await _db.UpdateRowByValuesAsync(CurrentTable, CurrentIdentityValues, values, ct);
+                await _db.UpdateRowByValuesAsync(table, identity, values, ct);
                 InvalidateCountCache();
                 return;
             }
 
             // Keep the old key in WHERE, but include edited key columns in SET. SQL Server's
             // unique constraint rejects a conflicting new key and the update transaction rolls back.
-            bool keyIsBeingChanged = KeyColumns.Any(k => values.ContainsKey(k) &&
-                CurrentRawRowValues.TryGetValue(k, out var oldKey) &&
+            bool keyIsBeingChanged = keyColumns.Any(k => values.ContainsKey(k) &&
+                originalValues.TryGetValue(k, out var oldKey) &&
                 !Equals(oldKey ?? DBNull.Value, values[k] ?? DBNull.Value));
 
             var updateValues = values
-                .Where(v => keyIsBeingChanged || !KeyColumns.Contains(v.Key, StringComparer.OrdinalIgnoreCase))
+                .Where(v => keyIsBeingChanged || !keyColumns.Contains(v.Key, StringComparer.OrdinalIgnoreCase))
                 .ToDictionary(v => v.Key, v => v.Value);
 
-            await _db.UpdateRowAsync(CurrentTable, KeyColumns, CurrentKeyValues, updateValues, ct,
-                new Dictionary<string, object>(CurrentRawRowValues, StringComparer.OrdinalIgnoreCase));
+            await _db.UpdateRowAsync(table, keyColumns, identity, updateValues, ct,
+                new Dictionary<string, object>(originalValues, StringComparer.OrdinalIgnoreCase));
             InvalidateCountCache();
         }
 

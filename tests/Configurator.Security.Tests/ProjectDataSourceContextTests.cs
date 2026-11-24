@@ -46,23 +46,18 @@ public sealed class ProjectDataSourceContextTests
     }
 
     [Fact]
-    public async Task OfflineWorkspacePersistsClassDefinitionsAndGraphRelationsInsideProject()
+    public async Task OfflineWorkspaceRejectsChangesToClassDefinitionsAndGraphRelations()
     {
         var project = new ConfiguratorProject();
         using var context = new ProjectDataSourceContext();
         context.Set(new OfflineProjectDataSource(project));
 
         var definition = new Configurator.Core.Architecture.ClassDefinition { Id = "pump", Name = "Pump" };
-        await context.CurrentWorkspace.SaveClassDefinitionsAsync(new[] { definition });
-        var loadedClasses = await context.CurrentWorkspace.GetClassDefinitionsAsync();
-        Assert.Contains(loadedClasses, x => x.Id == "pump" && x.Name == "Pump");
-
-        var relations = new JsonObject { ["ManualRelations"] = new JsonArray() };
-        await context.CurrentWorkspace.SaveGraphRelationsAsync(relations);
-        var loadedRelations = await context.CurrentWorkspace.GetGraphRelationsAsync();
-        Assert.NotNull(loadedRelations["ManualRelations"]);
-        Assert.NotNull(project.Architecture["classDefinitions"]);
-        Assert.NotNull(project.GraphRelations["ManualRelations"]);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => context.CurrentWorkspace.SaveClassDefinitionsAsync(new[] { definition }));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => context.CurrentWorkspace.SaveGraphRelationsAsync(new JsonObject()));
+        Assert.Empty(await context.CurrentWorkspace.GetClassDefinitionsAsync());
+        Assert.Empty(project.GraphRelations);
+        Assert.Null(project.Architecture["classDefinitions"]);
     }
 
     [Fact]

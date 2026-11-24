@@ -1,4 +1,4 @@
-﻿using Configurator;
+using Configurator;
 using System.Security.Cryptography;
 using System.Text;
 using Xunit;
@@ -10,7 +10,7 @@ public sealed class UserAuthorizationSecurityTests
     [Fact]
     public void NewPasswordMeetsSharedPolicyAndSupportsLongPassphrases()
     {
-        UserAuthorizationService.ValidatePassword("12345");
+        UserAuthorizationService.ValidatePassword("abcde");
         UserAuthorizationService.ValidatePassword("abcde1234567");
         UserAuthorizationService.ValidatePassword(string.Join(' ', Enumerable.Repeat("correct-horse", 20)));
     }
@@ -24,6 +24,23 @@ public sealed class UserAuthorizationSecurityTests
         Assert.Throws<ArgumentException>(() => UserAuthorizationService.ValidatePassword(password));
         var user = new UserAccount { UserName = "test" };
         Assert.Throws<ArgumentException>(() => UserAuthorizationService.SetPassword(user, password));
+    }
+
+    [Theory]
+    [InlineData("12345678901")]
+    [InlineData("")]
+    public void NewAdministratorPasswordRejectsShortValues(string password)
+    {
+        Assert.Throws<ArgumentException>(() => UserAuthorizationService.ValidateAdministratorPassword(password));
+    }
+
+    [Fact]
+    public void AdministratorPolicyAcceptsTwelveCharactersAndLegacyPasswordsStillVerify()
+    {
+        UserAuthorizationService.ValidateAdministratorPassword("123456789012");
+        var legacy = new UserAccount { UserName = "admin" };
+        UserAuthorizationService.SetPassword(legacy, "abcde");
+        Assert.True(UserAuthorizationService.VerifyPassword(legacy, "abcde"));
     }
 
     [Fact]
@@ -77,11 +94,36 @@ public sealed class UserAuthorizationSecurityTests
     }
 
     [Fact]
-    public void BuiltInLoginAccountsAreAdministratorAndCommissioningEngineerOnly()
+    public void FixedAccountsMigrateLegacyProfilesAndPreserveAdminCredential()
     {
-        Assert.True(UserAuthorizationService.IsBuiltInUser("admin"));
-        Assert.True(UserAuthorizationService.IsBuiltInUser("Инженер-ПНР"));
-        Assert.False(UserAuthorizationService.IsBuiltInUser("guest"));
+        var directory = Directory.CreateTempSubdirectory();
+        try
+        {
+            string path = Path.Combine(directory.FullName, "users.json");
+            var fresh = UserAuthorizationService.LoadStore(path, out bool needsSetup);
+            Assert.False(needsSetup);
+            var admin = fresh.Users.Single(u => u.UserName == "admin");
+            string hash = admin.PasswordHash, salt = admin.PasswordSalt;
+            fresh.Users.Add(new UserAccount { UserName = "Инженер-1", RoleName = "Проектировщик" });
+            File.WriteAllText(path, Newtonsoft.Json.JsonConvert.SerializeObject(fresh));
+            var store = UserAuthorizationService.LoadStore(path, out needsSetup);
+            Assert.Equal(new[] { "Инженер", "admin" }, LoginWindow.GetLoginChoices(store.Users).Select(u => u.UserName));
+            Assert.Equal(hash, store.Users.Single(u => u.UserName == "admin").PasswordHash);
+            Assert.Equal(salt, store.Users.Single(u => u.UserName == "admin").PasswordSalt);
+            var engineer = store.Users.Single(u => u.UserName == "Инженер");
+            var freshEngineer = fresh.Users.Single(u => u.UserName == "Инженер");
+            Assert.Equal(freshEngineer.PasswordHash, engineer.PasswordHash);
+            Assert.Equal(freshEngineer.PasswordSalt, engineer.PasswordSalt);
+            Assert.Equal(32, Convert.FromBase64String(engineer.PasswordHash).Length);
+            var role = store.Roles.Single(r => r.Name == engineer.RoleName);
+            foreach (int mode in new[] { 1, 3, 4 }) Assert.True(PermissionPolicy.CanEnterMode(engineer, role, mode));
+            Assert.False(PermissionPolicy.CanEnterMode(engineer, role, 2));
+            Assert.False(PermissionPolicy.Has(engineer, role, Permission.ManageUsers));
+            foreach (var permission in new[] { Permission.Mode1Add, Permission.Mode1Edit, Permission.Mode1Delete, Permission.Mode3Manage, Permission.Mode4Manage })
+                Assert.True(PermissionPolicy.Has(engineer, role, permission));
+            Assert.False(UserAuthorizationService.IsBuiltInUser("Инженер-1"));
+        }
+        finally { directory.Delete(recursive: true); }
     }
 
     [Fact]
@@ -116,6 +158,19 @@ public sealed class UserAuthorizationSecurityTests
         Assert.Equal(1, user.PasswordHashVersion);
         Assert.Equal(600_000, user.PasswordIterations);
         Assert.True(UserAuthorizationService.VerifyPassword(user, password));
+    }
+
+    [Fact]
+    public void VerifiedShortLegacyCredentialCanBeRehashedWithoutApplyingNewPasswordPolicy()
+    {
+        const string password = "old";
+        byte[] salt = RandomNumberGenerator.GetBytes(16);
+        byte[] hash = Rfc2898DeriveBytes.Pbkdf2(Encoding.UTF8.GetBytes(password), salt, 120_000, HashAlgorithmName.SHA256, 32);
+        var user = new UserAccount { UserName = "admin", PasswordSalt = Convert.ToBase64String(salt), PasswordHash = Convert.ToBase64String(hash) };
+        Assert.True(UserAuthorizationService.VerifyPassword(user, password));
+        UserAuthorizationService.RehashVerifiedPassword(user, password);
+        Assert.True(UserAuthorizationService.VerifyPassword(user, password));
+        Assert.Throws<ArgumentException>(() => UserAuthorizationService.ValidateAdministratorPassword(password));
     }
 
     [Fact]

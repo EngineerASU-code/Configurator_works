@@ -97,14 +97,12 @@ public sealed class OfflineProjectDataSourceCrudMatrixTests
     }
 
     [Fact]
-    public void SchemaUpsertCreatesThenReplacesCaseInsensitively()
+    public void CannotAddSchemaToOpenedProject()
     {
         var project = NewProject();
         var source = new OfflineProjectDataSource(project);
-        source.UpsertSchema(new ProjectTableSchema { TableName = "dbo.NewTable", KeyColumns = { "Id" } });
-        source.UpsertSchema(new ProjectTableSchema { TableName = "DBO.NEWTABLE", KeyColumns = { "Code" } });
-        Assert.Equal(2, project.TableSchemas.Count);
-        Assert.Equal("Code", Assert.Single(source.GetSchema("dbo.NewTable")!.KeyColumns));
+        Assert.Throws<InvalidOperationException>(() => source.UpsertSchema(new ProjectTableSchema { TableName = "dbo.NewTable" }));
+        Assert.Single(project.TableSchemas);
     }
 
     [Fact]

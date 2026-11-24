@@ -29,6 +29,7 @@ namespace Configurator
             private async Task<IReadOnlyDictionary<string, object?>> InsertRowCoreAsync(string tableName,
                 Dictionary<string, object> values, IReadOnlyList<string>? keyColumns, CancellationToken ct)
             {
+                ProjectWriteGuard.EnsureDataTableWritable(tableName);
                 if (values == null || values.Count == 0)
                     throw new InvalidOperationException("Нет данных для вставки.");
     
@@ -80,6 +81,7 @@ namespace Configurator
     
             public async Task UpdateRowAsync(string tableName, List<string> keyColumns, Dictionary<string, object> keyValues, Dictionary<string, object> values, CancellationToken ct = default, Dictionary<string, object> expectedValues = null)
             {
+                ProjectWriteGuard.EnsureDataTableWritable(tableName);
                 if (keyColumns == null || keyColumns.Count == 0)
                     throw new InvalidOperationException("Невозможно обновить запись без первичного ключа.");
                 if (keyValues == null || keyColumns.Any(k => !keyValues.ContainsKey(k)))
@@ -112,7 +114,7 @@ namespace Configurator
                         }
                     }
                     var whereClause = string.Join(" AND ", whereParts);
-                    var query = $"UPDATE {quotedName} SET {setClause} WHERE {whereClause}";
+                    var query = $"DECLARE @affected TABLE (Marker int NOT NULL); UPDATE {quotedName} SET {setClause} OUTPUT 1 INTO @affected(Marker) WHERE {whereClause}; SELECT COUNT(*) FROM @affected;";
     
                     using var command = new SqlCommand(query, connection, transaction);
                     for (int i = 0; i < columns.Count; i++)
@@ -127,10 +129,10 @@ namespace Configurator
                                 command.Parameters.AddWithValue($"@expected{expectedParameter++}", pair.Value);
                     }
     
-                    int affected = await command.ExecuteNonQueryAsync(ct);
+                    int affected = Convert.ToInt32(await command.ExecuteScalarAsync(ct));
                     if (affected == 0)
                         throw new InvalidOperationException("Запись не найдена — возможно, она была изменена или удалена другим пользователем.");
-                    if (affected > 1)
+                    if (affected != 1)
                         throw new InvalidOperationException($"Условие ключа затронуло {affected} записей. Изменение отменено.");
     
                     await transaction.CommitAsync(ct);
@@ -146,6 +148,7 @@ namespace Configurator
                 Dictionary<string, object> keyValues, Dictionary<string, object> values, CancellationToken ct = default)
             {
                 ArgumentNullException.ThrowIfNull(expectedSchema);
+                ProjectWriteGuard.EnsureDataTableWritable(expectedSchema.TableName);
                 bool insert = expectedRecord == null;
                 if (!expectedSchema.HasStableKey || expectedSchema.KeyColumns.Count == 0 ||
                     keyValues == null || expectedSchema.KeyColumns.Any(key => !keyValues.ContainsKey(key)))
@@ -310,49 +313,41 @@ WHERE s.name=@schema AND t.name=@table AND c.name=@column";
     
             public async Task<int> DeleteRowsAsync(string tableName, List<string> keyColumns, List<Dictionary<string, object>> keyValuesList, CancellationToken ct = default)
             {
-                if (keyValuesList == null || keyValuesList.Count == 0)
-                    return 0;
-    
-                using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
-                await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection, ct);
-    
-                var quotedName = QuoteTableName(tableName);
-                int totalDeleted = 0;
-    
-                using var transaction = await connection.BeginTransactionAsync(ct);
+                ProjectWriteGuard.EnsureDataTableWritable(tableName);
+                if (keyValuesList == null || keyValuesList.Count == 0) return 0;
+                if (keyColumns == null || keyColumns.Count == 0 || keyValuesList.Any(row => row == null || keyColumns.Any(key => !row.ContainsKey(key))))
+                    throw new InvalidOperationException("Для безопасного удаления необходим ключ и полный снимок каждой строки.");
+                return await DeleteWithSnapshotsAsync(tableName, keyValuesList, keyColumns, ct);
+            }
+
+            private async Task<int> DeleteWithSnapshotsAsync(string tableName, List<Dictionary<string, object>> rows, IReadOnlyList<string> keyColumns, CancellationToken ct)
+            {
+                var schema = await new DatabaseArchitectureAnalyzer(_connectionString).AnalyzeAsync(ct);
+                var table = schema.FindTable(tableName) ?? throw new InvalidOperationException("Таблица отсутствует в схеме.");
+                if (rows.Any(row => row == null || row.Count != table.Columns.Count || table.Columns.Any(column => !row.ContainsKey(column.Name))))
+                    throw new InvalidOperationException("Для безопасного удаления необходим полный снимок каждой строки.");
+                var protection = new DeletionProtectionService(_connectionString, schema);
+                keyColumns ??= table.Keys.FirstOrDefault(key => key.IsPrimary)?.Columns
+                    ?? table.Keys.FirstOrDefault(key => key.IsUnique)?.Columns;
+                using var connection = SqlProviderGuard.CreateConnection(_connectionString);
+                await SqlProviderGuard.OpenConnectionAsync(connection, ct);
+                using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable, ct);
                 try
                 {
-                    var whereParts = new List<string>();
-                    for (int i = 0; i < keyColumns.Count; i++)
+                    foreach (var row in rows)
                     {
-                        whereParts.Add($"{QuoteIdentifier(keyColumns[i])} = @key{i}");
+                        var identity = keyColumns == null ? row : keyColumns.ToDictionary(key => key, key => row[key], StringComparer.OrdinalIgnoreCase);
+                        await protection.DeleteUnreferencedInTransactionAsync(connection, transaction, tableName, identity, row, ct);
                     }
-                    var whereClause = string.Join(" AND ", whereParts);
-                    var query = $"DELETE FROM {quotedName} WHERE {whereClause}";
-    
-                    foreach (var keyValues in keyValuesList)
-                    {
-                        using var command = new SqlCommand(query, connection, (SqlTransaction)transaction);
-                        for (int i = 0; i < keyColumns.Count; i++)
-                        {
-                            command.Parameters.AddWithValue($"@key{i}", keyValues[keyColumns[i]] ?? DBNull.Value);
-                        }
-                        totalDeleted += await command.ExecuteNonQueryAsync(ct);
-                    }
-    
-                    transaction.Commit();
+                    await transaction.CommitAsync(ct);
+                    return rows.Count;
                 }
-                catch
-                {
-                    transaction.Rollback();
-                    throw;
-                }
-    
-                return totalDeleted;
+                catch { try { await transaction.RollbackAsync(CancellationToken.None); } catch { } throw; }
             }
-    
+
             public async Task UpdateRowByValuesAsync(string tableName, Dictionary<string, object> originalValues, Dictionary<string, object> values, CancellationToken ct = default)
             {
+                ProjectWriteGuard.EnsureDataTableWritable(tableName);
                 if (originalValues == null || originalValues.Count == 0)
                     throw new InvalidOperationException("Невозможно определить исходную строку.");
                 if (values == null || values.Count == 0)
@@ -365,6 +360,11 @@ WHERE s.name=@schema AND t.name=@table AND c.name=@column";
                 try
                 {
                     var quotedName = QuoteTableName(tableName);
+                    var schema = await OnlineProjectDataSource.ReadSchemaAsync(connection, transaction, tableName, ct);
+                    if (schema == null || schema.Columns.Count != originalValues.Count ||
+                        schema.Columns.Any(column => !originalValues.ContainsKey(column.Name) ||
+                            !TableViewModel.IsValueIdentityColumn(new ColumnInfo { DataType = column.DataType })))
+                        throw new InvalidOperationException("Для безопасного обновления необходим полный сравнимый снимок строки. Обновите таблицу.");
                     var computedColumns = await GetComputedColumnsAsync(connection, tableName, ct, transaction);
                     var writableValues = values.Where(item => !computedColumns.Contains(item.Key)).ToList();
                     if (writableValues.Count == 0) throw new InvalidOperationException("Нет изменяемых полей: все переданные столбцы вычисляемые.");
@@ -400,7 +400,7 @@ WHERE s.name=@schema AND t.name=@table AND c.name=@column";
                                 ? "Исходная строка больше не найдена. Обновление отменено."
                                 : "Исходное состояние соответствует нескольким строкам; безопасное обновление отменено.");
                     }
-                    var query = $"UPDATE {quotedName} SET {string.Join(", ", setParts)} WHERE {whereClause}";
+                    var query = $"DECLARE @affected TABLE (Marker int NOT NULL); UPDATE {quotedName} SET {string.Join(", ", setParts)} OUTPUT 1 INTO @affected(Marker) WHERE {whereClause}; SELECT COUNT(*) FROM @affected;";
     
                     using var command = new SqlCommand(query, connection, transaction);
                     valueParameter = 0;
@@ -414,7 +414,7 @@ WHERE s.name=@schema AND t.name=@table AND c.name=@column";
                             command.Parameters.AddWithValue($"@o{originalParameter++}", item.Value);
                     }
     
-                    int affected = await command.ExecuteNonQueryAsync(ct);
+                    int affected = Convert.ToInt32(await command.ExecuteScalarAsync(ct));
                     if (affected == 0)
                         throw new InvalidOperationException("Исходная строка больше не найдена. Обновление отменено.");
                     if (affected != 1)
@@ -429,72 +429,13 @@ WHERE s.name=@schema AND t.name=@table AND c.name=@column";
                 }
             }
     
-            public async Task<int> DeleteRowsByValuesAsync(string tableName, List<Dictionary<string, object>> rows, CancellationToken ct = default)
+            public Task<int> DeleteRowsByValuesAsync(string tableName, List<Dictionary<string, object>> rows, CancellationToken ct = default)
             {
-                if (rows == null || rows.Count == 0) return 0;
-    
-                using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
-                await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection, ct);
-                using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, ct);
-                int totalDeleted = 0;
-    
-                try
-                {
-                    foreach (var row in rows)
-                    {
-                        if (row == null || row.Count == 0) continue;
-    
-                        var whereParts = new List<string>();
-                        int parameterIndex = 0;
-                        foreach (var item in row)
-                        {
-                            if (item.Value == null || item.Value == DBNull.Value)
-                                whereParts.Add($"{QuoteIdentifier(item.Key)} IS NULL");
-                            else
-                                whereParts.Add($"{QuoteIdentifier(item.Key)} = @p{parameterIndex++}");
-                        }
-    
-                        var whereClause = string.Join(" AND ", whereParts);
-                        var quotedName = QuoteTableName(tableName);
-                        var countQuery = $"SELECT COUNT_BIG(*) FROM {quotedName} WITH (UPDLOCK, HOLDLOCK) WHERE {whereClause}";
-                        using (var countCommand = new SqlCommand(countQuery, connection, transaction))
-                        {
-                            parameterIndex = 0;
-                            foreach (var item in row)
-                                if (item.Value != null && item.Value != DBNull.Value)
-                                    countCommand.Parameters.AddWithValue($"@p{parameterIndex++}", item.Value);
-                            var matches = Convert.ToInt64(await countCommand.ExecuteScalarAsync(ct));
-                            if (matches != 1)
-                                throw new InvalidOperationException(matches == 0
-                                    ? "Исходная строка больше не найдена. Удаление отменено."
-                                    : "Исходное состояние соответствует нескольким строкам; безопасное удаление отменено.");
-                        }
-                        var query = $"DELETE FROM {quotedName} WHERE {whereClause}";
-                        using var command = new SqlCommand(query, connection, transaction);
-    
-                        parameterIndex = 0;
-                        foreach (var item in row)
-                        {
-                            if (item.Value != null && item.Value != DBNull.Value)
-                                command.Parameters.AddWithValue($"@p{parameterIndex++}", item.Value);
-                        }
-    
-                        var deleted = await command.ExecuteNonQueryAsync(ct);
-                        if (deleted != 1) throw new InvalidOperationException("Удаление не затронуло ровно одну строку; транзакция отменена.");
-                        totalDeleted += deleted;
-                    }
-    
-                    await transaction.CommitAsync(ct);
-                }
-                catch
-                {
-                    await transaction.RollbackAsync(CancellationToken.None);
-                    throw;
-                }
-    
-                return totalDeleted;
+                ProjectWriteGuard.EnsureDataTableWritable(tableName);
+                if (rows == null || rows.Count == 0) return Task.FromResult(0);
+                return DeleteWithSnapshotsAsync(tableName, rows, null, ct);
             }
-    
+
             // === P1-11: Async ===
 
             private static async Task<HashSet<string>> GetComputedColumnsAsync(SqlConnection connection, string tableName, CancellationToken ct, SqlTransaction transaction = null)

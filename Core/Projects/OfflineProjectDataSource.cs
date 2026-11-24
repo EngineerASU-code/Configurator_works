@@ -95,6 +95,7 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
     public Task<IReadOnlyDictionary<string, object?>> CreateRecordAndGetKeyAsync(string tableName,
         IReadOnlyDictionary<string, object?> values, CancellationToken cancellationToken = default)
     {
+        ProjectWriteGuard.EnsureDataTableWritable(tableName);
         cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(values);
         if (string.IsNullOrWhiteSpace(tableName)) throw new ArgumentException("Не задана таблица.", nameof(tableName));
@@ -168,6 +169,7 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
         IReadOnlyDictionary<string, object?> keyValues, IReadOnlyDictionary<string, object?> values,
         CancellationToken cancellationToken = default)
     {
+        ProjectWriteGuard.EnsureDataTableWritable(tableName);
         cancellationToken.ThrowIfCancellationRequested();
         if (keyColumns == null || keyColumns.Count == 0) throw new InvalidOperationException("Нельзя изменить запись без ключевых столбцов.");
         ArgumentNullException.ThrowIfNull(keyValues);
@@ -225,6 +227,7 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
     public Task<int> DeleteRecordsAsync(string tableName, IReadOnlyList<string> keyColumns,
         IReadOnlyList<IReadOnlyDictionary<string, object?>> keyValues, CancellationToken cancellationToken = default)
     {
+        ProjectWriteGuard.EnsureDataTableWritable(tableName);
         cancellationToken.ThrowIfCancellationRequested();
         if (keyValues == null || keyValues.Count == 0) return Task.FromResult(0);
         if (keyColumns == null || keyColumns.Count == 0) throw new InvalidOperationException("Нельзя удалить запись без ключевых столбцов.");
@@ -355,6 +358,7 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
             throw new ArgumentException("Для локальной записи обязательны имя таблицы и ключ.", nameof(record));
         EnsureRecordIndex();
         var resolvedTable = ResolveTableName(record.TableName);
+        ProjectWriteGuard.EnsureDataTableWritable(resolvedTable);
         var existing = _recordsByTable!.TryGetValue(resolvedTable, out var tableRecords)
             ? tableRecords.FirstOrDefault(x => x.Key.Equals(record.Key, StringComparison.Ordinal))
             : null;
@@ -370,6 +374,7 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
     /// <summary>Deletes a record from the local project only.</summary>
     public bool DeleteRecord(string tableName, string key)
     {
+        ProjectWriteGuard.EnsureDataTableWritable(tableName);
         EnsureRecordIndex();
         var resolvedTable = ResolveTableName(tableName);
         if (!_recordsByTable!.TryGetValue(resolvedTable, out var tableRecords)) return false;
@@ -386,6 +391,7 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
     /// </summary>
     public bool DeleteSnapshotRecord(string tableName, string snapshotKey)
     {
+        ProjectWriteGuard.EnsureDataTableWritable(tableName);
         if (string.IsNullOrWhiteSpace(tableName)) throw new ArgumentException("Не задана таблица.", nameof(tableName));
         if (string.IsNullOrWhiteSpace(snapshotKey)) throw new ArgumentException("Не задан внутренний ключ записи локального снимка.", nameof(snapshotKey));
         EnsureRecordIndex();
@@ -408,9 +414,7 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
     {
         ArgumentNullException.ThrowIfNull(schema);
         if (string.IsNullOrWhiteSpace(schema.TableName)) throw new ArgumentException("Не задано имя таблицы.", nameof(schema));
-        var index = _project.TableSchemas.FindIndex(x => x.TableName.Equals(schema.TableName, StringComparison.OrdinalIgnoreCase));
-        if (index < 0) _project.TableSchemas.Add(schema); else _project.TableSchemas[index] = schema;
-        Touch();
+        throw new InvalidOperationException(ProjectWriteGuard.ArchitectureReadOnly);
     }
 
     private void EnsureRecordIndex()

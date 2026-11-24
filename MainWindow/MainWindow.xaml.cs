@@ -179,8 +179,8 @@ namespace Configurator
 
         private void DataTableGrid_AutoGeneratingColumn(object sender, DataGridAutoGeneratingColumnEventArgs e)
         {
-            var sourceLabel = "";
-            e.Column.Header = sourceLabel + e.PropertyName;
+            e.Column.SortMemberPath = e.PropertyName;
+            ConfigureColumnHeader(e.Column, e.PropertyName);
 
             if (e.Column is DataGridTextColumn textColumn)
             {
@@ -352,13 +352,14 @@ namespace Configurator
             _rightPanel.BtnUpdate.Click += BtnUpdate_Click;
             _rightPanel.BtnDuplicate.Click += BtnDuplicate_Click;
             _rightPanel.BtnDelete.Click += BtnDelete_Click;
+            _rightPanel.BtnResetColumnView.Click += BtnResetColumnView_Click;
             _rightPanel.BtnToggleFields.Click += BtnToggleFields_Click;
-            _rightPanel.BtnFilter.Click += BtnFilter_Click;
             _rightPanel.BtnFirst.Click += BtnFirst_Click;
             _rightPanel.BtnPrev.Click += BtnPrev_Click;
             _rightPanel.BtnNext.Click += BtnNext_Click;
             _rightPanel.BtnLast.Click += BtnLast_Click;
             _rightPanel.DataTableGrid.SelectionChanged += DataTableGrid_SelectionChanged;
+            _rightPanel.DataTableGrid.PreviewKeyDown += DataTableGrid_ClipboardKeyDown;
             _rightPanel.DataTableGrid.MouseLeftButtonUp += DataTableGrid_MouseLeftButtonUp;
             _rightPanel.DataTableGrid.PreviewMouseLeftButtonDown += DataTableGrid_PreviewMouseLeftButtonDown;
             _rightPanel.DataTableGrid.MouseDoubleClick += DataTableGrid_MouseDoubleClick;
@@ -445,7 +446,8 @@ namespace Configurator
             bool canExport = UserAuthorizationService.Has(Permission.ExportData);
             bool canSql = UserAuthorizationService.Has(Permission.FreeSql);
             bool canJournalRestore = UserAuthorizationService.Has(Permission.RestoreJournal);
-            if (_rightPanel != null) { bool tableMode = _currentMode == 1 && UserAuthorizationService.Has(Permission.Mode1View); bool hasTable = _isOfflineWorkspace ? _offlineCurrentDataTable != null : _activeVm != null; _rightPanel.BtnAdd.IsEnabled = tableMode && canAdd && hasTable; _rightPanel.BtnUpdate.IsEnabled = tableMode && canEdit && hasTable && _rightPanel.DataTableGrid?.SelectedItem != null; _rightPanel.BtnDuplicate.IsEnabled = tableMode && canAdd && hasTable && _rightPanel.DataTableGrid?.SelectedItem != null; _rightPanel.BtnDelete.IsEnabled = tableMode && canDelete && hasTable && _rightPanel.DataTableGrid?.SelectedItems.Count > 0; }
+            if (_rightPanel != null) { bool tableMode = _currentMode == 1 && UserAuthorizationService.Has(Permission.Mode1View); bool hasTable = Configurator.Core.Projects.ProjectWriteGuard.IsDataTableWritable(_isOfflineWorkspace ? _offlineCurrentTableName : _activeVm?.CurrentTable); _rightPanel.BtnAdd.IsEnabled = tableMode && canAdd && hasTable; _rightPanel.BtnUpdate.IsEnabled = tableMode && canEdit && hasTable && _rightPanel.DataTableGrid?.SelectedItem != null; _rightPanel.BtnDuplicate.IsEnabled = tableMode && canAdd && hasTable && _rightPanel.DataTableGrid?.SelectedItem != null; _rightPanel.BtnDelete.IsEnabled = tableMode && canDelete && hasTable && _rightPanel.DataTableGrid?.SelectedItems.Count > 0; }
+            MenuUserSettings.Visibility = UserAuthorizationService.IsAdministrator ? Visibility.Visible : Visibility.Collapsed;
             if (MenuRemoveDb != null) MenuRemoveDb.IsEnabled = canDb && _leftPanel?.ServerTree?.SelectedItem != null;
             UpdateCurrentProjectText();
             if (CurrentUserText != null)
@@ -571,6 +573,12 @@ namespace Configurator
             else Dispatcher.BeginInvoke(new Action(() => ApplyAuthorizationUi()));
         }
 
+        private void MenuUserSettings_Click(object sender, RoutedEventArgs e)
+        {
+            if (UserAuthorizationService.IsAdministrator)
+                new UserSettingsWindow { Owner = this }.ShowDialog();
+        }
+
         private async void MenuSwitchUser_Click(object sender, RoutedEventArgs e)
         {
             if (_loginDialogOpen) return;
@@ -602,23 +610,6 @@ namespace Configurator
             new ThemePickerWindow { Owner = this }.ShowDialog();
         }
 
-        private async Task SaveOnlineProjectSettingsAsync(
-            Configurator.Infrastructure.Projects.ProjectCompareSettingsStore store,
-            Configurator.Core.Compare.ProjectCompareSettings settings)
-        {
-            try
-            {
-                await store.SaveAsync(settings);
-                StatusText.Text = "Настройки темы сохранены локально для выбранной Online-БД";
-            }
-            catch (Exception ex)
-            {
-                Configurator.Infrastructure.ModernDialog.Show(this,
-                    "Не удалось сохранить настройки темы проекта: " + Configurator.Infrastructure.UserErrorMessage.Format(ex),
-                    "Тема проекта", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-        }
-
         private void BtnOpenConnection_Click(object sender, RoutedEventArgs e)
         {
             if (!UserAuthorizationService.Require(Permission.ManageDatabases)) return;
@@ -626,26 +617,38 @@ namespace Configurator
             window.OnDatabaseAdded = (dbName) =>
             {
                 string newServer = window.Settings.Server;
-                if (!string.Equals(newServer, _connection.Server, StringComparison.OrdinalIgnoreCase) ||
-                    _connection.User != window.Settings.User || _connection.Password != window.Settings.Password)
-                    CloseCompareWindow();
-                if (!string.IsNullOrEmpty(_connection.Server) && !newServer.Equals(_connection.Server, StringComparison.OrdinalIgnoreCase))
+                bool serverChanged = !string.Equals(newServer, _connection.Server, StringComparison.OrdinalIgnoreCase);
+                bool connectionChanged = serverChanged || _connection.User != window.Settings.User ||
+                    _connection.Password != window.Settings.Password;
+                if (connectionChanged)
                 {
-                    _vms.Clear(); _loadedTreeNodes.Clear(); _connection.ConnectedDatabases.Clear(); _connection.KnownDatabases.Clear(); _failedDatabases.Clear(); ClearActiveTable();
+                    CloseCompareWindow();
+                    _databaseRefreshCancellation?.Cancel();
+                    _loadGeneration++;
+                    _vms.Clear();
+                    _loadedTreeNodes.Clear();
+                    _failedDatabases.Clear();
+                    ClearActiveTable();
+                    _connection.ConnectedDatabases.Clear();
+                    if (serverChanged) _connection.KnownDatabases.Clear();
                 }
                 _connection.Server = newServer;
                 _connection.User = window.Settings.User;
                 _connection.Password = window.Settings.Password;
                 if (_connection.ConnectedDatabases.Any(db => db.Equals(dbName, StringComparison.OrdinalIgnoreCase))) return false;
                 _connection.ConnectedDatabases.Add(dbName);
-                _selectedDbName = dbName;
+                if (connectionChanged)
+                {
+                    _selectedDbName = "";
+                    _mode2ProjectSelectedOnEntry = _mode3ProjectSelectedOnEntry = false;
+                }
                 UpdateCurrentProjectText();
                 if (!_connection.KnownDatabases.Any(db => db.Equals(dbName, StringComparison.OrdinalIgnoreCase))) _connection.KnownDatabases.Add(dbName);
                 _failedDatabases.Remove(dbName);
                 RebuildTree();
                 UpdateAddDbButtonState();
-                _templateEditor?.Configure(_connection, GetActiveDatabases(), dbName);
-                _projectEditor?.Configure(_connection, GetActiveDatabases(), dbName);
+                _templateEditor?.Configure(_connection, GetActiveDatabases(), _selectedDbName);
+                _projectEditor?.Configure(_connection, GetActiveDatabases(), _selectedDbName);
                 try { _connection.SaveToFile(); }
                 catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show($"Не удалось сохранить настройки: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", "Ошибка", MessageBoxButton.OK, MessageBoxImage.Warning); }
                 return true;
@@ -655,24 +658,6 @@ namespace Configurator
 
         private void BtnRemoveDb_Click(object sender, RoutedEventArgs e) { if (!UserAuthorizationService.Require(Permission.ManageDatabases)) return; RemoveSelectedDatabase(); UpdateAddDbButtonState(); ApplyAuthorizationUi(); }
         private void BtnToggleFields_Click(object sender, RoutedEventArgs e) { SetFieldsPanelExpanded(!_fieldsPanelExpanded, true); }
-
-        private void BtnFilter_Click(object sender, RoutedEventArgs e)
-        {
-            if (_activeVm == null || _activeVm.Columns == null || _activeVm.Columns.Count == 0) return;
-            var window = new TableFilterWindow(_activeVm.Columns, _activeVm.Filter) { Owner = this };
-            if (window.ShowDialog() != true) return;
-            _activeVm.SetFilter(window.Result);
-            UpdateFilterButtonState();
-            _ = LoadDataAsync();
-        }
-
-        private void UpdateFilterButtonState()
-        {
-            if (_rightPanel?.BtnFilter == null) return;
-            bool active = _activeVm?.Filter?.IsActive == true;
-            _rightPanel.BtnFilter.Content = active ? "⌕  Фильтр •" : "⌕  Фильтр";
-            _rightPanel.BtnFilter.ToolTip = active ? $"Фильтр: {_activeVm.Filter.Column} {_activeVm.Filter.Operator}" : "Фильтр текущей таблицы";
-        }
 
         private void SetFieldsPanelExpanded(bool expanded, bool syncMenu)
         {
@@ -705,8 +690,9 @@ namespace Configurator
                 }
                 else
                 {
-                    string active = GetActiveDatabases().FirstOrDefault() ?? "";
+                    string active = "";
                     _selectedDbName = active;
+                    _mode2ProjectSelectedOnEntry = _mode3ProjectSelectedOnEntry = false;
                     UpdateCurrentProjectText();
                     _templateEditor?.Configure(_connection, GetActiveDatabases(), active);
                     _projectEditor?.Configure(_connection, GetActiveDatabases(), active);
@@ -860,8 +846,6 @@ namespace Configurator
                 }
                 if (!window.ConnectNewRequested) return false;
                 BtnOpenConnection_Click(this, new RoutedEventArgs());
-                if (string.IsNullOrWhiteSpace(_selectedDbName) || !GetActiveDatabases().Any(x => x.Equals(_selectedDbName, StringComparison.OrdinalIgnoreCase)))
-                    _selectedDbName = GetActiveDatabases().FirstOrDefault() ?? _selectedDbName;
                 UpdateCurrentProjectText();
             }
         }
@@ -951,12 +935,18 @@ namespace Configurator
         private void NavFbEditor_Click(object sender, RoutedEventArgs e) => ActivateMode(4);
         private void MenuViewFullscreen_Click(object sender, RoutedEventArgs e) { WindowState = WindowState == WindowState.Normal ? WindowState.Maximized : WindowState.Normal; }
 
-        private void MenuOptionsCheckFields_Click(object sender, RoutedEventArgs e)
+        private void MenuOptionsCheckRecord_Click(object sender, RoutedEventArgs e)
         {
             if (!UserAuthorizationService.Require(Permission.CheckTools)) return;
+            if (!_workspaceModeChosen || _isOfflineWorkspace || _offlineSelectionRequired) return;
             var activeDatabases = GetActiveDatabases();
-            if (activeDatabases.Count == 0) { Configurator.Infrastructure.ModernDialog.Show("Сначала подключите хотя бы одну активную базу данных.", "Проверить свободные поля", MessageBoxButton.OK, MessageBoxImage.Information); return; }
-            var window = new FreeRecordCheckWindow(_connection, activeDatabases, _selectedDbName) { Owner = this }; window.ShowDialog();
+            if (activeDatabases.Count == 0)
+            {
+                Configurator.Infrastructure.ModernDialog.Show("Сначала подключите хотя бы одну активную базу данных.",
+                    "Проверить Record", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            new FreeRecordCheckWindow(_connection.ToConnectionString, activeDatabases, _selectedDbName) { Owner = this }.ShowDialog();
         }
 
         private void MenuOptionsCheckAddresses_Click(object sender, RoutedEventArgs e)
@@ -986,8 +976,15 @@ namespace Configurator
         private void MenuDatabaseFreeSql_Click(object sender, RoutedEventArgs e)
         {
             if (!UserAuthorizationService.Require(Permission.FreeSql)) return;
-            if (_connection.ConnectedDatabases.Count == 0) { Configurator.Infrastructure.ModernDialog.Show("Сначала подключите хотя бы одну базу данных.", "Свободный ввод", MessageBoxButton.OK, MessageBoxImage.Information); return; }
-            var window = new FreeSqlWindow(_connection, _selectedDbName) { Owner = this }; window.ShowDialog();
+            var activeDatabases = GetActiveDatabases();
+            if (_isOfflineWorkspace || activeDatabases.Count == 0)
+            {
+                Configurator.Infrastructure.ModernDialog.Show(this, "Подключите базу проекта в режиме Online.",
+                    "Свободный ввод SQL", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            var window = new FreeSqlWindow(_connection.ToConnectionString, activeDatabases, _selectedDbName) { Owner = this };
+            window.ShowDialog();
         }
 
         private void MenuHelpHotkeys_Click(object sender, RoutedEventArgs e) { var window = new HotkeysWindow { Owner = this }; window.ShowDialog(); }
@@ -1024,7 +1021,12 @@ namespace Configurator
 
         private void MenuFileExit_Click(object sender, RoutedEventArgs e) => Close();
 
-        private void MenuHelpDocs_Click(object sender, RoutedEventArgs e) => Configurator.Infrastructure.ModernDialog.Show("Документация будет добавлена в следующей версии.", "Информация", MessageBoxButton.OK, MessageBoxImage.Information);
+        private void MenuHelpDocs_Click(object sender, RoutedEventArgs e) => Configurator.Infrastructure.ModernDialog.Show(this,
+            "Начало работы: выберите Online для SQL Server или Offline для локального файла .cfgproj. В Online добавьте базу через меню «База данных»; сервер должен предъявить доверенный сертификат.\n\n" +
+            "БД проекта: выберите таблицу слева, затем просматривайте и редактируйте её строки доступными кнопками. «Структура БД» показывает классы и связи. В разделе «Объекты проекта» выберите проект и класс для работы с объектами.\n\n" +
+            "Локальная копия создаётся через «Файл → Сохранить локальную копию». Для работы с ней выберите Offline и откройте файл .cfgproj. Сравнение проектов и проверка Record находятся в меню «Опции» при наличии прав.\n\n" +
+            "Доступность действий зависит от роли пользователя. Для сочетаний клавиш откройте «Справка → Горячие клавиши».",
+            "Справка", MessageBoxButton.OK, MessageBoxImage.Information);
     private void TemplateEditor_ActionLogged(string description, string source, string details)
     {
         ConfigureJournalContext();

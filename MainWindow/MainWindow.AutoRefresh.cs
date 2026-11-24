@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
@@ -13,6 +13,7 @@ public partial class MainWindow
     private DateTime _lastSchemaAutoRefresh = DateTime.MinValue;
     private bool _autoRefreshInProgress;
     private DateTime _lastConnectionCheck = DateTime.MinValue;
+    private System.Threading.CancellationTokenSource _databaseRefreshCancellation;
 
     private static readonly bool _autoRefreshHandlerRegistered = RegisterAutoRefreshHandler();
 
@@ -39,14 +40,17 @@ public partial class MainWindow
         };
         _databaseAutoRefreshTimer.Tick += async (s, e) => await AutoRefreshDatabaseViewAsync();
         _databaseAutoRefreshTimer.Start();
-        _leftPanel.SetLoadingStatus("Автообновление включено", false);
+        if (!_isOfflineWorkspace && !_offlineSelectionRequired)
+            _leftPanel.SetLoadingStatus("Автообновление включено", false);
     }
 
     private async System.Threading.Tasks.Task AutoRefreshDatabaseViewAsync()
     {
-        if (_connection == null || _connection.ConnectedDatabases.Count == 0) return;
+        if (_isOfflineWorkspace || _offlineSelectionRequired || _connection == null || _connection.ConnectedDatabases.Count == 0) return;
         if (_autoRefreshInProgress) return;
         _autoRefreshInProgress = true;
+        using var refreshCancellation = new System.Threading.CancellationTokenSource();
+        _databaseRefreshCancellation = refreshCancellation;
         try
         {
             // Probe connectivity even while an editor has keyboard focus. A dead connection
@@ -55,20 +59,23 @@ public partial class MainWindow
             {
                 _lastConnectionCheck = DateTime.UtcNow;
                 var names = _connection.ConnectedDatabases.ToList();
-                var checks = names.Select(async dbName => (dbName, connected: await _connection.TestConnectionAsync(dbName))).ToArray();
+                var checks = names.Select(async dbName => (dbName, connected: await _connection.TestConnectionAsync(dbName, refreshCancellation.Token))).ToArray();
                 var results = await Task.WhenAll(checks);
+                if (refreshCancellation.IsCancellationRequested || _isOfflineWorkspace || _offlineSelectionRequired) return;
                 foreach (var result in results)
                 {
                     if (result.connected) MarkDatabaseAvailable(result.dbName);
                     else MarkDatabaseUnavailable(result.dbName, null);
                 }
             }
-            if (EditorModeView.Visibility != Visibility.Visible) return;
+            if (refreshCancellation.IsCancellationRequested || _isOfflineWorkspace || _offlineSelectionRequired || EditorModeView.Visibility != Visibility.Visible) return;
             if (System.Windows.Input.Keyboard.FocusedElement is System.Windows.Controls.TextBox) return;
             // Avoid racing the user's paging/filter queries with background refresh.
             // Filtered result sets can be expensive and are refreshed on explicit navigation.
-            if (_activeVm != null && !string.IsNullOrWhiteSpace(_activeDbName) && _activeVm.Filter?.IsActive != true)
+            if (_activeVm != null && !string.IsNullOrWhiteSpace(_activeDbName) && !_activeVm.ColumnView.IsActive)
                 await RefreshActiveTableIfChangedAsync();
+
+            if (refreshCancellation.IsCancellationRequested || _isOfflineWorkspace || _offlineSelectionRequired) return;
 
             if ((DateTime.UtcNow - _lastSchemaAutoRefresh).TotalSeconds >= 15)
             {
@@ -80,6 +87,7 @@ public partial class MainWindow
 
                 foreach (var dbName in expanded)
                 {
+                    if (refreshCancellation.IsCancellationRequested || _isOfflineWorkspace || _offlineSelectionRequired) return;
                     var node = _leftPanel.ServerTree.Items.OfType<System.Windows.Controls.TreeViewItem>()
                         .FirstOrDefault(x => string.Equals(x.Tag?.ToString(), dbName, StringComparison.OrdinalIgnoreCase));
                     if (node == null) continue;
@@ -89,6 +97,7 @@ public partial class MainWindow
         }
         catch (Exception ex)
         {
+            if (refreshCancellation.IsCancellationRequested || _isOfflineWorkspace || _offlineSelectionRequired) return;
             System.Diagnostics.Debug.WriteLine($"[AutoRefreshDatabaseView] {ex.Message}");
             if (ex is Microsoft.Data.SqlClient.SqlException sqlEx && (sqlEx.Number == 208 || sqlEx.Number == 207))
             {
@@ -102,11 +111,12 @@ public partial class MainWindow
             else if (ex is Microsoft.Data.SqlClient.SqlException sqlFailure && IsConnectionFailure(sqlFailure))
                 MarkDatabaseUnavailable(_activeDbName, ex);
         }
-        finally { _autoRefreshInProgress = false; }
+        finally { _databaseRefreshCancellation = null; _autoRefreshInProgress = false; }
     }
 
     protected void StopDatabaseAutoRefresh()
     {
+        _databaseRefreshCancellation?.Cancel();
         _databaseAutoRefreshTimer?.Stop();
         _databaseAutoRefreshTimer = null;
     }
@@ -163,6 +173,7 @@ public partial class MainWindow
         try
         {
             var tables = await vm.GetTableListAsync();
+            if (_isOfflineWorkspace || _offlineSelectionRequired || _databaseRefreshCancellation?.IsCancellationRequested == true) return;
             var incoming = tables.Rows.Cast<DataRow>()
                 .Select(r => $"{Convert.ToString(r[0])}.{Convert.ToString(r[1])}")
                 .Where(x => !x.EndsWith(".", StringComparison.Ordinal))

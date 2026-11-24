@@ -15,6 +15,7 @@ namespace Configurator
 
         /// <summary>Maximum rows a free-SQL SELECT materializes; the rest is cancelled on the server.</summary>
         public const int FreeSqlMaxResultRows = 10_000;
+        public static readonly TimeSpan FreeSqlConfirmationTimeout = TimeSpan.FromSeconds(60);
 
         /// <summary>
         /// Runs one validated statement. SELECT results are capped at <see cref="FreeSqlMaxResultRows"/>
@@ -22,15 +23,21 @@ namespace Configurator
         /// when <paramref name="confirmAffectedRows"/> is supplied it receives the affected-row count before
         /// COMMIT, and a negative answer rolls the change back and throws <see cref="FreeSqlRolledBackException"/>.
         /// </summary>
-        public async Task<(DataTable Result, int AffectedRows)> ExecuteFreeSqlAsync(
+        public Task<(DataTable Result, int AffectedRows)> ExecuteFreeSqlAsync(
             string sql, IReadOnlyDictionary<string, object> parameters,
             string expectedDatabase = null, CancellationToken ct = default,
-            Func<int, Task<bool>> confirmAffectedRows = null)
+            Func<int, Task<bool>> confirmAffectedRows = null) =>
+            ExecuteFreeSqlCoreAsync(sql, parameters, expectedDatabase, ct, confirmAffectedRows, FreeSqlConfirmationTimeout);
+
+        internal async Task<(DataTable Result, int AffectedRows)> ExecuteFreeSqlCoreAsync(
+            string sql, IReadOnlyDictionary<string, object> parameters, string expectedDatabase,
+            CancellationToken ct, Func<int, Task<bool>> confirmAffectedRows, TimeSpan confirmationTimeout)
         {
-            bool expectsResult = FreeSqlPolicy.ValidateAndGetReturnsRows(sql);
+            var target = FreeSqlPolicy.Analyze(sql);
+            bool expectsResult = target.Table == null;
 
             using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
-            await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection, ct);
+            await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection, ct).ConfigureAwait(false);
 
             if (!string.IsNullOrWhiteSpace(expectedDatabase) &&
                 !string.Equals(connection.Database, expectedDatabase, StringComparison.OrdinalIgnoreCase))
@@ -103,14 +110,25 @@ namespace Configurator
             int affected;
             try
             {
-                affected = await command.ExecuteNonQueryAsync(ct);
+                // Verify the resolved target on the connection that performs the write.
+                using var check = new SqlCommand("""
+                    SELECT t.name FROM sys.tables t JOIN sys.schemas s ON s.schema_id=t.schema_id
+                    WHERE t.is_ms_shipped=0 AND s.name=@schema AND t.name=@table
+                    """, connection, transaction);
+                check.Parameters.Add("@schema", SqlDbType.NVarChar, 128).Value = target.Schema;
+                check.Parameters.Add("@table", SqlDbType.NVarChar, 128).Value = target.Table;
+                if (await check.ExecuteScalarAsync(ct).ConfigureAwait(false) is not string resolved)
+                    throw new InvalidOperationException("Цель записи должна быть существующей пользовательской таблицей.");
+                Configurator.Core.Projects.ProjectWriteGuard.EnsureDataTableWritable(resolved);
+                affected = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
                 SessionTestLog.Trace("FREE-SQL", $"DML [{connection.Database}] affected={affected}: {traceSql}");
-                if (confirmAffectedRows != null && !await confirmAffectedRows(affected))
+                if (confirmAffectedRows != null && !await ConfirmFreeSqlAsync(confirmAffectedRows, affected, ct, confirmationTimeout).ConfigureAwait(false))
                 {
                     transaction.Rollback();
                     SessionTestLog.Trace("FREE-SQL", $"ROLLBACK по решению пользователя; affected={affected}");
                     throw new FreeSqlRolledBackException(affected);
                 }
+                ct.ThrowIfCancellationRequested();
                 transaction.Commit();
             }
             catch (FreeSqlRolledBackException) { throw; }
@@ -120,6 +138,12 @@ namespace Configurator
                 throw;
             }
             return (null, affected);
+        }
+
+        internal static async Task<bool> ConfirmFreeSqlAsync(Func<int, Task<bool>> confirm, int affected, CancellationToken ct, TimeSpan? timeout = null)
+        {
+            try { return await confirm(affected).WaitAsync(timeout ?? FreeSqlConfirmationTimeout, ct).ConfigureAwait(false); }
+            catch (TimeoutException) { return false; }
         }
 
         private static bool IsValidParameterName(string name)

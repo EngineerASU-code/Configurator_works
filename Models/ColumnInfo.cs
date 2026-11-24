@@ -32,5 +32,7 @@
         /// Только для чтения (computed или timestamp/rowversion).
         /// </summary>
         public bool IsReadOnly => IsComputed || DataType == "timestamp" || DataType == "rowversion";
+
+        internal bool UsesTextOrdering => DataType?.ToLowerInvariant() is "text" or "ntext" or "image" or "xml";
     }
 }

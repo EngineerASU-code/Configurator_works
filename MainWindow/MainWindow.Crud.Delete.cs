@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
@@ -64,7 +64,8 @@ public partial class MainWindow
                 var plan = await protection.BuildPlanAsync(new DeletionRequest
                 {
                     TableName = deleteTable,
-                    Key = identity
+                    Key = identity,
+                    ExpectedValues = snapshot.Values
                 });
 
                 plans.Add((plan, snapshot.Values, identity));

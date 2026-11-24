@@ -8,19 +8,18 @@ using Configurator.Core.Projects;
 namespace Configurator;
 
 /// <summary>
-/// Persists graph rules either in the portable .cfgproj package (Offline) or in the legacy
+/// Reads graph rules either in the portable .cfgproj package (Offline) or in the legacy
 /// per-database JSON store (Online). An Offline instance never reads or writes AppData.
 /// </summary>
 public sealed class GraphRelationStore
 {
     private readonly string? _path;
     private readonly ConfiguratorProject? _project;
-    private static readonly JsonSerializerOptions Options = new() { WriteIndented = true };
 
     /// <summary>Legacy Online store scoped to a SQL Server/database pair.</summary>
     public GraphRelationStore(string server, string database)
     {
-        var safeServer = MakeSafe(server);
+        var safeServer = MakeSafe(ConnectionSettings.ProjectServerName(server));
         var safeDatabase = MakeSafe(database);
         var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Configurator", "GraphRelations");
         _path = Path.Combine(root, $"{safeServer}__{safeDatabase}.json");
@@ -53,24 +52,8 @@ public sealed class GraphRelationStore
         }
     }
 
-    public void Save(GraphRelationProjectDocument document)
-    {
-        document ??= new GraphRelationProjectDocument();
-        if (_project != null)
-        {
-            // Keep all graph metadata inside the project object; ProjectPackageService writes it to
-            // project/graph-relations.json when the user saves the .cfgproj file.
-            _project.GraphRelations = JsonNode.Parse(JsonSerializer.Serialize(document, Options)) as JsonObject ?? new JsonObject();
-            _project.Manifest.ModifiedUtc = DateTimeOffset.UtcNow;
-            return;
-        }
-
-        if (_path is null) throw new InvalidOperationException("Не задано хранилище связей графа.");
-        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
-        var temp = _path + ".tmp";
-        File.WriteAllText(temp, JsonSerializer.Serialize(document, Options));
-        File.Move(temp, _path, true);
-    }
+    public void Save(GraphRelationProjectDocument document) =>
+        throw new InvalidOperationException(ProjectWriteGuard.ArchitectureReadOnly);
 
     private static string MakeSafe(string value)
     {

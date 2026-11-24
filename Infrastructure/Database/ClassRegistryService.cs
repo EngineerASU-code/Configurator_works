@@ -1,3 +1,4 @@
+using Configurator.Core.Projects;
 using System;
 using System.Collections.Generic;
 using System.Data;
@@ -36,20 +37,7 @@ public sealed class ClassRegistryService
         bool existsResult = Convert.ToInt32(await exists.ExecuteScalarAsync(ct)) == 1;
 
         if (!existsResult)
-        {
-            const string createSql = """
-                CREATE TABLE [dbo].[Classes] (
-                    [Record] INT NOT NULL PRIMARY KEY,
-                    [Name] NVARCHAR(128) NOT NULL,
-                    [Description] NVARCHAR(500) NULL,
-                    [Available] BIT NOT NULL CONSTRAINT [DF_Classes_Available] DEFAULT (1),
-                    [TableName] NVARCHAR(256) NULL
-                )
-                """;
-            using var create = new SqlCommand(createSql, connection);
-            await create.ExecuteNonQueryAsync(ct);
-            return;
-        }
+            throw new InvalidOperationException("Реестр dbo.Classes отсутствует в выбранной базе.");
 
         var columns = await GetColumnsAsync(connection, ct);
         if (!columns.Contains("Record") && !columns.Contains("ClassNumber"))
@@ -111,71 +99,11 @@ public sealed class ClassRegistryService
         return result;
     }
 
-    public async Task UpsertAsync(ClassDefinition definition, CancellationToken ct = default)
-    {
-        if (definition == null) throw new ArgumentNullException(nameof(definition));
-        if (definition.ClassNumber <= 0) throw new InvalidOperationException("У класса должен быть положительный Class Number.");
+    public Task UpsertAsync(ClassDefinition definition, CancellationToken ct = default) =>
+        throw new InvalidOperationException(ProjectWriteGuard.ArchitectureReadOnly);
 
-        await EnsureRegistryAsync(ct);
-
-        using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
-        await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection, ct);
-
-        string numberColumn = await ResolveNumberColumnAsync(connection, ct);
-        var columns = await GetColumnsAsync(connection, ct);
-
-        string sql = $"""
-            IF EXISTS (SELECT 1 FROM [dbo].[Classes] WHERE [{numberColumn}] = @Number)
-                UPDATE [dbo].[Classes]
-                   SET [Name] = @Name
-                      {(columns.Contains("Description") ? ", [Description] = @Description" : "")}
-                      {(columns.Contains("Available") ? ", [Available] = @Available" : "")}
-                      {(columns.Contains("TableName") ? ", [TableName] = @TableName" : "")}
-                 WHERE [{numberColumn}] = @Number
-            ELSE
-                INSERT INTO [dbo].[Classes] ([{numberColumn}], [Name]
-                    {(columns.Contains("Description") ? ", [Description]" : "")}
-                    {(columns.Contains("Available") ? ", [Available]" : "")}
-                    {(columns.Contains("TableName") ? ", [TableName]" : "")})
-                VALUES (@Number, @Name
-                    {(columns.Contains("Description") ? ", @Description" : "")}
-                    {(columns.Contains("Available") ? ", @Available" : "")}
-                    {(columns.Contains("TableName") ? ", @TableName" : "")})
-            """;
-
-        using var command = new SqlCommand(sql, connection);
-        command.Parameters.Add("@Number", SqlDbType.Int).Value = definition.ClassNumber;
-        command.Parameters.Add("@Name", SqlDbType.NVarChar, 128).Value = definition.Name ?? "";
-
-        if (columns.Contains("Description"))
-            command.Parameters.Add("@Description", SqlDbType.NVarChar, 500).Value =
-                (object)definition.Description ?? DBNull.Value;
-
-        if (columns.Contains("Available"))
-            command.Parameters.Add("@Available", SqlDbType.Bit).Value = definition.Available;
-
-        if (columns.Contains("TableName"))
-            command.Parameters.Add("@TableName", SqlDbType.NVarChar, 256).Value =
-                (object)(definition.PrimaryStorage?.TableName) ?? DBNull.Value;
-
-        await command.ExecuteNonQueryAsync(ct);
-    }
-
-    public async Task RemoveAsync(ClassDefinition definition, CancellationToken ct = default)
-    {
-        if (definition == null || definition.ClassNumber <= 0) return;
-        await EnsureRegistryAsync(ct);
-
-        using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
-        await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection, ct);
-
-        string numberColumn = await ResolveNumberColumnAsync(connection, ct);
-        using var command = new SqlCommand(
-            $"DELETE FROM [dbo].[Classes] WHERE [{numberColumn}] = @Number",
-            connection);
-        command.Parameters.Add("@Number", SqlDbType.Int).Value = definition.ClassNumber;
-        await command.ExecuteNonQueryAsync(ct);
-    }
+    public Task RemoveAsync(ClassDefinition definition, CancellationToken ct = default) =>
+        throw new InvalidOperationException(ProjectWriteGuard.ArchitectureReadOnly);
 
     private static async Task<HashSet<string>> GetColumnsAsync(SqlConnection connection, CancellationToken ct)
     {

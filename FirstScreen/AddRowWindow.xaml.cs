@@ -29,6 +29,8 @@ namespace Configurator
         private readonly Func<string, CancellationToken, Task<int>> _scopedRecordProvider;
         private readonly Func<string, string, CancellationToken, Task<bool>> _recordExistsProvider;
         private readonly bool _editMode;
+        private readonly bool _preferFreeScopedRecord;
+        private string _suggestedRecordText;
         private CancellationTokenSource _recordCheckCts;
         private readonly Dictionary<string, ComboBox> _lookupInputs = new(StringComparer.OrdinalIgnoreCase);
 
@@ -48,7 +50,8 @@ namespace Configurator
             Dictionary<string, object> initialValues = null,
             bool editMode = false,
             Func<string, CancellationToken, Task<int>> scopedRecordProvider = null,
-            Func<string, string, CancellationToken, Task<bool>> recordExistsProvider = null)
+            Func<string, string, CancellationToken, Task<bool>> recordExistsProvider = null,
+            bool preferFreeScopedRecord = false)
         {
             InitializeComponent();
             _forcedClassNumber = forcedClassNumber;
@@ -57,6 +60,7 @@ namespace Configurator
             _scopedRecordProvider = scopedRecordProvider;
             _recordExistsProvider = recordExistsProvider;
             _editMode = editMode;
+            _preferFreeScopedRecord = preferFreeScopedRecord;
             _tableName = tableName ?? "";
             WindowTitle.Text = (editMode ? "Редактирование строки — " : "Новая строка — ") + _tableName;
             _columns = columns ?? new List<ColumnInfo>();
@@ -169,7 +173,8 @@ namespace Configurator
                         textBox.ToolTip = isClassNumber
                             ? "Номер класса назначается автоматически."
                             : isRecord
-                            ? (!string.IsNullOrWhiteSpace(_plcColumn) ? "Предложение: последний Record для выбранного PLC + 1. Значение можно изменить вручную." : "Предложение: последний Record + 1. Значение можно изменить вручную.")
+                            ? (_preferFreeScopedRecord ? "Предлагается первый пропуск в диапазоне Record выбранного PLC. Если пропусков нет, предлагается следующий номер. Значение можно изменить вручную."
+                                : !string.IsNullOrWhiteSpace(_plcColumn) ? "Предложение: последний Record для выбранного PLC + 1. Значение можно изменить вручную." : "Предложение: последний Record + 1. Значение можно изменить вручную.")
                             : (col.HasDefault ? "Пусто → значение по умолчанию" : col.IsNullable ? "Пусто → NULL" : "Обязательное поле");
 
                     fieldPanel.Children.Add(label);
@@ -295,9 +300,18 @@ namespace Configurator
             _recordCts = CancellationTokenSource.CreateLinkedTokenSource(externalToken);
             var ct = _recordCts.Token;
 
+            if (_preferFreeScopedRecord)
+            {
+                if (recordBox.Text == _suggestedRecordText)
+                    recordBox.Clear();
+                _suggestedRecordText = null;
+                BtnConfirm.IsEnabled = true;
+                if (!string.IsNullOrWhiteSpace(recordBox.Text)) return;
+            }
             if (string.IsNullOrWhiteSpace(plcText))
                 return;
 
+            if (_preferFreeScopedRecord) BtnConfirm.IsEnabled = false;
             try
             {
                 var plcColumn = _columns.FirstOrDefault(c => c.Name.Equals(_plcColumn, StringComparison.OrdinalIgnoreCase));
@@ -312,12 +326,16 @@ namespace Configurator
                 {
                     object plcValue = ConvertValue(plcText.Trim(), plcColumn);
                     var db = new DatabaseService(_connectionString);
-                    nextRecord = await db.GetNextScopedRecordValueAsync(_tableName, _recordColumn, _plcColumn, plcValue, ct);
+                    nextRecord = _preferFreeScopedRecord
+                        ? await db.GetFreeScopedRecordValueAsync(_tableName, _recordColumn, _plcColumn, plcValue, ct)
+                        : await db.GetNextScopedRecordValueAsync(_tableName, _recordColumn, _plcColumn, plcValue, ct);
                 }
                 if (generation != _recordGeneration || ct.IsCancellationRequested) return;
+                if (_preferFreeScopedRecord && !string.IsNullOrWhiteSpace(recordBox.Text)) return;
 
                 _updatingAutoRecord = true;
                 recordBox.Text = nextRecord.ToString(CultureInfo.InvariantCulture);
+                _suggestedRecordText = recordBox.Text;
                 _updatingAutoRecord = false;
             }
             catch (OperationCanceledException)
@@ -329,10 +347,16 @@ namespace Configurator
                 _updatingAutoRecord = false;
                 // Некорректный PLC не блокирует ручной ввод Record.
             }
+            finally
+            {
+                if (_preferFreeScopedRecord && generation == _recordGeneration && !ct.IsCancellationRequested)
+                    BtnConfirm.IsEnabled = true;
+            }
         }
 
         private async void BtnConfirm_Click(object sender, RoutedEventArgs e)
         {
+            if (!BtnConfirm.IsEnabled) return;
             if ((!string.IsNullOrWhiteSpace(_connectionString) || _scopedRecordProvider != null) &&
                 !string.IsNullOrWhiteSpace(_plcColumn) && !string.IsNullOrWhiteSpace(_recordColumn) &&
                 _fieldInputs.TryGetValue(_recordColumn, out var recordBox) && string.IsNullOrWhiteSpace(recordBox.Text))
@@ -343,7 +367,15 @@ namespace Configurator
                         ? Convert.ToString(plcCombo.SelectedValue, CultureInfo.InvariantCulture) ?? ""
                         : "";
                 if (!string.IsNullOrWhiteSpace(plcText))
+                {
                     await UpdateRecordFromPlcAsync(plcText, CancellationToken.None);
+                    if (_preferFreeScopedRecord && (!IsVisible || !BtnConfirm.IsEnabled)) return;
+                    if (_preferFreeScopedRecord && string.IsNullOrWhiteSpace(recordBox.Text))
+                    {
+                        Configurator.Infrastructure.ModernDialog.Show("Не удалось подобрать свободный Record. Укажите значение вручную.");
+                        return;
+                    }
+                }
             }
 
             Values = new Dictionary<string, object>();

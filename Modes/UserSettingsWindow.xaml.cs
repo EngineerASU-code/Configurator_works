@@ -12,6 +12,10 @@ public partial class UserSettingsWindow : Window
     {
         InitializeComponent();
         if (!UserAuthorizationService.IsAdministrator) { Loaded += (_, _) => { Configurator.Infrastructure.ModernDialog.Show("Настройки пользователей доступны только Администратору.", "Доступ запрещён", MessageBoxButton.OK, MessageBoxImage.Warning); Close(); }; return; }
+        RolesTab.Visibility = Visibility.Collapsed;
+        RoleBox.IsEnabled = false;
+        EnabledBox.IsEnabled = false;
+        DisplayNameBox.IsEnabled = false;
         Loaded += (_, _) => { RefreshRoles(); RefreshUsers(); };
     }
     private void RefreshUsers()
@@ -35,6 +39,7 @@ public partial class UserSettingsWindow : Window
     {
         PermissionsHost.Children.Clear();
         _checks.Clear();
+        bool hasMode1Rights = selected.Overlaps(new[] { Permission.Mode1View, Permission.Mode1Add, Permission.Mode1Edit, Permission.Mode1Delete });
         foreach (var group in PermissionCatalog.Groups)
         {
             var groupPanel = new StackPanel { Margin = new Thickness(0, 8, 0, 8) };
@@ -55,12 +60,13 @@ public partial class UserSettingsWindow : Window
             });
             foreach (var entry in group.Entries)
             {
-                bool isChecked = selected.Contains(entry.Permission);
+                bool isAdminRole = string.Equals(_originalRole, "Администратор", StringComparison.OrdinalIgnoreCase);
+                bool isChecked = isAdminRole || selected.Contains(entry.Permission);
                 // Display legacy aliases as effective selections without rewriting the stored role.
-                if (entry.Permission == Permission.Mode1View) isChecked |= selected.Contains(Permission.ViewData);
-                if (entry.Permission == Permission.Mode1Add) isChecked |= selected.Contains(Permission.AddData);
-                if (entry.Permission == Permission.Mode1Edit) isChecked |= selected.Contains(Permission.EditData);
-                if (entry.Permission == Permission.Mode1Delete) isChecked |= selected.Contains(Permission.DeleteData);
+                if (!hasMode1Rights && entry.Permission == Permission.Mode1View) isChecked |= selected.Contains(Permission.ViewData);
+                if (!hasMode1Rights && entry.Permission == Permission.Mode1Add) isChecked |= selected.Contains(Permission.AddData);
+                if (!hasMode1Rights && entry.Permission == Permission.Mode1Edit) isChecked |= selected.Contains(Permission.EditData);
+                if (!hasMode1Rights && entry.Permission == Permission.Mode1Delete) isChecked |= selected.Contains(Permission.DeleteData);
                 if (entry.Permission == Permission.Mode2Manage) isChecked |= selected.Contains(Permission.ManageClasses) || selected.Contains(Permission.ManageRelations);
                 if (entry.Permission == Permission.Mode3Manage) isChecked |= selected.Contains(Permission.ManageObjects);
 
@@ -74,6 +80,7 @@ public partial class UserSettingsWindow : Window
                     Margin = new Thickness(0, 2, 12, 0),
                     Foreground = (System.Windows.Media.Brush)FindResource("BrushText"),
                     IsChecked = isChecked,
+                    IsEnabled = !isAdminRole,
                     VerticalAlignment = VerticalAlignment.Top,
                     ToolTip = entry.Details ?? entry.Description
                 };

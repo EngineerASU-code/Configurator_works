@@ -2,7 +2,6 @@
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using Configurator.Core.Architecture;
 using Configurator.Core.Compare;
 using Configurator.Core.Projects;
 
@@ -21,19 +20,14 @@ public static class CompareTransfer
     {
         ArgumentNullException.ThrowIfNull(preview);
         cancellationToken.ThrowIfCancellationRequested();
+        if (preview.Kind is not (CompareMetadataKind.ProjectTextList or CompareMetadataKind.ThemePreset))
+            throw new CompareTransferException("Перенос этого типа настроек отключён.");
         if (!preview.IsAllowed) throw new CompareTransferException(preview.BlockReason ?? "Перенос заблокирован.");
         if (!preview.Target.CanWrite || preview.Target.Workspace.IsReadOnly)
             throw new CompareTransferException("Целевой источник недоступен для записи.");
         if (checkUserPermission)
         {
-            var permission = preview.Kind switch
-            {
-                CompareMetadataKind.ClassDefinition => Permission.ManageClasses,
-                CompareMetadataKind.ThemePreset => Permission.ManageTextLists,
-                CompareMetadataKind.ManualRelation => Permission.ManageRelations,
-                _ => Permission.ManageTextLists
-            };
-            if (!UserAuthorizationService.Has(Permission.Mode2Manage) && !UserAuthorizationService.Has(permission))
+            if (!UserAuthorizationService.Has(Permission.Mode2Manage) && !UserAuthorizationService.Has(Permission.ManageTextLists))
                 throw new CompareTransferException("Нет разрешения изменять этот тип настроек.");
         }
 
@@ -75,38 +69,11 @@ public static class CompareTransfer
                 var lists = targetSettings.TextLists.ToList();
                 var themes = targetSettings.ThemePresets.Select(item => item.Clone()).ToList();
                 ApplyProjectSettings(lists, themes, preview);
-                await preview.Target.SaveProjectSettingsAsync(new ProjectCompareSettings(lists, themes), cancellationToken).ConfigureAwait(false);
+                await preview.Target.SaveProjectSettingsAsync(new ProjectCompareSettings(lists, themes), preview.TargetFingerprint, cancellationToken).ConfigureAwait(false);
             }
             return;
         }
 
-        var sourceNow = await CompareMetadataTransferPreview.ReadAsync(preview.Source, cancellationToken).ConfigureAwait(false);
-        if (!preview.SourceFingerprint.Equals(CompareMetadataTransferPreview.Fingerprint(sourceNow.Classes, sourceNow.Relations), StringComparison.OrdinalIgnoreCase))
-            throw new CompareTransferException("Исходные настройки изменились после сравнения. Повторите сравнение.");
-
-        if (preview.Target.Workspace.IsOffline)
-        {
-            if (string.IsNullOrWhiteSpace(preview.Target.PackagePath) || string.IsNullOrWhiteSpace(preview.Target.PackageFingerprint))
-                throw new CompareTransferException("Не удалось проверить целевой локальный проект. Повторите сравнение.");
-            string path = Path.GetFullPath(preview.Target.PackagePath);
-            var attributes = File.GetAttributes(path);
-            if ((attributes & (FileAttributes.ReadOnly | FileAttributes.ReparsePoint)) != 0)
-                throw new CompareTransferException("Целевой локальный проект доступен только для чтения.");
-            await using var file = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read, 81920, useAsync: true);
-            var (project, packageFingerprint) = await ProjectPackageService.ReadForCompareAsync(file, cancellationToken).ConfigureAwait(false);
-            if (!packageFingerprint.Equals(preview.Target.PackageFingerprint, StringComparison.OrdinalIgnoreCase))
-                throw new CompareTransferException("Локальный проект изменился после сравнения. Повторите сравнение.");
-            var architecture = new ProjectArchitectureDataSource(project, strictReads: true);
-            await ApplyMetadataToStoreAsync(architecture.GetClassDefinitionsAsync, architecture.GetGraphRelationsAsync,
-                architecture.SaveClassDefinitionsAsync, architecture.SaveGraphRelationsAsync, project.TableSchemas, preview, cancellationToken).ConfigureAwait(false);
-            await new ProjectPackageService().SaveAsync(path, project, cancellationToken, requireExisting: true, reservedFile: file).ConfigureAwait(false);
-            return;
-        }
-
-        var destinationTables = await preview.Target.Workspace.GetTablesAsync(cancellationToken).ConfigureAwait(false);
-        await ApplyMetadataToStoreAsync(preview.Target.Workspace.GetClassDefinitionsAsync,
-            preview.Target.Workspace.GetGraphRelationsAsync, preview.Target.Workspace.SaveClassDefinitionsAsync,
-            preview.Target.Workspace.SaveGraphRelationsAsync, destinationTables, preview, cancellationToken).ConfigureAwait(false);
     }
 
     private static void ApplyProjectSettings(List<ProjectTextList> textLists, List<Configurator.Themes.ThemePreset> themes,
@@ -137,36 +104,6 @@ public static class CompareTransfer
             throw new CompareTransferException("Исходный локальный проект изменился после сравнения. Повторите сравнение.");
     }
 
-    private static async Task ApplyMetadataToStoreAsync(
-        Func<CancellationToken, Task<IReadOnlyList<ClassDefinition>>> getClasses,
-        Func<CancellationToken, Task<JsonObject>> getRelations,
-        Func<IReadOnlyList<ClassDefinition>, CancellationToken, Task> saveClasses,
-        Func<JsonObject, CancellationToken, Task> saveRelations,
-        IReadOnlyList<ProjectTableSchema> tables,
-        CompareMetadataTransferPreview preview, CancellationToken cancellationToken)
-    {
-        var classes = await getClasses(cancellationToken).ConfigureAwait(false);
-        var relations = await getRelations(cancellationToken).ConfigureAwait(false);
-        if (!preview.TargetFingerprint.Equals(CompareMetadataTransferPreview.Fingerprint(classes, relations), StringComparison.OrdinalIgnoreCase))
-            throw new CompareTransferException("Целевые настройки изменились после сравнения. Повторите сравнение.");
-
-        if (preview.Kind == CompareMetadataKind.ClassDefinition)
-        {
-            if (preview.ClassDefinition is null) throw new CompareTransferException("В источнике отсутствует класс.");
-            var updated = classes.Where(item => !item.Id.Equals(preview.Key, StringComparison.OrdinalIgnoreCase)).ToList();
-            updated.Add(JsonSerializer.Deserialize<ClassDefinition>(JsonSerializer.Serialize(preview.ClassDefinition))!);
-            await saveClasses(updated, cancellationToken).ConfigureAwait(false);
-            return;
-        }
-
-        var document = CompareMetadataTransferPreview.DeserializeRelations(relations);
-        document.ManualRelations.RemoveAll(item => CompareMetadataTransferPreview.RelationId(item, tables).Equals(preview.Key, StringComparison.OrdinalIgnoreCase));
-        if (!preview.RemoveRelation && preview.Relation is not null)
-            document.ManualRelations.Add(JsonSerializer.Deserialize<GraphRelationDefinition>(JsonSerializer.Serialize(preview.Relation))!);
-        document.SuppressedAutomaticRelations.RemoveAll(id => id.Equals(preview.Key, StringComparison.OrdinalIgnoreCase));
-        await saveRelations(JsonSerializer.SerializeToNode(document) as JsonObject ?? new JsonObject(), cancellationToken).ConfigureAwait(false);
-    }
-
     public static async Task ApplyAsync(CompareTransferPreview preview, CancellationToken cancellationToken = default)
     {
         await ApplyCoreAsync(preview, cancellationToken, checkUserPermission: true).ConfigureAwait(false);
@@ -186,8 +123,11 @@ public static class CompareTransfer
             throw new CompareTransferException("Целевой источник недоступен для записи.");
 
         bool createsObject = preview.ExpectedRecord is null;
+        if (preview.TargetSchema is null || !ProjectWriteGuard.IsDataTableWritable(preview.TargetSchema.TableName))
+            throw new CompareTransferException("Изменение реестра классов отключено.");
         try
         {
+            await VerifyOfflineSnapshotAsync(preview.Source, cancellationToken).ConfigureAwait(false);
             if (preview.Target.Workspace.IsOffline)
                 await ApplyOfflineAsync(preview, createsObject, checkUserPermission, cancellationToken).ConfigureAwait(false);
             else
@@ -227,6 +167,7 @@ public static class CompareTransfer
 
         ValidateOfflineTarget(dataSource, schema, preview, createsObject);
         if (checkUserPermission) EnsureUserPermission(createsObject);
+        await VerifyOnlineSourceAsync(preview, cancellationToken).ConfigureAwait(false);
 
         using var workspace = new ProjectWorkspace(dataSource, dataSource);
         if (createsObject)
@@ -258,6 +199,7 @@ public static class CompareTransfer
         if (!preview.TargetMetadataFingerprint.Equals(currentMetadata, StringComparison.OrdinalIgnoreCase))
             throw new CompareTransferException("Классы или логические связи изменились после сравнения. Повторите сравнение.");
         if (checkUserPermission) EnsureUserPermission(createsObject);
+        await VerifyOnlineSourceAsync(preview, cancellationToken).ConfigureAwait(false);
 
         try
         {
@@ -276,6 +218,26 @@ public static class CompareTransfer
         if (!PermissionPolicy.CanEnterMode(UserAuthorizationService.CurrentUser, UserAuthorizationService.CurrentRole, 3) ||
             !UserAuthorizationService.Has(permission))
             throw new CompareTransferException("У текущего пользователя нет разрешения на выбранное действие.");
+    }
+
+    private static async Task VerifyOnlineSourceAsync(CompareTransferPreview preview, CancellationToken cancellationToken)
+    {
+        if (preview.Source.Workspace.IsOffline) return;
+        var expected = preview.SourceRecord;
+        var schema = preview.SourceSchema;
+        if (expected is null || schema is null || preview.SourceKeyValues.Count != schema.KeyColumns.Count)
+            throw new CompareTransferException("Не удалось проверить исходную запись. Повторите сравнение.");
+        var currentSchema = await preview.Source.Workspace.RefreshSchemaAsync(schema.TableName, cancellationToken).ConfigureAwait(false);
+        if (currentSchema is null || !SameSchema(schema, currentSchema))
+            throw new CompareTransferException("Схема исходной записи изменилась. Повторите сравнение.");
+        var page = await preview.Source.Workspace.ReadPageAsync(new ProjectReadQuery
+        {
+            TableName = schema.TableName, Filters = preview.SourceKeyValues, PageSize = 2
+        }, cancellationToken).ConfigureAwait(false);
+        if (page.TotalCount != 1 || page.Items.Count != 1 ||
+            !JsonNode.DeepEquals(expected.Values, page.Items[0].Values) ||
+            !string.Equals(expected.RowVersion, page.Items[0].RowVersion, StringComparison.Ordinal))
+            throw new CompareTransferException("Исходная запись изменилась после сравнения. Повторите сравнение.");
     }
 
     private static void ValidateOfflineTarget(OfflineProjectDataSource dataSource, ProjectTableSchema schema,

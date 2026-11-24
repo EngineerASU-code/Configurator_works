@@ -119,8 +119,7 @@ public sealed class OfflineSqlProviderInterceptionTests
     public void AllApplicationSqlConnectionConstructionMustPassThroughGuard()
     {
         var root = FindRepositoryRoot();
-        var offenders = Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
-            .Where(path => !path.Contains(Path.DirectorySeparatorChar + "tests" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        var offenders = ApplicationSources(root)
             .Where(path => !Path.GetFileName(path).Equals("SqlProviderGuard.cs", StringComparison.OrdinalIgnoreCase))
             .Where(path => File.ReadAllText(path).Contains("new SqlConnection(", StringComparison.Ordinal))
             .ToArray();
@@ -131,8 +130,7 @@ public sealed class OfflineSqlProviderInterceptionTests
     public void AllApplicationSqlConnectionOpenCallsRecheckOfflineGuard()
     {
         var root = FindRepositoryRoot();
-        var unguarded = Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
-            .Where(path => !path.Contains(Path.DirectorySeparatorChar + "tests" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        var unguarded = ApplicationSources(root)
             .SelectMany(path => File.ReadAllLines(path).Select((line, index) => new { path, line, lineNumber = index + 1 }))
             .Where(x => x.line.Contains("await connection.OpenAsync(", StringComparison.Ordinal) ||
                         x.line.Contains("await conn.OpenAsync(", StringComparison.Ordinal) ||
@@ -144,6 +142,14 @@ public sealed class OfflineSqlProviderInterceptionTests
             .Select(x => $"{x.path}:{x.lineNumber}: {x.line.Trim()}")
             .ToArray();
         Assert.Empty(unguarded);
+    }
+
+    private static IEnumerable<string> ApplicationSources(string root)
+    {
+        // Match the application project. Local audit helpers and generated files aren't compiled into it.
+        var excluded = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "App", "tests", "artifacts", "bin", "obj" };
+        return Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
+            .Where(path => !excluded.Contains(Path.GetRelativePath(root, path).Split(Path.DirectorySeparatorChar)[0]));
     }
 
     private static string FindRepositoryRoot()

@@ -1,4 +1,4 @@
-﻿<Window x:Class="Configurator.AccessSetupWindow"
+<Window x:Class="Configurator.AccessSetupWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Настройка доступа Configurator"
@@ -12,7 +12,7 @@
             <RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
         <TextBlock Text="Настройка административного доступа" FontSize="21" FontWeight="SemiBold" Foreground="{DynamicResource BrushText}" TextWrapping="Wrap"/>
-        <TextBlock Grid.Row="1" Margin="0,10,0,18" Text="До завершения настройки рабочий интерфейс недоступен. Новый пароль должен содержать не менее 5 символов." TextWrapping="Wrap" Foreground="{DynamicResource BrushTextSecondary}"/>
+        <TextBlock Grid.Row="1" Margin="0,10,0,18" Text="До завершения настройки рабочий интерфейс недоступен. Новый пароль администратора должен содержать не менее 12 символов." TextWrapping="Wrap" Foreground="{DynamicResource BrushTextSecondary}"/>
         <TextBlock x:Name="CurrentPasswordLabel" Grid.Row="2" Text="Текущий пароль администратора" Margin="0,0,0,5" Foreground="{DynamicResource BrushText}"/>
         <PasswordBox x:Name="CurrentPasswordBox" Grid.Row="3" Height="42" Padding="9,0" VerticalContentAlignment="Center"/>
         <TextBlock Grid.Row="4" Margin="0,14,0,5" Text="Новый пароль администратора" Foreground="{DynamicResource BrushText}"/>

@@ -16,7 +16,7 @@ namespace Configurator;
 public sealed class ProjectArchitectureResolver
 {
     public static string GetProjectIdentity(string server, string database)
-        => $"{server?.Trim()}\0{database?.Trim()}";
+        => $"{ConnectionSettings.ProjectServerName(server)}\0{database?.Trim()}";
 
     private static readonly IReadOnlyDictionary<string, string[]> Candidates =
         new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)

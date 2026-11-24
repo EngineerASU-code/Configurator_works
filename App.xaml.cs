@@ -17,25 +17,30 @@ namespace Configurator
             // приложения не появляется в "не той" палитре.
             try { ThemeManager.InitializeDefault(); }
             catch { /* Ресурсы темы имеют безопасные значения из App.xaml. */ }
-            try
-            {
-                UserAuthorizationService.Initialize();
-            }
-            catch (Exception ex)
-            {
-                global::System.Windows.MessageBox.Show(
-                    "Не удалось безопасно прочитать хранилище учётных записей. Приложение не будет запускаться и не перезапишет файл.\n\n" + ex.Message,
-                    "Ошибка авторизации", MessageBoxButton.OK, MessageBoxImage.Error);
-                Shutdown(-1);
-                return;
-            }
-
+            var initialization = Task.Run(UserAuthorizationService.Initialize);
             var welcome = new WorkspaceStartupDialog();
             SetRequestedWindowPosition(welcome, e.Args);
             MainWindow = welcome;
             ShutdownMode = ShutdownMode.OnMainWindowClose;
-            welcome.StartRequested += (_, _) =>
+            bool opening = false;
+            welcome.StartRequested += async (_, _) =>
             {
+                if (opening) return;
+                opening = true;
+                try
+                {
+                    await initialization;
+                }
+                catch (Exception ex)
+                {
+                    global::System.Windows.MessageBox.Show(
+                        "Не удалось безопасно прочитать хранилище учётных записей. Приложение не будет запускаться и не перезапишет файл.\n\n" + ex.Message,
+                        "Ошибка авторизации", MessageBoxButton.OK, MessageBoxImage.Error);
+                    Shutdown(-1);
+                    return;
+                }
+                if (!welcome.IsVisible) return;
+                opening = false;
                 var dialog = UserAuthorizationService.NeedsInitialSetup
                     ? (Window)new AccessSetupWindow()
                     : new LoginWindow();

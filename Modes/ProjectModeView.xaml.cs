@@ -159,7 +159,6 @@ public partial class ProjectModeView : UserControl
     {
         var schemas = project.TableSchemas.Where(x => !string.IsNullOrWhiteSpace(x.TableName)).ToList();
         var classes = _architecture.Classes.ToList();
-        var changed = false;
         // Keep the Online resolver's class-to-table rules, but resolve exclusively against
         // the schemas captured in this .cfgproj. System class names are labels, not table names
         // (Valve -> dbo.Valves, DSV -> dbo.Valves2S, Program -> dbo.Prog, etc.).
@@ -204,7 +203,7 @@ public partial class ProjectModeView : UserControl
                 if (resolved != null && !resolved.Equals(mapped, StringComparison.OrdinalIgnoreCase))
                 {
                     var primary = cls.StorageMappings.FirstOrDefault(x => string.Equals(x?.Role, "primary", StringComparison.OrdinalIgnoreCase));
-                    if (primary != null) { primary.TableName = resolved; changed = true; }
+                    if (primary != null) { primary.TableName = resolved; }
                 }
                 else if (resolved == null)
                 {
@@ -219,7 +218,6 @@ public partial class ProjectModeView : UserControl
                         {
                             primary.TableName = byClassName[0].TableName;
                             primary.KeyColumns = byClassName[0].KeyColumns.ToList();
-                            changed = true;
                         }
                     }
                 }
@@ -244,7 +242,6 @@ public partial class ProjectModeView : UserControl
                 {
                     primary.TableName = resolvedClassTable;
                     if (schema != null) primary.KeyColumns = schema.KeyColumns.ToList();
-                    changed = true;
                 }
             }
         }
@@ -258,7 +255,7 @@ public partial class ProjectModeView : UserControl
             var leaf = schema.TableName.Split('.').Last().Trim('[', ']');
             if (classes.Any(c => c.Name.Equals(leaf, StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(c.PrimaryStorage?.TableName, schema.TableName, StringComparison.OrdinalIgnoreCase))) continue;
-            classes.Add(new ClassDefinition
+            _architecture.Upsert(new ClassDefinition
             {
                 Id = "offline-table-" + schema.TableName,
                 Name = leaf,
@@ -269,9 +266,7 @@ public partial class ProjectModeView : UserControl
                 Fields = schema.Columns.Select(c => new FieldDefinition { Name = c.Name, DataType = c.DataType, Size = Math.Max(0, c.MaxLength), Nullable = c.IsNullable, Description = c.IsIdentity ? "IDENTITY" : c.IsComputed ? "COMPUTED" : "" }).ToList()
             });
             mappedTables.Add(schema.TableName);
-            changed = true;
         }
-        if (changed) _architecture.Save();
     }
 
     private void DisposeWorkspace()
@@ -1209,6 +1204,13 @@ public partial class ProjectModeView : UserControl
                 ? hasSelection && UserAuthorizationService.Has(Permission.EditData)
                 : configMode && hasSelection && UserAuthorizationService.Has(Permission.ManageObjects);
         }
+        if (classMode && _selectedClass?.PrimaryStorage?.TableName is string table &&
+            !ProjectWriteGuard.IsDataTableWritable(table))
+        {
+            BtnNewObject.IsEnabled = BtnNewObjectsBatch.IsEnabled = BtnSave.IsEnabled =
+                BtnDuplicate.IsEnabled = BtnDelete.IsEnabled = false;
+            return;
+        }
         if (matrixCatalog && BtnNewObject != null) BtnNewObject.IsEnabled = false;
         if (matrixCatalog && BtnSave != null) BtnSave.IsEnabled = false;
         if (BtnDuplicate != null) BtnDuplicate.IsEnabled = !matrixCatalog && UserAuthorizationService.Has(Permission.AddData) && BtnDuplicate.IsEnabled;
@@ -1729,7 +1731,8 @@ public partial class ProjectModeView : UserControl
                 var plan = await protection.BuildPlanAsync(new DeletionRequest
                 {
                     TableName = tableName,
-                    Key = identity
+                    Key = identity,
+                    ExpectedValues = beforeSnapshot
                 });
 
                 if (plan.ValidationErrors.Count > 0)
@@ -1956,7 +1959,7 @@ public partial class ProjectModeView : UserControl
 
             if (identity.Count == 0) throw new InvalidOperationException("Не удалось определить ключ выбранного значения.");
             var protection = new DeletionProtectionService(connectionString, schema);
-            var plan = await protection.BuildPlanAsync(new DeletionRequest { TableName = table, Key = identity });
+            var plan = await protection.BuildPlanAsync(new DeletionRequest { TableName = table, Key = identity, ExpectedValues = beforeSnapshot });
             if (plan.ValidationErrors.Count > 0)
             {
                 Configurator.Infrastructure.ModernDialog.Show("Удаление заблокировано:\n\n" + string.Join("\n", plan.ValidationErrors), "Конфигурация", MessageBoxButton.OK, MessageBoxImage.Warning);

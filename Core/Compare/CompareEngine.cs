@@ -93,7 +93,9 @@ public static class CompareEngine
         differences.AddRange(CompareProjectItems("Темы проекта", settingsA.ThemePresets, settingsB.ThemePresets,
             item => item.Name.Trim(), item => JsonSerializer.Serialize(item),
             item => $"{item.Name} · фон {item.Base} · акцент {item.Accent}", CompareMetadataKind.ThemePreset));
-        return differences;
+        var fingerprintA = CompareMetadataTransferPreview.FingerprintProjectSettings(settingsA);
+        var fingerprintB = CompareMetadataTransferPreview.FingerprintProjectSettings(settingsB);
+        return differences.Select(row => row with { FingerprintA = fingerprintA, FingerprintB = fingerprintB }).ToArray();
     }
 
     private static string SerializeTextListForCompare(ProjectTextList item) => JsonSerializer.Serialize(new
@@ -318,7 +320,10 @@ public static class CompareEngine
                 status == CompareStatus.Ambiguous ? "Идентификатор класса отсутствует, повторяется или различается в проектах." : null));
         }
 
-        return [new CompareDifference("Классы", null, null, Aggregate(groups), groups)];
+        return [new CompareDifference("Классы", null, null, Aggregate(groups), groups.Select(row => row with
+        {
+            FingerprintA = snapshotA.MetadataFingerprint, FingerprintB = snapshotB.MetadataFingerprint
+        }).ToArray())];
     }
 
     private static CompareDifference ClassDifference(
@@ -894,7 +899,7 @@ public static class CompareEngine
                     unresolved ? "Конечная таблица связи отсутствует в сохранённой схеме." : null,
                 MetadataKind: !incomplete && !unresolved && (relationA?.IsManual == true || relationB?.IsManual == true)
                     ? CompareMetadataKind.ManualRelation : null,
-                MetadataKey: signature));
+                MetadataKey: signature) { FingerprintA = a.MetadataFingerprint, FingerprintB = b.MetadataFingerprint });
         }
 
         if (incomplete)

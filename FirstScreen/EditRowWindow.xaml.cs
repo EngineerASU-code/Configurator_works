@@ -2,6 +2,8 @@
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -18,24 +20,29 @@ namespace Configurator
         private readonly int? _forcedClassNumber;
         private readonly Dictionary<string, List<LookupOption>> _lookupOptions;
         private readonly Dictionary<string, ComboBox> _lookupInputs = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Func<string, CancellationToken, Task<int>> _suggestScopedRecord;
+        private CancellationTokenSource _recordSuggestion;
 
         public Dictionary<string, object> Values { get; private set; }
         public bool Confirmed { get; private set; } = false;
 
         public EditRowWindow(string tableName, List<ColumnInfo> columns,
             Dictionary<string, string> currentValues, string keyColumn,
-            string classNumberColumn = null, int? forcedClassNumber = null, Dictionary<string, List<LookupOption>> lookupOptions = null)
+            string classNumberColumn = null, int? forcedClassNumber = null, Dictionary<string, List<LookupOption>> lookupOptions = null,
+            Func<string, CancellationToken, Task<int>> suggestScopedRecord = null)
         {
             InitializeComponent();
             _classNumberColumn = classNumberColumn ?? "";
             _forcedClassNumber = forcedClassNumber;
             _lookupOptions = lookupOptions ?? new Dictionary<string, List<LookupOption>>(StringComparer.OrdinalIgnoreCase);
+            _suggestScopedRecord = suggestScopedRecord;
             WindowTitle.Text = $"Изменить строку — {tableName}";
             _columns = columns;
             _currentValues = currentValues;
             _keyColumn = keyColumn;
             GenerateFields();
             ValidateFields();
+            Closed += (_, _) => _recordSuggestion?.Cancel();
         }
 
         private void GenerateFields()
@@ -176,7 +183,7 @@ namespace Configurator
                     errors.Add($"\"{fieldName}\" обязательно");
             }
 
-            BtnSave.IsEnabled = errors.Count == 0;
+            BtnSave.IsEnabled = errors.Count == 0 && _recordSuggestion == null;
             if (errors.Count > 0)
             {
                 ValidationHint.Text = string.Join("\n", errors);
@@ -185,7 +192,7 @@ namespace Configurator
             else ValidationHint.Visibility = Visibility.Collapsed;
         }
 
-        private void BtnSave_Click(object sender, RoutedEventArgs e)
+        private async void BtnSave_Click(object sender, RoutedEventArgs e)
         {
             if (!BtnSave.IsEnabled) return;
             Values = new Dictionary<string, object>();
@@ -199,14 +206,18 @@ namespace Configurator
                     fieldName.Equals(_classNumberColumn, StringComparison.OrdinalIgnoreCase))
                     continue;
 
-                string text = _lookupInputs.TryGetValue(fieldName, out var lookupBox)
+                string input = _lookupInputs.TryGetValue(fieldName, out var lookupBox)
                     ? lookupBox.SelectedValue?.ToString() ?? ""
-                    : _fieldInputs.TryGetValue(fieldName, out var textBox) ? textBox.Text.Trim() : "";
+                    : _fieldInputs.TryGetValue(fieldName, out var textBox) ? textBox.Text : "";
+                if (_currentValues != null && _currentValues.TryGetValue(fieldName, out var original) &&
+                    string.Equals(input, original ?? "", StringComparison.Ordinal))
+                    continue;
+                string text = input.Trim();
 
                 if (string.IsNullOrEmpty(text))
                 {
-                    if (colInfo.HasDefault) continue;
                     if (colInfo.IsNullable) { Values[fieldName] = DBNull.Value; continue; }
+                    if (colInfo.HasDefault) continue;
                     if (!fieldName.Equals(_keyColumn, StringComparison.OrdinalIgnoreCase))
                         errors.Add($"Поле \"{fieldName}\" обязательно");
                     continue;
@@ -222,11 +233,62 @@ namespace Configurator
                 Values = null;
                 return;
             }
+
+            if (_suggestScopedRecord != null && !await ApplyScopedRecordSuggestionAsync()) return;
             Confirmed = true;
             Close();
         }
 
-        private static object ConvertValue(string text, ColumnInfo col)
+        private async Task<bool> ApplyScopedRecordSuggestionAsync()
+        {
+            var plc = _columns.First(c => c.Name.Equals("PLC", StringComparison.OrdinalIgnoreCase));
+            var record = _columns.First(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase));
+            if (!Values.TryGetValue(plc.Name, out var newPlc) ||
+                !_lookupInputs.TryGetValue(plc.Name, out var plcInput) ||
+                !_fieldInputs.TryGetValue(record.Name, out var recordInput)) return true;
+
+            _currentValues.TryGetValue(plc.Name, out var oldPlc);
+            _currentValues.TryGetValue(record.Name, out var oldRecord);
+            var selectedPlc = plcInput.SelectedValue?.ToString();
+            if (string.Equals(selectedPlc ?? "", oldPlc ?? "", StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(recordInput.Text.Trim(), oldRecord?.Trim() ?? "", StringComparison.Ordinal)) return true;
+
+            using var request = new CancellationTokenSource();
+            _recordSuggestion = request;
+            BtnSave.IsEnabled = false;
+            FieldsPanel.IsEnabled = false;
+            try
+            {
+                int suggestion = await _suggestScopedRecord(newPlc == DBNull.Value ? null : selectedPlc, request.Token);
+                request.Token.ThrowIfCancellationRequested();
+                string text = suggestion.ToString(CultureInfo.InvariantCulture);
+                Values[record.Name] = ConvertValue(text, record);
+                recordInput.Text = text;
+                return true;
+            }
+            catch (OperationCanceledException) when (request.IsCancellationRequested)
+            {
+                return false;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine(ex);
+                if (!request.IsCancellationRequested)
+                    Configurator.Infrastructure.ModernDialog.Show("Не удалось подобрать свободный Record для выбранного PLC. Укажите значение вручную.");
+                return false;
+            }
+            finally
+            {
+                _recordSuggestion = null;
+                if (!request.IsCancellationRequested)
+                {
+                    FieldsPanel.IsEnabled = true;
+                    ValidateFields();
+                }
+            }
+        }
+
+        internal static object ConvertValue(string text, ColumnInfo col)
         {
             if (col == null) return text;
 

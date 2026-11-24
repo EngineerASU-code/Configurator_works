@@ -151,6 +151,17 @@ public sealed class ProjectWorkspace : IProjectWorkspace, IDisposable
         Interlocked.Increment(ref _revision);
     }
 
+    internal async Task ReassignPlcAddressAsync(Configurator.Core.Workspace.AddressOwner owner, string newAddress,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureWritable();
+        if (IsOffline || _writer is not OnlineProjectCrudDataSource online || _architecture == null)
+            throw new NotSupportedException("Переназначение адреса доступно только для Online-проекта с разрешённой записью.");
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, cancellationToken);
+        await Configurator.PlcAddressReassignment.ExecuteAsync(online.ConnectionString, _architecture, owner, newAddress, linked.Token).ConfigureAwait(false);
+        Interlocked.Increment(ref _revision);
+    }
+
     public async Task<int> DeleteRecordsAsync(string tableName, IReadOnlyList<string> keyColumns, IReadOnlyList<IReadOnlyDictionary<string, object?>> keyValues, CancellationToken cancellationToken = default)
     { EnsureWritable(); using var linked = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, cancellationToken); var count = await _writer!.DeleteRecordsAsync(tableName, keyColumns, keyValues, linked.Token).ConfigureAwait(false); if (count > 0 && !IsOffline) Interlocked.Increment(ref _revision); return count; }
 
@@ -162,14 +173,8 @@ public sealed class ProjectWorkspace : IProjectWorkspace, IDisposable
         return await _architecture.GetClassDefinitionsAsync(linked.Token).ConfigureAwait(false);
     }
 
-    public async Task SaveClassDefinitionsAsync(IReadOnlyList<ClassDefinition> definitions, CancellationToken cancellationToken = default)
-    {
-        EnsureWritable();
-        if (_architecture == null) throw new NotSupportedException("Для текущего рабочего пространства не подключено хранилище архитектуры классов.");
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, cancellationToken);
-        await _architecture.SaveClassDefinitionsAsync(definitions, linked.Token).ConfigureAwait(false);
-        MarkArchitectureChanged();
-    }
+    public Task SaveClassDefinitionsAsync(IReadOnlyList<ClassDefinition> definitions, CancellationToken cancellationToken = default) =>
+        throw new InvalidOperationException(ProjectWriteGuard.ArchitectureReadOnly);
 
     public async Task<JsonObject> GetGraphRelationsAsync(CancellationToken cancellationToken = default)
     {
@@ -179,20 +184,8 @@ public sealed class ProjectWorkspace : IProjectWorkspace, IDisposable
         return await _architecture.GetGraphRelationsAsync(linked.Token).ConfigureAwait(false);
     }
 
-    public async Task SaveGraphRelationsAsync(JsonObject document, CancellationToken cancellationToken = default)
-    {
-        EnsureWritable();
-        if (_architecture == null) throw new NotSupportedException("Для текущего рабочего пространства не подключено хранилище связей графа.");
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, cancellationToken);
-        await _architecture.SaveGraphRelationsAsync(document, linked.Token).ConfigureAwait(false);
-        MarkArchitectureChanged();
-    }
-
-    private void MarkArchitectureChanged()
-    {
-        if (_reader is OfflineProjectDataSource offline) offline.NotifyProjectChanged();
-        else Interlocked.Increment(ref _revision);
-    }
+    public Task SaveGraphRelationsAsync(JsonObject document, CancellationToken cancellationToken = default) =>
+        throw new InvalidOperationException(ProjectWriteGuard.ArchitectureReadOnly);
 
     private void EnsureWritable()
     {

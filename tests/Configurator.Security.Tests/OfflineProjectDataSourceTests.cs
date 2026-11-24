@@ -115,15 +115,13 @@ public sealed class OfflineProjectDataSourceTests
     }
 
     [Fact]
-    public void SchemaUpsertReplacesCaseInsensitiveNameInsteadOfDuplicating()
+    public void CannotReplaceExistingSchemaInOpenedProject()
     {
         var project = CreateProject();
+        project.TableSchemas.Add(new ProjectTableSchema { TableName = "dbo.Items", KeyColumns = { "Id" } });
         var source = new OfflineProjectDataSource(project);
-        source.UpsertSchema(new ProjectTableSchema { TableName = "dbo.Items", Columns = new() { new ProjectColumnSchema { Name = "Id", DataType = "int" } } });
-        source.UpsertSchema(new ProjectTableSchema { TableName = "DBO.ITEMS", Columns = new() { new ProjectColumnSchema { Name = "Code", DataType = "nvarchar" } } });
-
-        var schema = Assert.Single(project.TableSchemas);
-        Assert.Equal("Code", Assert.Single(schema.Columns).Name);
+        Assert.Throws<InvalidOperationException>(() => source.UpsertSchema(new ProjectTableSchema { TableName = "DBO.ITEMS" }));
+        Assert.Equal("Id", Assert.Single(Assert.Single(project.TableSchemas).KeyColumns));
     }
 
     [Fact]

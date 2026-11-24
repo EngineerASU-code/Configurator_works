@@ -23,9 +23,21 @@
                            Margin="0,3,0,0"/>
             </StackPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal">
-                <Button x:Name="BtnFilter" Content="⌕  Фильтр"
-                        Style="{StaticResource BtnCompact}" MinWidth="108" Margin="0,0,8,0"
-                        ToolTip="Фильтр текущей таблицы"/>
+                <Button x:Name="BtnResetColumnView" Content="Сбросить фильтры и сортировку"
+                        Margin="0,0,8,0" ToolTip="Восстановить исходный вид выбранной таблицы">
+                    <Button.Style>
+                        <Style TargetType="Button" BasedOn="{StaticResource BtnCompact}">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding ItemsSource, ElementName=DataTableGrid}" Value="{x:Null}">
+                                    <Setter Property="IsEnabled" Value="False"/>
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding HasActiveColumnView, RelativeSource={RelativeSource AncestorType=UserControl}}" Value="False">
+                                    <Setter Property="IsEnabled" Value="False"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Button.Style>
+                </Button>
                 <Button x:Name="BtnToggleFields"
                         Content="Поля записи  ▼"
                         Style="{StaticResource BtnCompact}"
@@ -66,7 +78,7 @@
                       HeadersVisibility="Column"
                       CanUserAddRows="False" CanUserDeleteRows="False"
                       CanUserResizeRows="False"
-                      IsReadOnly="True" AutoGenerateColumns="True"
+                      IsReadOnly="True" AutoGenerateColumns="True" CanUserSortColumns="False"
                       SelectionMode="Extended" SelectionUnit="FullRow"
                       RowHeight="34"
                       ColumnHeaderHeight="38"
@@ -78,8 +90,8 @@
                            BasedOn="{StaticResource {x:Type DataGridColumnHeader}}">
                         <Setter Property="BorderBrush" Value="{DynamicResource BrushGridLine}"/>
                         <Setter Property="BorderThickness" Value="0,0,1,1"/>
-                        <Setter Property="Padding" Value="10,5"/>
-                        <Setter Property="HorizontalContentAlignment" Value="Left"/>
+                        <Setter Property="Padding" Value="0"/>
+                        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
                     </Style>
                 </DataGrid.ColumnHeaderStyle>
                 <DataGrid.CellStyle>

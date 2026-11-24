@@ -44,6 +44,5 @@ namespace Configurator
         }
 
         private static string EscapeSqlLiteral(string value) => (value ?? "").Replace("'", "''");
-        private static string QuoteStatic(string name) => "[" + (name ?? "").Replace("]", "]]" ) + "]";
     }
 }

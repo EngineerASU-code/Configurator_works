@@ -25,7 +25,7 @@ internal sealed class FunctionalBlockStore
 
     internal FunctionalBlockStore(string server, string database, string storageDirectory)
     {
-        var canonicalKey = $"{server.Trim().ToUpperInvariant()}\0{database.Trim().ToUpperInvariant()}";
+        var canonicalKey = $"{ConnectionSettings.ProjectServerName(server).ToUpperInvariant()}\0{database.Trim().ToUpperInvariant()}";
         var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonicalKey)));
         _path = Path.Combine(storageDirectory, $"{key}.json");
     }

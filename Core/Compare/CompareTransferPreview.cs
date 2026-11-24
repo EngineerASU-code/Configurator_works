@@ -22,10 +22,14 @@ public sealed class CompareTransferPreview
     public bool IsAllowed => BlockReason is null;
     public string? BlockReason { get; }
     public string Description { get; }
+    internal string Summary { get; private init; } = string.Empty;
 
     internal CompareSource Source { get; }
     internal CompareSource Target { get; }
     internal ProjectTableSchema? TargetSchema { get; private init; }
+    internal ProjectTableSchema? SourceSchema { get; private init; }
+    internal ProjectRecord? SourceRecord { get; private init; }
+    internal IReadOnlyDictionary<string, object?> SourceKeyValues { get; private init; } = new Dictionary<string, object?>();
     internal string? TargetMetadataFingerprint { get; private init; }
     internal ProjectRecord? ExpectedRecord { get; private init; }
     internal IReadOnlyDictionary<string, object?> KeyValues { get; private init; } = new Dictionary<string, object?>();
@@ -65,6 +69,8 @@ public sealed class CompareTransferPreview
         }
 
         var schema = toTable.Schema;
+        if (!ProjectWriteGuard.IsDataTableWritable(schema.TableName))
+            return Block("Изменение реестра классов отключено.");
         if (!target.Workspace.IsOffline &&
             (toTable.MetadataFingerprint is null || (to is null ? target.PhysicalSchema?.FindTable(schema.TableName)?.CanCompareInsert : target.PhysicalSchema?.FindTable(schema.TableName)?.CanCompareUpdate) != true))
             return Block("Условия записи в эту SQL-таблицу не подтверждены.");
@@ -73,6 +79,7 @@ public sealed class CompareTransferPreview
             return Block("Не подтверждён стабильный ключ целевой таблицы.");
 
         var keys = new Dictionary<string, object?>(Names);
+        var sourceKeys = new Dictionary<string, object?>(Names);
         var values = new Dictionary<string, object?>(Names);
         var fields = new List<string>();
 
@@ -84,6 +91,9 @@ public sealed class CompareTransferPreview
                 if (column is null || from.Values[key] is null || (to is not null && to.Values[key] is null))
                     return Block("В записи отсутствует значение ключа.");
                 keys.Add(column.Name, ToValue((to ?? from).Values[key], column));
+                var sourceColumn = FindColumn(fromTable.Schema, key);
+                if (sourceColumn is null) return Block("В источнике отсутствует поле ключа.");
+                sourceKeys.Add(sourceColumn.Name, ToValue(from.Values[key], sourceColumn));
             }
 
             if (difference.Column is string field)
@@ -171,11 +181,15 @@ public sealed class CompareTransferPreview
         var direction = aToB ? "A → B" : "B → A";
         var sourceLabel = source.PackagePath ?? $"Online · {source.Workspace.DisplayName}";
         var targetLabel = target.PackagePath ?? $"Online · {target.Workspace.DisplayName}";
-        var description = $"{direction} · {action}\nИсточник — {sourceLabel}\nЦель — {targetLabel}\n" +
-            $"{toTable.Class.Name} · {keyLabel}\n\n{string.Join("\n", fields)}";
-        return new CompareTransferPreview(source, target, description, null)
+        var summary = $"{direction} · {action}\nИсточник — {sourceLabel}\nЦель — {targetLabel}\n{toTable.Class.Name} · {keyLabel}";
+        return new CompareTransferPreview(source, target, $"{summary}\n\n{string.Join("\n", fields)}", null)
         {
+            Summary = summary,
             TargetSchema = schema,
+            SourceSchema = fromTable.Schema,
+            SourceRecord = new ProjectRecord { TableName = from.TableName, Key = from.Key, RowVersion = from.RowVersion,
+                Values = (JsonObject)from.Values.DeepClone() },
+            SourceKeyValues = sourceKeys,
             TargetMetadataFingerprint = toTable.MetadataFingerprint,
             ExpectedRecord = to is null ? null : new ProjectRecord
             {
@@ -184,6 +198,48 @@ public sealed class CompareTransferPreview
             },
             KeyValues = keys,
             Values = values
+        };
+    }
+
+    // Edits can only replace fields already approved in this preview. Keep the
+    // original expected row and package fingerprint for the eventual write.
+    internal CompareTransferPreview WithEdits(IReadOnlyDictionary<string, string?> edits)
+    {
+        if (edits.Count == 0) return this;
+        if (!IsAllowed || TargetSchema is null || ExpectedRecord is null)
+            throw new InvalidOperationException("Редактировать можно только поля существующей записи.");
+        var updated = new Dictionary<string, object?>(Values, Names);
+        foreach (var (field, input) in edits)
+        {
+            if (!Values.ContainsKey(field))
+                throw new InvalidOperationException($"Поле «{field}» недоступно для этой операции.");
+            var column = FindColumn(TargetSchema, field)!;
+            try
+            {
+                JsonNode? node = input is null ? null : column.DataType.ToLowerInvariant() switch
+                {
+                    "nvarchar" or "varchar" => JsonValue.Create(input),
+                    "bit" => JsonValue.Create(input.Trim() switch
+                    {
+                        "0" => false, "1" => true, var text => bool.Parse(text)
+                    }),
+                    _ => JsonNode.Parse(input.Trim().Replace(',', '.')) ?? throw new FormatException()
+                };
+                updated[field] = ToValue(node, column);
+            }
+            catch (Exception ex) when (ex is FormatException or OverflowException or JsonException or InvalidOperationException)
+            {
+                throw new InvalidOperationException($"Проверьте значение поля «{field}» ({column.DataType}).", ex);
+            }
+        }
+        OfflineProjectDataSource.ValidateValues(TargetSchema, updated, false, null);
+        var changes = updated.Select(pair =>
+            $"{pair.Key}  {Display(ExpectedRecord.Values[pair.Key])} → {Display(JsonSerializer.SerializeToNode(pair.Value))}");
+        return new CompareTransferPreview(Source, Target, $"{Summary}\n\n{string.Join("\n", changes)}", null)
+        {
+            Summary = Summary, TargetSchema = TargetSchema, TargetMetadataFingerprint = TargetMetadataFingerprint,
+            ExpectedRecord = ExpectedRecord, KeyValues = KeyValues, Values = updated,
+            SourceSchema = SourceSchema, SourceRecord = SourceRecord, SourceKeyValues = SourceKeyValues
         };
     }
 

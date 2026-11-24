@@ -29,6 +29,9 @@ public partial class MainWindow
         bool canOpen = PermissionPolicy.CanEnterMode(user, role, 2) ||
             PermissionPolicy.CanEnterMode(user, role, 3);
         MenuCompare.Visibility = canOpen ? Visibility.Visible : Visibility.Collapsed;
+        MenuCheckRecord.Visibility = UserAuthorizationService.Has(Permission.CheckTools) ? Visibility.Visible : Visibility.Collapsed;
+        MenuAddressMap.Visibility = MenuCheckRecord.Visibility;
+        MenuCheckRecord.IsEnabled = _workspaceModeChosen && !_isOfflineWorkspace && !_offlineSelectionRequired;
     }
 
     private void MenuCompare_Click(object sender, RoutedEventArgs e)

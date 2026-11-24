@@ -1,0 +1,145 @@
+# Изменения относительно ec1682c на ветке main
+
+## Состав
+
+- Таблицы и записи. Добавлены копирование и вставка строк, подбор свободного Record в контексте класса, проверка записей и экспорт. Переработаны фильтры, выбор таблицы, обновление представления и обработка столбцов Offline.
+- PLC. Добавлены каталог и окно карты адресов, расчёт пересечений и переназначение адресов.
+- Compare. Переработаны экран сравнения и подтверждение записи. Перенос повторно проверяет источник и назначение. Настройки сравнения учитывают конкурирующие изменения.
+- Архитектура и удаление. Изменены каталог классов, экран шаблонов, граф связей и ограничения записи структуры. Защита удаления проверяет зависимости и выбранную замену, включая операции с программными последовательностями.
+- Online и Offline. Обновлены проверка пакетов, маршрутизация операций и переключение рабочего пространства. В настройках подключения уточнены Windows-аутентификация, шифрование и явный локальный транспорт.
+- SQL. Изменены политика свободного SQL, окно запросов, библиотека сохранённых запросов и подтверждение транзакционных изменений.
+- Доступ и редакторы. Изменены начальные профили, правила смены пароля, проверка прав и окна входа и настроек. Доработаны журнал, редакторы программ и функциональных блоков, встроенная справка.
+- Проверки и документация. Расширены тесты пользовательских сценариев, SQL, Offline, Compare, авторизации и параллельных операций. Добавлены ТЗ и протокол предыдущей приёмки.
+
+## Проверка
+
+Штатный полный прогон Release с выделенным LocalDB завершился успешно. TRX tests_20261124_235812_5e1ef157.trx содержит 472 успешных теста, 0 ошибок и 0 пропусков. Git diff --check прошёл. Debug и ручной цикл WPF на этом снимке требуют отдельной проверки. Приёмка предыдущей сборки описана в remediation-verification.md. Открыты матрица ролей и решения владельца модели по конфликтам адресов и связям. Общие начальные учётные данные до смены пароля остаются риском. Протокол предыдущей приёмки содержит идентификаторы среды и ссылается на локальные материалы test-results.
+
+## Полный перечень путей
+
+M — изменён, A — добавлен. Удалений нет. Журналы, результаты тестов и сборочные каталоги остаются локальными.
+
+- M  `App.xaml.cs`
+- M  `Application/Architecture/ClassArchitectureService.cs`
+- M  `Configurator.csproj`
+- M  `Core/Architecture/DeletionPlan.cs`
+- M  `Core/Compare/CompareEngine.cs`
+- M  `Core/Compare/CompareMetadataTransferPreview.cs`
+- M  `Core/Compare/CompareModels.cs`
+- M  `Core/Compare/CompareTransferPreview.cs`
+- M  `Core/Projects/OfflineProjectDataSource.cs`
+- M  `Core/Projects/OnlineProjectCrudDataSource.cs`
+- M  `Core/Projects/ProjectWorkspace.cs`
+- M  `FirstScreen/AddRowWindow.xaml.cs`
+- M  `FirstScreen/ConnectionWindow.xaml`
+- M  `FirstScreen/ConnectionWindow.xaml.cs`
+- M  `FirstScreen/EditRowWindow.xaml.cs`
+- M  `FirstScreen/FreeSqlWindow.xaml`
+- M  `FirstScreen/FreeSqlWindow.xaml.cs`
+- M  `FirstScreen/RightPanel.xaml`
+- M  `FirstScreen/RightPanel.xaml.cs`
+- M  `FirstScreen/TableFilterWindow.xaml`
+- M  `FirstScreen/TableFilterWindow.xaml.cs`
+- M  `Infrastructure/Architecture/TemplateLibraryStore.cs`
+- M  `Infrastructure/Database/ClassRegistryService.cs`
+- M  `Infrastructure/Projects/CompareTransfer.cs`
+- M  `Infrastructure/Projects/ProjectCompareSettingsStore.cs`
+- M  `Infrastructure/Projects/ProjectPackageService.cs`
+- M  `MainWindow/MainWindow.ActionLog.cs`
+- M  `MainWindow/MainWindow.AutoRefresh.cs`
+- M  `MainWindow/MainWindow.Compare.cs`
+- M  `MainWindow/MainWindow.Crud.Delete.cs`
+- M  `MainWindow/MainWindow.Crud.cs`
+- M  `MainWindow/MainWindow.Filter.cs`
+- M  `MainWindow/MainWindow.LocalProject.cs`
+- M  `MainWindow/MainWindow.Tree.cs`
+- M  `MainWindow/MainWindow.xaml`
+- M  `MainWindow/MainWindow.xaml.cs`
+- M  `Models/ColumnInfo.cs`
+- M  `Models/ConnectionSettings.cs`
+- M  `Models/TableFilter.cs`
+- M  `Modes/AccessSetupWindow.xaml`
+- M  `Modes/CompareWindow.xaml`
+- M  `Modes/CompareWindow.xaml.cs`
+- M  `Modes/DatabaseGraphView.VisualFixes.cs`
+- M  `Modes/DatabaseGraphView.xaml`
+- M  `Modes/DatabaseGraphView.xaml.cs`
+- M  `Modes/DependencyReplacementWindow.xaml.cs`
+- M  `Modes/FreeRecordCheckWindow.xaml`
+- M  `Modes/FreeRecordCheckWindow.xaml.cs`
+- M  `Modes/FunctionalBlockEditorControl.xaml.cs`
+- M  `Modes/FunctionalBlockStore.cs`
+- M  `Modes/LoginWindow.xaml`
+- M  `Modes/LoginWindow.xaml.cs`
+- M  `Modes/LookupSettingsWindow.xaml.cs`
+- M  `Modes/ProgramManagementControl.xaml.cs`
+- M  `Modes/ProjectModeView.xaml.cs`
+- M  `Modes/TemplateArchitectureView.FieldRowTemplate.cs`
+- M  `Modes/TemplateArchitectureView.Fields.cs`
+- M  `Modes/TemplateArchitectureView.xaml`
+- M  `Modes/TemplateArchitectureView.xaml.cs`
+- M  `Modes/UserSettingsWindow.xaml`
+- M  `Modes/UserSettingsWindow.xaml.cs`
+- M  `Services/ChangeJournalService.cs`
+- M  `Services/DatabaseService.Connection.cs`
+- M  `Services/DatabaseService.Data.cs`
+- M  `Services/DatabaseService.FreeSql.cs`
+- M  `Services/DatabaseService.Records.cs`
+- M  `Services/DatabaseService.Rows.cs`
+- M  `Services/DatabaseService.Templates.cs`
+- M  `Services/DatabaseService.cs`
+- M  `Services/DeletionProtectionService.cs`
+- M  `Services/FreeSqlPolicy.cs`
+- M  `Services/GraphRelationStore.cs`
+- M  `Services/PermissionPolicy.cs`
+- M  `Services/ProgramRepository/ProgramManagementRepository.cs`
+- M  `Services/ProjectArchitectureResolver.cs`
+- M  `Services/UserAuthorizationService.cs`
+- M  `ViewModels/TableViewModel.Records.cs`
+- M  `ViewModels/TableViewModel.cs`
+- M  `tests/Configurator.Security.Tests/CompareTransferIntegrationTests.cs`
+- M  `tests/Configurator.Security.Tests/FunctionalBlockStoreTests.cs`
+- M  `tests/Configurator.Security.Tests/OfflineCompositeEditorRepositoryTests.cs`
+- M  `tests/Configurator.Security.Tests/OfflineObjectDeletionGuardTests.cs`
+- M  `tests/Configurator.Security.Tests/OfflineProjectDataSourceCrudMatrixTests.cs`
+- M  `tests/Configurator.Security.Tests/OfflineProjectDataSourceTests.cs`
+- M  `tests/Configurator.Security.Tests/OfflineSqlProviderInterceptionTests.cs`
+- M  `tests/Configurator.Security.Tests/ProjectArchitectureResolverTests.cs`
+- M  `tests/Configurator.Security.Tests/ProjectDataSourceContextTests.cs`
+- M  `tests/Configurator.Security.Tests/ProjectPackageServiceTests.cs`
+- M  `tests/Configurator.Security.Tests/TableViewModelIdentityTests.cs`
+- M  `tests/Configurator.Security.Tests/UserAuthorizationSecurityTests.cs`
+- A  `Application/PlcAddressCatalog.cs`
+- A  `Application/PlcAddressReassignment.cs`
+- A  `Application/ProjectClassCatalog.cs`
+- A  `Application/RecordCheckCatalog.cs`
+- A  `Core/Projects/ProjectWriteGuard.cs`
+- A  `Core/Projects/TableClipboard.cs`
+- A  `Core/Workspace/PlcAddressMap.cs`
+- A  `Core/Workspace/RecordCheckResult.cs`
+- A  `Core/Workspace/ScopedRecordSuggestion.cs`
+- A  `docs/remediation-spec.md`
+- A  `docs/remediation-verification.md`
+- A  `docs/session-changes.md`
+- A  `FirstScreen/OfflineColumnView.cs`
+- A  `Infrastructure/Database/SavedSqlQueryStore.cs`
+- A  `MainWindow/MainWindow.AddressMap.cs`
+- A  `MainWindow/MainWindow.TableClipboard.cs`
+- A  `Modes/CompareWriteWindow.xaml`
+- A  `Modes/CompareWriteWindow.xaml.cs`
+- A  `Modes/PlcAddressWindow.xaml`
+- A  `Modes/PlcAddressWindow.xaml.cs`
+- A  `Services/DatabaseService.TablePaste.cs`
+- A  `tests/Configurator.Security.Tests/ColumnViewTests.cs`
+- A  `tests/Configurator.Security.Tests/ConnectionSettingsTests.cs`
+- A  `tests/Configurator.Security.Tests/DeletionConcurrencyTests.cs`
+- A  `tests/Configurator.Security.Tests/FreeSqlConfirmationTests.cs`
+- A  `tests/Configurator.Security.Tests/PlcAddressMapTests.cs`
+- A  `tests/Configurator.Security.Tests/PlcAddressReassignmentTests.cs`
+- A  `tests/Configurator.Security.Tests/ProjectCompareSettingsStoreTests.cs`
+- A  `tests/Configurator.Security.Tests/ProjectWriteGuardTests.cs`
+- A  `tests/Configurator.Security.Tests/RecordCheckTests.cs`
+- A  `tests/Configurator.Security.Tests/ScopedRecordSuggestionTests.cs`
+- A  `tests/Configurator.Security.Tests/TableClipboardTests.cs`
+- A  `tests/Configurator.Security.Tests/TableSelectionRaceTests.cs`
+- A  `tests/Configurator.Security.Tests/WpfDialogHost.cs`

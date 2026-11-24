@@ -82,11 +82,12 @@ public sealed class OfflineCompositeEditorRepositoryTests
         var source = new OfflineProjectDataSource(project);
         var repository = new ProgramManagementRepository(source);
         var context = new ProgramContext { PlcValue = 1, ClassNumberValue = 10, RecordValue = 3, SeqRecordValue = 1 };
+        var expected = RowValues((await repository.GetTransitionsAsync(context)).Rows.Cast<System.Data.DataRow>().Single(r => (int)r["SeqStep_Number"] == 1));
 
         if (blocked)
-            await Assert.ThrowsAsync<InvalidOperationException>(() => repository.DeleteStepFromSequenceAsync(context, 1));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => repository.DeleteStepFromSequenceAsync(context, 1, expected: expected));
         else
-            await repository.DeleteStepFromSequenceAsync(context, 1);
+            await repository.DeleteStepFromSequenceAsync(context, 1, expected: expected);
 
         Assert.Equal(blocked, source.GetRecords(table).Any(row =>
             row.Values["Seq_Record"]!.GetValue<int>() == 1 && row.Values["SeqStep_Number"]!.GetValue<int>() == 1));
@@ -175,8 +176,10 @@ public sealed class OfflineCompositeEditorRepositoryTests
         Assert.Equal(1, await repository.AddParameterAsync(context, 2, values));
         Assert.Equal(1, await repository.AddParameterAsync(context, 0, values));
         Assert.Empty((await repository.GetParametersAsync(context, 99)).Rows.Cast<System.Data.DataRow>());
-        await Assert.ThrowsAsync<InvalidOperationException>(() => repository.DeleteParameterAsync(context, 2, 0, 1));
-        await repository.DeleteParameterAsync(context, 0, 0, 1);
+        var expected2 = RowValues(Assert.Single((await repository.GetParametersAsync(context, 2)).Rows.Cast<System.Data.DataRow>()));
+        var expected0 = RowValues(Assert.Single((await repository.GetParametersAsync(context, 0)).Rows.Cast<System.Data.DataRow>()));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repository.DeleteParameterAsync(context, 2, 0, 1, expected: expected2));
+        await repository.DeleteParameterAsync(context, 0, 0, 1, expected: expected0);
 
         Assert.Single(source.GetRecords(parameter));
         Assert.Single(source.GetRecords(recipe));
@@ -196,11 +199,12 @@ public sealed class OfflineCompositeEditorRepositoryTests
             if (table == parameter) schema.KeyColumns.AddRange(new[] { "Seq_Record", "Step_Number", "Type" });
             foreach (string field in schema.KeyColumns)
                 schema.Columns.Add(new ProjectColumnSchema { Name = field, DataType = "int" });
+            schema.Columns.Add(new ProjectColumnSchema { Name = "Value", DataType = "int", IsNullable = true });
             project.TableSchemas.Add(schema);
         }
-        project.LocalRecords.Add(Record(sequence, new("PLC", 1), new("PLC_Class_Prog_Number", 10), new("Prog_Record", 3), new("Record", 2)));
+        project.LocalRecords.Add(Record(sequence, new("PLC", 1), new("PLC_Class_Prog_Number", 10), new("Prog_Record", 3), new("Record", 2), new("Value", 10)));
         project.LocalRecords.Add(Record(parameter, new("PLC", 1), new("PLC_Class_Prog_Number", 10), new("Prog_Record", 3),
-            new("Record", 1), new("Seq_Record", 2), new("Step_Number", 99), new("Type", 0)));
+            new("Record", 1), new("Seq_Record", 2), new("Step_Number", 99), new("Type", 0), new("Value", 10)));
         var source = new OfflineProjectDataSource(project);
         var repository = new ProgramManagementRepository(source);
         var context = new ProgramContext { PlcValue = 1, ClassNumberValue = 10, RecordValue = 3, SeqRecordValue = 2 };
@@ -208,7 +212,8 @@ public sealed class OfflineCompositeEditorRepositoryTests
         Assert.Empty((await repository.GetParametersAsync(context, 0)).Rows.Cast<System.Data.DataRow>());
         var orphan = Assert.Single((await repository.GetAllSequenceParametersAsync(context)).Rows.Cast<System.Data.DataRow>());
         Assert.Equal(99, orphan["Step_Number"]);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => repository.DeleteSequenceAsync(context, 2));
+        var expectedSequence = RowValues(Assert.Single((await repository.GetSequencesAsync(context)).Rows.Cast<System.Data.DataRow>()));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repository.DeleteSequenceAsync(context, 2, expected: expectedSequence));
         Assert.Single(source.GetRecords(sequence));
         Assert.Single(source.GetRecords(parameter));
 
@@ -216,7 +221,28 @@ public sealed class OfflineCompositeEditorRepositoryTests
         Assert.Single(source.GetRecords(parameter));
         project.LocalRecords.Add(Record(parameter, new("PLC", 1), new("PLC_Class_Prog_Number", 10), new("Prog_Record", 3),
             new("Record", 1), new("Seq_Record", 7), new("Step_Number", 99), new("Type", 0)));
-        var deleted = await repository.DeleteSequenceAsync(context, 2, deleteDependents: true);
+        source.InvalidateIndex();
+        var preview = await repository.PrepareSequenceDeletionAsync(context, 2);
+        var existingChild = source.GetRecords(parameter).Single(record => record.Values["Seq_Record"]!.GetValue<int>() == 2);
+        existingChild.Values["Value"] = 11;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repository.DeleteSequenceAsync(context, 2, deleteDependents: true, expected: expectedSequence, preview: preview));
+        Assert.Equal(11, existingChild.Values["Value"]!.GetValue<int>());
+        existingChild.Values["Value"] = 10;
+        var parent = Assert.Single(source.GetRecords(sequence));
+        parent.Values["Value"] = 11;
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repository.DeleteSequenceAsync(context, 2, deleteDependents: true, expected: expectedSequence, preview: preview));
+        Assert.Equal(11, parent.Values["Value"]!.GetValue<int>());
+        parent.Values["Value"] = 10;
+        var added = Record(parameter, new("PLC", 1), new("PLC_Class_Prog_Number", 10), new("Prog_Record", 3),
+            new("Record", 2), new("Seq_Record", 2), new("Step_Number", 99), new("Type", 0));
+        project.LocalRecords.Add(added);
+        source.InvalidateIndex();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repository.DeleteSequenceAsync(context, 2, deleteDependents: true, expected: expectedSequence, preview: preview));
+        Assert.Equal(3, source.GetRecords(parameter).Count);
+        project.LocalRecords.Remove(added);
+        source.InvalidateIndex();
+        preview = await repository.PrepareSequenceDeletionAsync(context, 2);
+        var deleted = await repository.DeleteSequenceAsync(context, 2, deleteDependents: true, expected: expectedSequence, preview: preview);
         Assert.Equal(new[] { parameter, sequence }, deleted.Select(row => row.TableName));
         Assert.Empty(source.GetRecords(sequence));
         Assert.Empty((await repository.GetAllSequenceParametersAsync(context)).Rows.Cast<System.Data.DataRow>());
@@ -278,6 +304,9 @@ public sealed class OfflineCompositeEditorRepositoryTests
             schema.Columns.Add(new ProjectColumnSchema { Name = name, DataType = name is "Record" or "PLC" or "PLC_Class_Number" ? "int" : "nvarchar", IsNullable = true });
         return schema;
     }
+
+    private static Dictionary<string, object> RowValues(System.Data.DataRow row) =>
+        row.Table.Columns.Cast<System.Data.DataColumn>().ToDictionary(column => column.ColumnName, column => row[column], StringComparer.OrdinalIgnoreCase);
 
     private static ProjectRecord Record(string table, params (string Name, object Value)[] values)
     {

@@ -1,3 +1,4 @@
+using Configurator.Core.Projects;
 using System;
 using System.Collections.Generic;
 using System.Data;
@@ -168,6 +169,7 @@ namespace Configurator
     /// </summary>
     public async Task<int> ClearTableAsync(string tableName, int expectedRows, CancellationToken ct = default)
     {
+        ProjectWriteGuard.EnsureDataTableWritable(tableName);
         using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
         await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection, ct);
         using var transaction = connection.BeginTransaction();
@@ -190,6 +192,7 @@ namespace Configurator
 
     public async Task<int> ClearTableAsync(string tableName, CancellationToken ct = default)
     {
+        ProjectWriteGuard.EnsureDataTableWritable(tableName);
         using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
         await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection, ct);
         using var command = new SqlCommand($"DELETE FROM {QuoteTableName(tableName)}", connection);

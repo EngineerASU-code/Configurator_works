@@ -17,6 +17,7 @@ public sealed class OnlineProjectCrudDataSource : IProjectCrudDataSource, IProje
 {
     private readonly Configurator.DatabaseService _database;
     private readonly string _connectionString;
+    internal string ConnectionString => _connectionString;
 
     public OnlineProjectCrudDataSource(string connectionString)
     {
@@ -46,6 +47,7 @@ public sealed class OnlineProjectCrudDataSource : IProjectCrudDataSource, IProje
 
     public async Task CreateRecordsAsync(string tableName, IReadOnlyList<IReadOnlyDictionary<string, object?>> records, CancellationToken cancellationToken = default)
     {
+        ProjectWriteGuard.EnsureDataTableWritable(tableName);
         cancellationToken.ThrowIfCancellationRequested();
         if (records == null || records.Count == 0) return;
         if (string.IsNullOrWhiteSpace(tableName)) throw new ArgumentException("Не задана таблица.", nameof(tableName));
