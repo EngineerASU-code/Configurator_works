@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Linq;
 using System.Windows;
 using System.Windows.Input;
@@ -12,8 +12,11 @@ public partial class LoginWindow : Window
         Loaded += (_, _) =>
         {
             UserAuthorizationService.InitializeIfNeeded();
-            UserBox.ItemsSource = UserAuthorizationService.Users.ToList();
-            UserBox.SelectedValue = UserAuthorizationService.CurrentUser?.UserName ?? "admin";
+            var users = UserAuthorizationService.Users.Where(user => user.Enabled).ToList();
+            UserBox.ItemsSource = users;
+            var preferred = UserAuthorizationService.CurrentUser?.UserName ?? "admin";
+            UserBox.SelectedItem = users.FirstOrDefault(user =>
+                string.Equals(user.UserName, preferred, StringComparison.OrdinalIgnoreCase)) ?? users.FirstOrDefault();
             PasswordBox.Focus();
             UpdatePasswordPrompt();
         };
@@ -28,7 +31,13 @@ public partial class LoginWindow : Window
     private void PasswordBox_KeyDown(object sender, KeyEventArgs e) { if (e.Key == Key.Enter) Login(); }
     private void Login()
     {
-        var userName = UserBox.SelectedValue?.ToString() ?? "";
+        if (UserBox.SelectedItem is not UserAccount account)
+        {
+            ErrorText.Text = "Выберите пользователя для входа.";
+            UserBox.Focus();
+            return;
+        }
+        var userName = account.UserName;
         var password = PasswordBox.Password;
         if (UserAuthorizationService.Login(userName, password, out var error)) { DialogResult = true; return; }
         ErrorText.Text = error; PasswordBox.Clear(); PasswordBox.Focus();

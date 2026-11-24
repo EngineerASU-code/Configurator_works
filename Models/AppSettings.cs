@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Windows.Media;
@@ -7,6 +7,7 @@ namespace Configurator
 {
     public class AppSettings
     {
+        public bool ShowStartupAnimation { get; set; } = true;
         public string LastThemeName { get; set; } = "Светлая";
         public string LastServer { get; set; } = "";
         public string LastUser { get; set; } = "";

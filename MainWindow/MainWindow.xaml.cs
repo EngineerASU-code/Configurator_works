@@ -54,6 +54,7 @@ namespace Configurator
         public MainWindow()
         {
             InitializeComponent();
+            IntroSetting.IsChecked = AppSettings.Load().ShowStartupAnimation;
             SessionTestLog.Current = _sessionTestLog;
             WindowState = WindowState.Maximized;
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
@@ -197,20 +198,18 @@ namespace Configurator
             }
         }
 
+        private void IntroSetting_Click(object sender, RoutedEventArgs e)
+        {
+            var settings = AppSettings.Load();
+            settings.ShowStartupAnimation = IntroSetting.IsChecked;
+            AppSettings.Save(settings);
+            IntroSetting.IsChecked = AppSettings.Load().ShowStartupAnimation;
+            if (IntroSetting.IsChecked != settings.ShowStartupAnimation)
+                MessageBox.Show(this, "Не удалось сохранить настройку анимации.", "Вид");
+        }
+
         private async Task InitializeAsync()
         {
-            _rightPanel.TableTitle.Text = "Авторизуйтесь для начала работы";
-            if (SystemParameters.ClientAreaAnimation && Content is UIElement surface)
-            {
-                var fade = new System.Windows.Media.Animation.DoubleAnimation(0.28, 1,
-                    new Duration(TimeSpan.FromMilliseconds(220)))
-                {
-                    FillBehavior = System.Windows.Media.Animation.FillBehavior.Stop
-                };
-                surface.BeginAnimation(UIElement.OpacityProperty, fade);
-                await Task.Delay(220);
-                if (!IsLoaded) return;
-            }
             try
             {
                 _connection.LoadFromFile();
@@ -219,25 +218,6 @@ namespace Configurator
             {
                 Configurator.Infrastructure.ModernDialog.Show($"Внимание: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}\n\nНастройки будут созданы заново.",
                     "Загрузка настроек", MessageBoxButton.OK, MessageBoxImage.Warning);
-            }
-
-            // MainWindow is already visible at this point. Keep CurrentUser empty and
-            // show authentication before any database connectivity or mode-visibility checks.
-            if (UserAuthorizationService.CurrentUser == null)
-            {
-                var login = new LoginWindow { Owner = this };
-                _loginDialogOpen = true;
-                bool authenticated;
-                try { authenticated = login.ShowDialog() == true; }
-                finally { _loginDialogOpen = false; }
-
-                if (!authenticated)
-                {
-                    _startupInitializationPending = true;
-                    StatusText.Text = "Не авторизован. Войдите через кнопку пользователя, чтобы продолжить.";
-                    RefreshActionLogUi();
-                    return;
-                }
             }
 
             await ContinueStartupAfterAuthorizationAsync();
@@ -285,41 +265,12 @@ namespace Configurator
             OnlineModeButton.IsEnabled = true;
             OfflineModeButton.IsEnabled = true;
             CurrentProjectText.IsEnabled = true;
-            // Apply visibility/permission checks now that the identity exists, but defer
-            // mode activation until the user has chosen a workspace. This avoids opening
-            // project-selection dialogs ahead of the startup workspace dialog.
             ApplyAuthorizationUi(allowModeActivation: false);
-
-            var startupDialog = new WorkspaceStartupDialog { Owner = this };
-            startupDialog.ShowDialog();
-            var choice = startupDialog.SelectedAction;
-
-            // The database connectivity checks are intentionally after successful login
-            // and only occur for an explicit Online choice.
-            if (choice != "open")
-                ShowKnownDatabasesLoading();
-
-            if (choice == "open")
-            {
-                _workspaceModeChosen = false;
-                bool opened = await OpenLocalProjectAsync();
-                if (!opened)
-                {
-                    _isOfflineWorkspace = false;
-                    _offlineSelectionRequired = true;
-                    UpdateWorkspaceModeUi();
-                    StatusText.Text = "Выберите локальный проект или явно перейдите в Online";
-                }
-            }
-            else
-            {
-                _workspaceModeChosen = true;
-                _isOfflineWorkspace = false;
-                UpdateWorkspaceModeUi();
-                WorkspaceModeHint.Text = "";
-                await TryReconnectDatabasesAsync();
-            }
-
+            _workspaceModeChosen = true;
+            _isOfflineWorkspace = false;
+            UpdateWorkspaceModeUi();
+            ShowKnownDatabasesLoading();
+            await TryReconnectDatabasesAsync();
             if (!_isOfflineWorkspace)
             {
                 RebuildTree();

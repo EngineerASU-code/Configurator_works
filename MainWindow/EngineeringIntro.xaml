@@ -1,0 +1,45 @@
+<UserControl x:Class="Configurator.EngineeringIntro" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+ <Viewbox Stretch="Uniform" ClipToBounds="True">
+  <Canvas Width="760" Height="480" Background="#F7F7F2" ClipToBounds="True">
+   <Canvas x:Name="World" Width="2200" Height="480">
+    <Canvas.RenderTransform><TranslateTransform x:Name="Camera"/></Canvas.RenderTransform>
+    <Canvas.Background><DrawingBrush TileMode="Tile" Viewport="0,0,24,24" ViewportUnits="Absolute"><DrawingBrush.Drawing><GeometryDrawing Geometry="M0,24 L0,0 24,0"><GeometryDrawing.Pen><Pen Brush="#D8DFDC" Thickness="1"/></GeometryDrawing.Pen></GeometryDrawing></DrawingBrush.Drawing></DrawingBrush></Canvas.Background>
+    <TextBlock Canvas.Left="68" Canvas.Top="70" Text="Технологическое проектирование" Foreground="#302C50" Background="#C2E2DE" FontWeight="Bold" FontSize="31"/>
+    <Path Stroke="#49727E" StrokeThickness="1.5" Data="M60,125 H590 V340 H60 Z M72,321 H575 M110,315 V327 M525,315 V327 M480,142 V295 M80,240 H150 V180 H80 Z M92,180 V163 H138 V180 M505,239 L552,216 594,237 548,261 Z M505,239 V285 L548,308 594,284 V237 M548,261 V308"/>
+    <TextBlock Canvas.Left="256" Canvas.Top="328" Text="4 800" Foreground="#425D6B" FontFamily="Consolas"/>
+    <TextBlock Canvas.Left="78" Canvas.Top="245" Text="TK-101" Foreground="#425D6B" FontFamily="Consolas"/>
+    <TextBlock Canvas.Left="425" Canvas.Top="177" Text="DN 80" Foreground="#425D6B" FontFamily="Consolas"/>
+    <Path Stroke="#177E80" StrokeThickness="3" Data="M80,300 L180,300 180,212 320,212 320,275 710,275 M240,212 L240,150 412,150 412,275 M350,263 L374,287 374,263 350,287 Z">
+     <Path.Clip><RectangleGeometry x:Name="Trace" Rect="0,0,0,480"/></Path.Clip>
+    </Path>
+    <Path x:Name="Cursor" Stroke="#4D4677" Data="M-10,0 H10 M0,-10 V10" Canvas.Top="275"><Path.RenderTransform><TranslateTransform x:Name="PenPosition"/></Path.RenderTransform></Path>
+    <Path Stroke="#257E80" StrokeThickness="5" StrokeLineJoin="Round" Data="M615,275 L686,234 V176 L763,132 826,168 V230 L899,273 982,225"/>
+    <Path Stroke="#486D78" Data="M615,286 L687,245 764,201 826,237 899,280 982,232 M686,234 V299 M826,230 V274 M899,273 V307" />
+    <TextBlock Canvas.Left="680" Canvas.Top="66" Text="Модель трассы" Foreground="#302C50" Background="#C2E2DE" FontWeight="Bold" FontSize="25"/>
+    <Rectangle Canvas.Left="1000" Canvas.Top="237" Width="505" Height="76" RadiusX="4" RadiusY="4"><Rectangle.Fill><LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#537381"/><GradientStop Offset=".23" Color="#D4E1DD"/><GradientStop Offset=".55" Color="#849EA7"/><GradientStop Offset="1" Color="#324C59"/></LinearGradientBrush></Rectangle.Fill></Rectangle>
+
+    <TextBlock Canvas.Left="1060" Canvas.Top="115" Text="Опрессовка" Foreground="#302C50" Background="#C2E2DE" FontWeight="Bold" FontSize="27"/>
+    <Rectangle Canvas.Left="1020" Canvas.Top="250" Width="431" Height="49" RadiusX="18" RadiusY="18" Fill="#137D9D"/>
+    <Path Stroke="#A0E5F2" StrokeThickness="2" StrokeDashArray="8 9" x:Name="Flow" Data="M1037,267 Q1060,257 1083,267 T1129,267 T1175,267 T1221,267 T1267,267 T1313,267 T1359,267 T1405,267 M1047,285 H1420"/>
+    <Path Stroke="#A3BEC8" StrokeThickness="7" Data="M1290,237 V210"/>
+    <Ellipse Canvas.Left="1260" Canvas.Top="150" Width="60" Height="60" Fill="#E5EEE9" Stroke="#69838D" StrokeThickness="4"/>
+    <Path Canvas.Left="1290" Canvas.Top="180" Stroke="#BF5738" StrokeThickness="3" Data="M0,0 L-16,-9"><Path.RenderTransform><RotateTransform x:Name="Needle"/></Path.RenderTransform></Path>
+    <TextBlock Canvas.Left="1560" Canvas.Top="48" Text="Монтаж шкафа АСУ ТП" Foreground="#302C50" Background="#C2E2DE" FontWeight="Bold" FontSize="31"/>
+    <Border Canvas.Left="1570" Canvas.Top="109" Width="460" Height="285" Background="#758F97" BorderBrush="#B5C8C8" BorderThickness="5" CornerRadius="5">
+     <Grid Margin="20"><Grid.RowDefinitions><RowDefinition Height="48"/><RowDefinition Height="*"/><RowDefinition Height="64"/></Grid.RowDefinitions>
+      <TextBlock Text="SIEMENS" Foreground="White" FontWeight="Bold" FontSize="22"/>
+      <UniformGrid x:Name="Modules" Grid.Row="1" Rows="1"/>
+      <Canvas Grid.Row="2">
+       <Canvas.Clip><RectangleGeometry x:Name="Wiring" Rect="0,0,405,64"/></Canvas.Clip>
+       <Path Stroke="#E8AC64" StrokeThickness="3" Data="M24,0 V19 Q24,23 29,23 H380 M96,0 V14 Q96,18 100,18 H380"/>
+       <Path Stroke="#E5D997" StrokeThickness="3" Data="M161,0 V10 Q161,13 166,13 H380"/>
+       <Path Stroke="#6CD2EF" StrokeThickness="5" Data="M235,0 V29 Q235,40 246,40 H373 M300,0 V20 Q300,32 312,32 H373"/>
+       <TextBlock Canvas.Left="16" Canvas.Top="41" Text="24 V DC" Foreground="#182D33" FontFamily="Consolas"/>
+       <TextBlock Canvas.Left="242" Canvas.Top="43" Text="AIR  ·  Ø 6" Foreground="#182D33" FontFamily="Consolas"/>
+      </Canvas>
+     </Grid>
+    </Border>
+   </Canvas>
+  </Canvas>
+ </Viewbox>
+</UserControl>

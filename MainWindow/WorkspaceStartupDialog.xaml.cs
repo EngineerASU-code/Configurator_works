@@ -1,13 +1,27 @@
-﻿using System.Windows;
+using System.Windows;
 
 namespace Configurator;
 
 public partial class WorkspaceStartupDialog : Window
 {
-    public string SelectedAction { get; private set; } = "online";
+    public event EventHandler StartRequested;
 
-    public WorkspaceStartupDialog() => InitializeComponent();
+    public WorkspaceStartupDialog()
+    {
+        InitializeComponent();
+        Width = Math.Min(1100, SystemParameters.WorkArea.Width * 0.92);
+        Height = Math.Min(640, SystemParameters.WorkArea.Height * 0.86);
+        if (AppSettings.Load().ShowStartupAnimation && SystemParameters.ClientAreaAnimation)
+            ContentRendered += (_, _) => Intro.Play(ShowWelcome);
+        else
+            ShowWelcome();
+    }
 
-    private void Online_Click(object sender, RoutedEventArgs e) { SelectedAction = "online"; DialogResult = true; }
-    private void OpenProject_Click(object sender, RoutedEventArgs e) { SelectedAction = "open"; DialogResult = true; }
+    private void ShowWelcome()
+    {
+        Intro.Visibility = Visibility.Collapsed;
+        Welcome.Visibility = Visibility.Visible;
+    }
+
+    private void Start_Click(object sender, RoutedEventArgs e) => StartRequested?.Invoke(this, EventArgs.Empty);
 }
