@@ -25,8 +25,13 @@ public sealed class CompareOnlineIntegrationTests
 
         await crud.UpdateCompareRecordAsync(schema, null, key, values);
         Assert.Equal(1m, await db.DecimalAsync("SELECT COUNT(*) FROM dbo.Valves WHERE Record=7 AND Label=N'Copied'"));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => crud.UpdateCompareRecordAsync(schema, null, key, values));
+        await Assert.ThrowsAsync<CompareRecordConflictException>(() => crud.UpdateCompareRecordAsync(schema, null, key, values));
         Assert.Equal(1m, await db.DecimalAsync("SELECT COUNT(*) FROM dbo.Valves"));
+        var expected = new ProjectRecord { TableName = schema.TableName, Values = new JsonObject { ["Record"] = 7, ["Label"] = "Copied" } };
+        var deleted = await crud.UpdateCompareRecordAsync(schema, expected, key, new Dictionary<string, object?>(), delete: true);
+        Assert.Equal(ChangeJournalOperationKind.Delete, deleted.Kind);
+        Assert.Empty(deleted.After);
+        Assert.Equal(0m, await db.DecimalAsync("SELECT COUNT(*) FROM dbo.Valves"));
     }
 
     [CompareLocalDbFact]
@@ -247,8 +252,10 @@ public sealed class CompareOnlineIntegrationTests
         await db.ExecuteAsync("UPDATE dbo.Valves SET Name=N'Changed on SQL' WHERE Record=3;");
         var changed = await CompareEngine.CompareAsync(online, reopened);
         var changedRow = Assert.Single(changed.Objects, difference => difference.Status != CompareStatus.Equal);
-        Assert.Equal(CompareStatus.Changed, changedRow.Status);
-        Assert.Contains(changedRow.Children!, cell => cell.Column == "Name" && cell.Status == CompareStatus.Changed);
+        Assert.Equal(CompareStatus.KeyConflict, changedRow.Status);
+        Assert.Null(changedRow.Children);
+        Assert.Equal("Changed on SQL", changedRow.A);
+        Assert.Equal("Second", changedRow.B);
         Assert.Equal(originalPackage, File.ReadAllBytes(files.A));
     }
 

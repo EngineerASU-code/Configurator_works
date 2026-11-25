@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Linq;
+using Microsoft.SqlServer.TransactSql.ScriptDom;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Data.SqlClient;
@@ -31,9 +33,9 @@ namespace Configurator
 
         internal async Task<(DataTable Result, int AffectedRows)> ExecuteFreeSqlCoreAsync(
             string sql, IReadOnlyDictionary<string, object> parameters, string expectedDatabase,
-            CancellationToken ct, Func<int, Task<bool>> confirmAffectedRows, TimeSpan confirmationTimeout)
+            CancellationToken ct, Func<int, Task<bool>> confirmAffectedRows, TimeSpan confirmationTimeout, Action<IReadOnlyList<ChangeJournalRowChange>> committed = null)
         {
-            var target = FreeSqlPolicy.Analyze(sql);
+            var target = FreeSqlPolicy.Analyze(sql, out var modification);
             bool expectsResult = target.Table == null;
 
             using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
@@ -108,6 +110,7 @@ namespace Configurator
             using var transaction = connection.BeginTransaction();
             command.Transaction = transaction;
             int affected;
+            List<ChangeJournalRowChange> changes = null;
             try
             {
                 // Verify the resolved target on the connection that performs the write.
@@ -120,7 +123,13 @@ namespace Configurator
                 if (await check.ExecuteScalarAsync(ct).ConfigureAwait(false) is not string resolved)
                     throw new InvalidOperationException("Цель записи должна быть существующей пользовательской таблицей.");
                 Configurator.Core.Projects.ProjectWriteGuard.EnsureDataTableWritable(resolved);
-                affected = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                if (committed == null)
+                    affected = await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                else
+                {
+                    changes = await CaptureFreeSqlAsync(command, modification, target.Schema, target.Table, ct);
+                    affected = changes.Count;
+                }
                 SessionTestLog.Trace("FREE-SQL", $"DML [{connection.Database}] affected={affected}: {traceSql}");
                 if (confirmAffectedRows != null && !await ConfirmFreeSqlAsync(confirmAffectedRows, affected, ct, confirmationTimeout).ConfigureAwait(false))
                 {
@@ -137,7 +146,94 @@ namespace Configurator
                 try { transaction.Rollback(); } catch { /* connection may already be broken */ }
                 throw;
             }
+            if (changes?.Count > 0) committed(changes);
             return (null, affected);
+        }
+
+        private async Task<List<ChangeJournalRowChange>> CaptureFreeSqlAsync(SqlCommand command,
+            DataModificationSpecification modification, string schema, string table, CancellationToken ct)
+        {
+            // OUTPUT captures old and new keys on the same row, even for a multi-row key update.
+            using var metadata = new SqlCommand("""
+                SELECT c.name, CASE WHEN EXISTS (
+                    SELECT 1 FROM sys.indexes i JOIN sys.index_columns k ON k.object_id=i.object_id AND k.index_id=i.index_id
+                    WHERE i.object_id=c.object_id AND i.is_primary_key=1 AND k.column_id=c.column_id AND k.key_ordinal>0
+                ) THEN 1 ELSE 0 END, c.system_type_id,
+                CASE WHEN EXISTS (SELECT 1 FROM sys.triggers tr JOIN sys.trigger_events e ON e.object_id=tr.object_id
+                    WHERE tr.parent_id=t.object_id AND tr.is_disabled=0 AND e.type_desc=@operation)
+                    OR EXISTS (SELECT 1 FROM sys.foreign_keys fk WHERE fk.referenced_object_id=t.object_id AND fk.is_disabled=0
+                        AND ((@operation='DELETE' AND fk.delete_referential_action<>0) OR (@operation='UPDATE' AND fk.update_referential_action<>0)))
+                THEN 1 ELSE 0 END
+                FROM sys.columns c JOIN sys.tables t ON t.object_id=c.object_id
+                JOIN sys.schemas s ON s.schema_id=t.schema_id
+                WHERE s.name=@schema AND t.name=@table AND c.is_hidden=0
+                ORDER BY c.column_id
+                """, command.Connection, command.Transaction);
+            metadata.Parameters.AddWithValue("@schema", schema);
+            metadata.Parameters.AddWithValue("@table", table);
+            metadata.Parameters.AddWithValue("@operation", modification is InsertSpecification ? "INSERT" :
+                modification is DeleteSpecification ? "DELETE" : "UPDATE");
+            bool mayHaveRelatedChanges = false;
+            var columns = new List<string>();
+            var keys = new List<string>();
+            var versions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            await using (var reader = await metadata.ExecuteReaderAsync(ct))
+            {
+                while (await reader.ReadAsync(ct))
+                {
+                    var name = reader.GetString(0);
+                    columns.Add(name);
+                    mayHaveRelatedChanges = reader.GetInt32(3) != 0;
+                    if (reader.GetByte(2) == 189) versions.Add(name);
+                    if (reader.GetInt32(1) == 1) keys.Add(name);
+                }
+            }
+            var kind = modification switch
+            {
+                InsertSpecification => ChangeJournalOperationKind.Insert,
+                DeleteSpecification => ChangeJournalOperationKind.Delete,
+                _ => ChangeJournalOperationKind.Update
+            };
+            var sides = kind == ChangeJournalOperationKind.Update ? new[] { "DELETED", "INSERTED" }
+                : new[] { kind == ChangeJournalOperationKind.Delete ? "DELETED" : "INSERTED" };
+            var source = QuoteIdentifier(schema) + "." + QuoteIdentifier(table);
+            var temp = "#journal" + Guid.NewGuid().ToString("N");
+            var fields = sides.SelectMany((side, index) => columns.Select((column, i) =>
+                (versions.Contains(column) ? $"CONVERT(binary(8),src.{QuoteIdentifier(column)})" : $"src.{QuoteIdentifier(column)}") + $" AS [v{index}_{i}]"));
+            var output = sides.SelectMany(side => columns.Select(column => side + "." + QuoteIdentifier(column)));
+            var capture = " OUTPUT " + string.Join(", ", output) + " INTO " + temp + " ";
+            var sql = command.CommandText;
+            var offset = modification switch
+            {
+                InsertSpecification insert => insert.InsertSource.StartOffset,
+                UpdateSpecification update => update.SetClauses.Last().StartOffset + update.SetClauses.Last().FragmentLength,
+                DeleteSpecification delete => delete.Target.StartOffset + delete.Target.FragmentLength,
+                _ => throw new InvalidOperationException()
+            };
+            // A user OUTPUT clause can coexist with our preceding OUTPUT INTO.
+            sql = sql.Insert(modification.OutputClause?.StartOffset ?? offset, capture);
+            command.CommandText = $"SELECT TOP (0) {string.Join(", ", fields)} INTO {temp} FROM {source} src UNION ALL SELECT TOP (0) {string.Join(", ", fields)} FROM {source} src; " +
+                sql + $"\n; SELECT * FROM {temp};";
+            var result = new List<ChangeJournalRowChange>();
+            await using var rows = await command.ExecuteReaderAsync(ct);
+            if (modification.OutputClause != null && !await rows.NextResultAsync(ct))
+                throw new InvalidOperationException("SQL не вернул снимки для журнала.");
+            if (rows.FieldCount != columns.Count * sides.Length || rows.GetName(0) != "v0_0")
+                throw new InvalidOperationException("SQL вернул неожиданный формат снимка для журнала.");
+            while (await rows.ReadAsync(ct))
+            {
+                Dictionary<string, ChangeJournalValue> Snapshot(int offset) => columns.Select((name, i) =>
+                    (name, value: ChangeJournalValue.FromObject(rows.GetValue(offset + i))))
+                    .ToDictionary(x => x.name, x => x.value, StringComparer.OrdinalIgnoreCase);
+                Dictionary<string, ChangeJournalValue> Identity(Dictionary<string, ChangeJournalValue> values) =>
+                    values.Where(x => keys.Count == 0 || keys.Contains(x.Key)).ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
+                var before = kind == ChangeJournalOperationKind.Insert ? new() : Snapshot(0);
+                var after = kind == ChangeJournalOperationKind.Delete ? new() : Snapshot(kind == ChangeJournalOperationKind.Update ? columns.Count : 0);
+                result.Add(new ChangeJournalRowChange { Kind = kind, TableName = schema + "." + table, Before = before,
+                    CaptureWarning = mayHaveRelatedChanges ? "Для таблицы включён триггер или каскадное изменение. Журнал содержит только строки целевой таблицы." : "",
+                    After = after, IdentityBefore = Identity(before), IdentityAfter = Identity(after) });
+            }
+            return result;
         }
 
         internal static async Task<bool> ConfirmFreeSqlAsync(Func<int, Task<bool>> confirm, int affected, CancellationToken ct, TimeSpan? timeout = null)

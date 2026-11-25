@@ -13,6 +13,7 @@ using System.Windows.Data;
 using System.Windows.Input;
 using Microsoft.Win32;
 using Configurator.Core.Projects;
+using Configurator.Core.Workspace;
 
 namespace Configurator;
 
@@ -45,6 +46,7 @@ public partial class MatrixCatalogControl : UserControl
     public MatrixCatalogControl()
     {
         InitializeComponent();
+        RowsGrid.PreviewKeyDown += (_, e) => Mode3DeleteShortcut.Handle(e, DeleteButton);
         RowsGrid.PreparingCellForEdit += (_, _) => UpdateActionState();
         Loaded += MatrixCatalogControl_Loaded;
         Unloaded += MatrixCatalogControl_Unloaded;
@@ -1022,6 +1024,11 @@ public partial class MatrixCatalogControl : UserControl
     private bool CanSavePendingChanges(bool showAuthorizationMessage)
     {
         if (_tableData == null || !_tableData.CanWrite) return false;
+        if (ProgramSupportRepository.HasStagedDeletionReplacements(_tableData) && !UserAuthorizationService.Has(Permission.EditData))
+        {
+            if (showAuthorizationMessage) UserAuthorizationService.Require(Permission.EditData);
+            return false;
+        }
         bool hasChanges = false;
         foreach (DataRow row in _tableData.Rows.Rows)
         {
@@ -1235,11 +1242,23 @@ public partial class MatrixCatalogControl : UserControl
                     && column.ColumnName.Equals("Record", StringComparison.OrdinalIgnoreCase)
                     && !_tableData.Definition.ScopeColumns.Contains("Record", StringComparer.OrdinalIgnoreCase))
                 {
-                    long max = _tableData.Rows.Rows.Cast<DataRow>()
+                    var occupied = _tableData.Rows.Rows.Cast<DataRow>()
                         .Where(existing => existing.RowState != DataRowState.Deleted && existing[column] != DBNull.Value)
-                        .Select(existing => long.TryParse(Convert.ToString(existing[column]), out var value) ? value : 0)
-                        .DefaultIfEmpty(0).Max();
-                    row[column] = Convert.ChangeType(max + 1, column.DataType, System.Globalization.CultureInfo.InvariantCulture);
+                        .Select(existing => existing[column]);
+                    long next;
+                    if (ProgramSupportRepository.UsesScopedMatrixRecord(_tableData.Definition) &&
+                        !_tableData.IdentityColumns.Contains(column.ColumnName))
+                    {
+                        var suggestion = new ScopedRecordSuggestion();
+                        foreach (var value in occupied) suggestion.Add(value);
+                        next = suggestion.GetValue();
+                    }
+                    else
+                    {
+                        next = occupied.Select(value => long.TryParse(Convert.ToString(value), out var number) ? number : 0)
+                            .DefaultIfEmpty(0).Max() + 1;
+                    }
+                    row[column] = Convert.ChangeType(next, column.DataType, CultureInfo.InvariantCulture);
                 }
                 else if (!_tableData.DefaultColumns.Contains(column.ColumnName) && !column.AllowDBNull && column.DataType == typeof(string))
                     row[column] = string.Empty;
@@ -1291,9 +1310,9 @@ public partial class MatrixCatalogControl : UserControl
         catch (Exception ex) { StatusText.Text = Configurator.Infrastructure.UserErrorMessage.Format(ex); }
     }
 
-    private void Delete_Click(object sender, RoutedEventArgs e)
+    private async void Delete_Click(object sender, RoutedEventArgs e)
     {
-        if (_busy || _tableData == null || !_tableData.CanWrite) return;
+        if (_busy || _repository == null || _tableData == null || !_tableData.CanWrite || !CommitGridEdits()) return;
         if (_tableData.Definition.Id == "matrix-commands" && _commandMapView != null)
         {
             if (!_tableData.Definition.AllowDelete) return;
@@ -1303,6 +1322,9 @@ public partial class MatrixCatalogControl : UserControl
             Permission commandPermission = source == null || source.RowState == DataRowState.Added
                 ? Permission.AddData : Permission.DeleteData;
             if (!UserAuthorizationService.Require(commandPermission)) return;
+            if (Configurator.Infrastructure.ModernDialog.Show(Window.GetWindow(this),
+                    "Убрать команду из выбранной позиции? Изменение вступит в силу после сохранения.",
+                    "Удаление команды", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
             if (source?.RowState == DataRowState.Added) source.Table.Rows.Remove(source);
             else source?.Delete();
             mapRow[column] = string.Empty;
@@ -1312,17 +1334,29 @@ public partial class MatrixCatalogControl : UserControl
             return;
         }
         if (!_tableData.Definition.AllowDelete || RowsGrid.SelectedItem is not DataRowView selected) return;
-        Permission required = selected.Row.RowState == DataRowState.Added ? Permission.AddData : Permission.DeleteData;
-        if (!UserAuthorizationService.Require(required)) return;
+        var tableData = _tableData;
+        var repository = _repository;
+        var row = selected.Row;
+        int contextVersion = _contextVersion;
+        bool IsCurrent() => contextVersion == _contextVersion && ReferenceEquals(tableData, _tableData);
+
+        SetBusy(true);
         try
         {
-            if (selected.Row.RowState == DataRowState.Added) selected.Row.Table.Rows.Remove(selected.Row);
-            else selected.Row.Delete();
-            StatusText.Text = "Строка помечена для удаления. Перед удалением корня проверяются его зависимости.";
+            var scope = MatrixScope(tableData.Definition, _appliedMatrixRecord);
+            bool added = row.RowState == DataRowState.Added;
+            if (!await ProgramSupportDeletionInteraction.StageAsync(Window.GetWindow(this), repository, tableData, row, scope, IsCurrent)) return;
+            StatusText.Text = added ? "Новая строка удалена." : "Строка помечена для удаления. Нажмите «Сохранить», чтобы применить изменение.";
             UpdateEmptyState();
-            UpdateActionState();
         }
-        catch (Exception ex) { StatusText.Text = Configurator.Infrastructure.UserErrorMessage.Format(ex); }
+        catch (Exception ex)
+        {
+            if (IsCurrent()) StatusText.Text = Configurator.Infrastructure.UserErrorMessage.Format(ex);
+        }
+        finally
+        {
+            if (IsCurrent()) SetBusy(false);
+        }
     }
 
     private async void Save_Click(object sender, RoutedEventArgs e)

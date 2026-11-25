@@ -15,6 +15,97 @@ namespace Configurator.Security.Tests;
 public sealed class CompareTransferIntegrationTests
 {
     [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public async Task OfflinePidCopiesComputedAreaAndPreservesKeyAndLookupGuards(bool forward, bool uniqueName)
+    {
+        using var files = new CompareTestDirectory();
+        var a = PidSnapshot(1, 20, uniqueName);
+        var b = PidSnapshot(5, 3, uniqueName);
+        b.Manifest.ProjectId = a.Manifest.ProjectId;
+        var packages = new ProjectPackageService();
+        await packages.SaveAsync(files.A, a);
+        await packages.SaveAsync(files.B, b);
+        var sourceA = await CompareSourceReader.OpenOfflineAsync(files.A, true);
+        var sourceB = await CompareSourceReader.OpenOfflineAsync(files.B, true);
+        using var workspaceA = (IDisposable)sourceA.Workspace;
+        using var workspaceB = (IDisposable)sourceB.Workspace;
+        var result = await CompareEngine.CompareAsync(sourceA, sourceB);
+        var row = Assert.Single(result.Objects, difference =>
+            difference.Status == (forward ? CompareStatus.OnlyA : CompareStatus.OnlyB) &&
+            (forward ? difference.Pair?.RecordA : difference.Pair?.RecordB)?.Values["Name"]?.ToString() == "074-PID");
+        var preview = CompareTransferPreview.Evaluate(sourceA, sourceB, row, forward);
+        Assert.True(preview.IsAllowed, preview.BlockReason);
+        Assert.DoesNotContain("Area", preview.Values.Keys);
+        if (uniqueName)
+        {
+            var error = await Assert.ThrowsAsync<CompareTransferException>(() => CompareTransfer.ApplyToTargetAsync(preview));
+            Assert.Contains("именем", error.Message);
+            return;
+        }
+        await CompareTransfer.ApplyToTargetAsync(preview);
+        var saved = await packages.OpenAsync(forward ? files.B : files.A);
+        var inserted = Assert.Single(saved.LocalRecords, record =>
+            record.TableName == "dbo.Reglers" && record.Values["Name"]?.ToString() == "074-PID" &&
+            record.Values["Record"]?.ToString() == (forward ? "20" : "3"));
+        Assert.Equal("074", inserted.Values["Area"]?.ToString());
+        var journal = new ChangeJournalService();
+        journal.BindOfflineProject(saved, () => { }, 3);
+        var entry = Assert.IsType<ChangeJournalEntry>(journal.LoadLatestPending());
+        Assert.True(entry.CanRestore);
+        journal.RestoreOffline(entry, saved, () => { });
+        Assert.Single(saved.LocalRecords, record => record.TableName == "dbo.Reglers" && record.Values["Name"]?.ToString() == "074-PID");
+    }
+
+    private static ConfiguratorProject PidSnapshot(int plc, int number, bool uniqueName)
+    {
+        var project = new ConfiguratorProject();
+        var physical = new DatabaseSchema();
+        void Table(string name, string[] keys, JsonObject values, bool includeRecord = true)
+        {
+            var table = new ProjectTableSchema { TableName = "dbo." + name, HasStableKey = true, KeyColumns = keys.ToList() };
+            foreach (var (field, value) in values)
+                table.Columns.Add(new ProjectColumnSchema { Name = field,
+                    DataType = value?.GetValueKind() == JsonValueKind.String ? "varchar" : "int",
+                    IsComputed = field == "Area", IsReadOnly = field == "Area" });
+            project.TableSchemas.Add(table);
+            var physicalTable = new DatabaseTable { Name = name };
+            physicalTable.Keys.Add(new DatabaseKey { IsUnique = true });
+            physicalTable.Keys[0].Columns.AddRange(keys);
+            if (name == "Reglers" && uniqueName)
+                physicalTable.Keys.Add(new DatabaseKey { IsUnique = true, Columns = { "Name" } });
+            physical.Tables.Add(physicalTable);
+            if (includeRecord)
+                project.LocalRecords.Add(new ProjectRecord { TableName = table.TableName, Values = values,
+                    Key = ProjectKeyCodec.Encode(table, keys, key => values[key]) });
+        }
+        Table("PLC", ["Record"], new() { ["Record"] = 1 });
+        project.LocalRecords.Add(new ProjectRecord { TableName = "dbo.PLC", Key = "[5]", Values = new() { ["Record"] = 5 } });
+        Table("PLC_CFG", ["PLC_Number", "PLC_Class_Number"], new() { ["PLC_Number"] = 1, ["PLC_Class_Number"] = 8 });
+        project.LocalRecords.Add(new ProjectRecord { TableName = "dbo.PLC_CFG", Key = "[5,8]",
+            Values = new() { ["PLC_Number"] = 5, ["PLC_Class_Number"] = 8 } });
+        Table("Reglers_Types", ["Record"], new() { ["Record"] = 1 }, includeRecord: false);
+        Table("Areas", ["AreaName"], new() { ["AreaName"] = "074" });
+        Table("Reglers", ["PLC", "Record", "PLC_Class_Number"], new()
+        {
+            ["PLC"] = plc, ["Record"] = number, ["PLC_Class_Number"] = 8, ["Name"] = "074-PID", ["Area"] = "074", ["Type"] = 1
+        });
+        project.LocalRecords.Add(new ProjectRecord { TableName = "dbo.Reglers", Key = "[7,3,8]", Values = new()
+        {
+            ["PLC"] = 7, ["Record"] = 3, ["PLC_Class_Number"] = 8, ["Name"] = "074-Other", ["Area"] = "074", ["Type"] = 1
+        } });
+        physical.Relations.Add(new DatabaseRelation { SourceTable = "dbo.Reglers", TargetTable = "dbo.Reglers_Types",
+            Kind = DatabaseRelationKind.ConventionalLookup, SourceColumns = { "Type" }, TargetColumns = { "Record" } });
+        project.Architecture["physicalSchema"] = JsonSerializer.SerializeToNode(physical);
+        project.Architecture["classDefinitions"] = JsonSerializer.SerializeToNode(new[]
+        {
+            new ClassDefinition { Id = "pid", Name = "PID", IsSystem = true, ClassNumber = 8, Available = true }
+        });
+        return project;
+    }
+
+    [Theory]
     [InlineData(true)]
     [InlineData(false)]
     public async Task EditedFieldPersistsAndCannotOverwriteAConcurrentEdit(bool aToB)
@@ -41,6 +132,24 @@ public sealed class CompareTransferIntegrationTests
         await Assert.ThrowsAsync<CompareTransferException>(() => CompareTransfer.ApplyToTargetAsync(original));
         Assert.Equal(saved, File.ReadAllBytes(target));
         Assert.Equal(beforeSource, File.ReadAllBytes(source));
+    }
+
+    [Fact]
+    public async Task OccupiedRecordCanBeRetriedWithNewNumber()
+    {
+        using var files = new CompareTestDirectory();
+        var (a, b) = await CompareTransferPreviewTests.OpenPairAsync(files, includeNewObject: true);
+        using var workspaceA = (IDisposable)a.Workspace;
+        using var workspaceB = (IDisposable)b.Workspace;
+        var result = await CompareEngine.CompareAsync(a, b);
+        var missing = Assert.Single(result.Objects, row => row.Status == CompareStatus.OnlyA && row.Pair?.RecordA is not null);
+        var candidate = CompareTransferPreview.Evaluate(a, b, missing, aToB: true);
+        var occupied = candidate.WithEdits(new Dictionary<string, string?> { ["Record"] = "1" });
+        await Assert.ThrowsAsync<CompareRecordConflictException>(() => CompareTransfer.ApplyToTargetAsync(occupied));
+        var retry = occupied.WithEdits(new Dictionary<string, string?> { ["Record"] = "42" });
+        await CompareTransfer.ApplyToTargetAsync(retry);
+        var saved = await new ProjectPackageService().OpenAsync(files.B);
+        Assert.Contains(saved.LocalRecords, row => row.Values["Record"]?.ToString() == "42");
     }
 
     [Fact]
@@ -76,12 +185,77 @@ public sealed class CompareTransferIntegrationTests
             await CompareTransfer.ApplyMetadataToTargetAsync(preview);
 
             var copied = await new ProjectPackageService().OpenAsync(files.B);
+            var journalNode = Assert.Single(Assert.IsType<JsonArray>(copied.Architecture["changeJournal"]));
+            var journalEntry = JsonSerializer.Deserialize<ChangeJournalEntry>(journalNode!.ToJsonString());
+            Assert.NotNull(journalEntry);
+            Assert.Equal(CompareProjectSettingsRestore.RestoreKind, journalEntry!.RestoreKind);
+            Assert.True(journalEntry.CanRestore);
+            journalEntry.ProjectType = "Online";
+            journalEntry.Server = "test-server";
+            journalEntry.Database = "test-database";
+            string variant = transferTheme ? "theme" : "list";
+            var store = new ProjectCompareSettingsStore(System.IO.Path.Combine(files.Path, $"online-settings-{variant}.json"));
+            var emptySettings = new ProjectCompareSettings([], []);
+            var copiedSettings = new ProjectCompareSettings(copied.TextLists, copied.ThemePresets);
+            await store.SaveAsync(copiedSettings, CompareMetadataTransferPreview.FingerprintProjectSettings(emptySettings));
+            await CompareProjectSettingsRestore.RestoreOnlineAsync(journalEntry, store);
+            var onlineRestored = await store.LoadAsync();
+            Assert.Empty(onlineRestored.TextLists);
+            Assert.Empty(onlineRestored.ThemePresets);
+
+            var staleStore = new ProjectCompareSettingsStore(System.IO.Path.Combine(files.Path, $"stale-online-settings-{variant}.json"));
+            await staleStore.SaveAsync(copiedSettings, CompareMetadataTransferPreview.FingerprintProjectSettings(emptySettings));
+            var storedCopiedSettings = await staleStore.LoadAsync();
+            var concurrentSettings = new ProjectCompareSettings(copiedSettings.TextLists,
+                copiedSettings.ThemePresets.Append(new ThemePreset { Name = "Concurrent" }).ToList());
+            await staleStore.SaveAsync(concurrentSettings, CompareMetadataTransferPreview.FingerprintProjectSettings(storedCopiedSettings));
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                CompareProjectSettingsRestore.RestoreOnlineAsync(journalEntry, staleStore));
+
+            journalEntry.ProjectType = "Offline";
+            journalEntry.ProjectId = copied.Manifest.ProjectId;
             if (transferTheme)
                 Assert.Equal(System.Windows.Media.Color.FromRgb(22, 80, 160), Assert.Single(copied.ThemePresets).Accent);
             else
                 Assert.Equal("Ball valve", Assert.Single(Assert.Single(copied.TextLists).Items).Text);
+
+            CompareProjectSettingsRestore.RestoreOffline(journalEntry, copied);
+            Assert.Empty(copied.TextLists);
+            Assert.Empty(copied.ThemePresets);
             Assert.Same(appTheme, ThemeManager.CurrentPreset);
         }
+    }
+
+    [Fact]
+    public async Task OfflineProjectSettingsRestoreRejectsAnyPostTransferSettingsEdit()
+    {
+        using var files = new CompareTestDirectory();
+        var sourceProject = CompareTransferPreviewTests.Sample("Compare A", 10.25m);
+        sourceProject.TextLists.Add(new ProjectTextList
+        {
+            Name = "Valve types", SourceTable = "dbo.ValveTypes", KeyColumn = "Type", DisplayColumn = "Name",
+            Items = [new ProjectTextListItem { Key = "Ball", Text = "Ball valve" }]
+        });
+        await new ProjectPackageService().SaveAsync(files.A, sourceProject);
+        await new ProjectPackageService().SaveAsync(files.B, CompareTransferPreviewTests.Sample("Compare B", 15.25m));
+        var a = await CompareSourceReader.OpenOfflineAsync(files.A, true);
+        var b = await CompareSourceReader.OpenOfflineAsync(files.B, true);
+        using var workspaceA = (IDisposable)a.Workspace;
+        using var workspaceB = (IDisposable)b.Workspace;
+        var comparison = await CompareEngine.CompareAsync(a, b);
+        var difference = Assert.Single(comparison.Architecture, row => row.MetadataKind == CompareMetadataKind.ProjectTextList);
+        var preview = await CompareMetadataTransferPreview.EvaluateAsync(a, b, difference, aToB: true);
+        await CompareTransfer.ApplyMetadataToTargetAsync(preview);
+
+        var changed = await new ProjectPackageService().OpenAsync(files.B);
+        changed.ThemePresets.Add(new ThemePreset { Name = "Concurrent theme" });
+        var entryNode = Assert.Single(Assert.IsType<JsonArray>(changed.Architecture["changeJournal"]));
+        var entry = JsonSerializer.Deserialize<ChangeJournalEntry>(entryNode!.ToJsonString());
+        Assert.NotNull(entry);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Task.Run(() =>
+            CompareProjectSettingsRestore.RestoreOffline(entry!, changed)));
+        Assert.Equal("Concurrent theme", Assert.Single(changed.ThemePresets).Name);
+        Assert.Equal("Ball valve", Assert.Single(Assert.Single(changed.TextLists).Items).Text);
     }
 
     [Fact]
@@ -240,7 +414,12 @@ public sealed class CompareTransferIntegrationTests
         Assert.Equal(72, afterA.LocalRecords[0].Values["Neighbour"]!.GetValue<int>());
         Assert.Equal(10.25m, afterA.LocalRecords[0].Values["Pressure"]!.GetValue<decimal>());
         Assert.Equal(savedBytes, File.ReadAllBytes(files.B));
-        Assert.True(System.Text.Json.Nodes.JsonNode.DeepEquals(bProject.Architecture, afterB.Architecture));
+        var expectedArchitecture = (JsonObject)bProject.Architecture.DeepClone();
+        var actualArchitecture = (JsonObject)afterB.Architecture.DeepClone();
+        Assert.Single(Assert.IsType<JsonArray>(actualArchitecture["changeJournal"]));
+        expectedArchitecture.Remove("changeJournal");
+        actualArchitecture.Remove("changeJournal");
+        Assert.True(JsonNode.DeepEquals(expectedArchitecture, actualArchitecture));
     }
 
     [Theory]
@@ -400,6 +579,66 @@ public sealed class CompareTransferIntegrationTests
         Assert.Equal(10.25m, await db.DecimalAsync("SELECT Pressure FROM dbo.Valves WHERE Record=1"));
         Assert.Equal(72m, await db.DecimalAsync("SELECT Neighbour FROM dbo.Valves WHERE Record=1"));
         Assert.Equal(beforePackage, File.ReadAllBytes(files.B));
+    }
+
+    [CompareLocalDbFact]
+    public async Task OnlineCompareUpdateJournalsActualDefaultsKeysAndComputedValuesForRestore()
+    {
+        using var files = new CompareTestDirectory();
+        await using var db = await CompareLocalDb.CreateAsync();
+        await db.ExecuteAsync("""
+            CREATE TABLE dbo.Valves (Record int IDENTITY(1,1) NOT NULL PRIMARY KEY, Value int NOT NULL,
+                Defaulted int NOT NULL CONSTRAINT DF_CompareJournal_Defaulted DEFAULT (17),
+                ComputedValue AS (Value * 2) PERSISTED);
+            INSERT dbo.Valves (Value) VALUES (4);
+            """);
+        var loaded = await CompareSourceReader.OpenOnlineAsync(db.ConnectionString, "Compare journal", allowWrite: true);
+        using var loadedWorkspace = (IDisposable)loaded.Workspace;
+        var reader = new OnlineProjectDataSource(db.ConnectionString, "Compare journal");
+        var online = loaded with
+        {
+            Workspace = new ProjectWorkspace(reader, new OnlineProjectCrudDataSource(db.ConnectionString),
+                new ProjectArchitectureDataSource(new ConfiguratorProject(), strictReads: true))
+        };
+        var tables = (await online.Workspace.GetTablesAsync()).ToList();
+        var rows = (await online.Workspace.ReadPageAsync(new ProjectReadQuery { TableName = "dbo.Valves" })).Items.ToList();
+        rows[0].Values["Value"] = 12;
+        var project = new ConfiguratorProject { TableSchemas = tables, LocalRecords = rows };
+        var identity = new SqlConnectionStringBuilder(db.ConnectionString);
+        project.Architecture["sourceServer"] = identity.DataSource;
+        project.Architecture["sourceDatabase"] = identity.InitialCatalog;
+        project.Architecture["physicalSchema"] = JsonSerializer.SerializeToNode(online.PhysicalSchema);
+        await new ProjectPackageService().SaveAsync(files.B, project);
+        var offline = await CompareSourceReader.OpenOfflineAsync(files.B, allowWrite: true);
+        using var workspaceOffline = (IDisposable)offline.Workspace;
+
+        var result = await CompareEngine.CompareAsync(online, offline);
+        var difference = CompareTransferPreviewTests.FindDifference(result, "Value");
+        var preview = CompareTransferPreview.Evaluate(online, offline, difference, aToB: false);
+        Assert.True(preview.IsAllowed, preview.BlockReason);
+        var captured = await ((ProjectWorkspace)online.Workspace).UpdateCompareRecordAsync(preview.TargetSchema!, preview.ExpectedRecord,
+            preview.KeyValues, preview.Values);
+        var entry = CompareTransfer.CreateRowJournalEntry(preview, captured);
+
+        var refreshed = await CompareEngine.RefreshObjectAsync(difference.Pair!, online, preview, aToB: false);
+        Assert.NotNull(refreshed);
+        Assert.Contains(refreshed.Children!, field => field.Column == "ComputedValue" && field.Status == CompareStatus.Changed);
+        Assert.Contains(refreshed.Children!, field => field.Column == "Value" && field.Status == CompareStatus.Equal);
+
+        Assert.True(entry.RestoreIncludesAllChanges);
+        Assert.True(entry.CanRestore);
+        Assert.Equal(1, captured.IdentityAfter["Record"].ToObject());
+        Assert.Equal(1, captured.Before["Record"].ToObject());
+        Assert.Equal(17, captured.Before["Defaulted"].ToObject());
+        Assert.Equal(17, captured.After["Defaulted"].ToObject());
+        Assert.Equal(8, captured.Before["ComputedValue"].ToObject());
+        Assert.Equal(24, captured.After["ComputedValue"].ToObject());
+
+        await new ChangeJournalService(System.IO.Path.Combine(System.IO.Path.GetTempPath(), Guid.NewGuid().ToString("N")))
+            .RestoreAsync(entry, db.ConnectionString);
+        Assert.Equal(4, await db.DecimalAsync("SELECT Value FROM dbo.Valves WHERE Record=1"));
+        Assert.Equal(17, await db.DecimalAsync("SELECT Defaulted FROM dbo.Valves WHERE Record=1"));
+        Assert.Equal(8, await db.DecimalAsync("SELECT ComputedValue FROM dbo.Valves WHERE Record=1"));
     }
 
     [CompareLocalDbFact]

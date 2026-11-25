@@ -29,10 +29,11 @@ public partial class LoginWindow : Window
     {
         bool enabled = UserBox.SelectedItem is UserAccount { Enabled: true };
         PasswordBox.Clear();
-        PasswordBox.IsEnabled = enabled;
+        bool needsPassword = UserAuthorizationService.RequiresPassword(UserBox.SelectedItem as UserAccount);
+        PasswordBox.IsEnabled = enabled && needsPassword;
+        PasswordBox.Visibility = PasswordLabel.Visibility = needsPassword ? Visibility.Visible : Visibility.Collapsed;
         LoginButton.IsEnabled = enabled;
         ErrorText.Text = enabled ? "" : "Учётная запись отключена. Для включения обратитесь к администратору.";
-        PasswordLabel.Text = "Пароль пользователя";
     }
     private void Login_Click(object sender, RoutedEventArgs e) => Login();
     private void PasswordBox_KeyDown(object sender, KeyEventArgs e) { if (e.Key == Key.Enter) Login(); }

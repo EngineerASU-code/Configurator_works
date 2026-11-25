@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
@@ -94,8 +94,9 @@ public partial class TableViewModel
                     {
                         // PLC + Record — составная логика.
                         // PLC 1 / Record 1 и PLC 2 / Record 1 не конфликтуют.
-                        nextRecord = await _db.GetFreeScopedRecordValueAsync(
-                            CurrentTable, recordColumn, plcColumn, plcValue, ct);
+                        var classColumn = ProjectClassCatalog.FindRecordClassColumn(KeyColumns);
+                        nextRecord = await _db.GetFreeScopedRecordValueAsync(CurrentTable, recordColumn, plcColumn, plcValue, ct,
+                            classColumn, classColumn == null ? null : CurrentRawRowValues.GetValueOrDefault(classColumn));
                     }
                     else
                     {

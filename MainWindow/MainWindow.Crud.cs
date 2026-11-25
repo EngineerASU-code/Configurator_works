@@ -435,7 +435,8 @@ namespace Configurator
                 forcedClassNumber,
                 classNumberColumn,
                 addLookupOptions,
-                preferFreeScopedRecord: suggestScopedRecord)
+                preferFreeScopedRecord: suggestScopedRecord,
+                recordScopeClassColumn: ProjectClassCatalog.FindRecordClassColumn(_activeVm.KeyColumns))
             { Owner = this };
 
             addWindow.ShowDialog();
@@ -445,29 +446,23 @@ namespace Configurator
 
             try
             {
-                await _activeVm.InsertAsync(addWindow.Values);
-                var addTable = _activeVm.CurrentTable;
+                var addVm = _activeVm;
+                var addTable = addVm.CurrentTable;
                 var addDbName = _activeDbName;
-                var addValues = new Dictionary<string, object>(addWindow.Values);
-                var addIdentity = _activeVm.BuildIdentityValues(addValues);
-                _activeVm.NotifyInserted(1);
-                if (_activeVm.ColumnView.HasFilters)
-                    await _activeVm.RefreshTotalCountAsync();
-
-                if (!suggestScopedRecord) _activeVm.CurrentPage = _activeVm.TotalPages;
-                var preferred = new Dictionary<string, object>(addWindow.Values);
-
+                var keys = addVm.KeyColumns.ToList();
+                var addValues = await addVm.InsertAndGetSnapshotAsync(addWindow.Values);
+                var addIdentity = keys.Count > 0 ? keys.ToDictionary(key => key, key => addValues[key]) : addVm.BuildIdentityValues(addValues);
                 string addDetails = string.Join("; ", addValues.Select(x => $"{x.Key}={FormatLogValue(x.Value)}"));
-                LogAction($"Добавлена строка · {addTable}", async () =>
-                {
-                    var undoDb = new DatabaseService(_connection.ToConnectionString(addDbName));
-                    await undoDb.DeleteRowsByValuesAsync(addTable, new List<Dictionary<string, object>> { addValues });
-                }, category: "Добавление", source: addTable, details: addDetails,
+                LogAction($"Добавлена строка · {addTable}", category: "Добавление", source: addTable, details: addDetails,
                 journalChanges: new[]
                 {
                     CreateJournalChange(addTable, ChangeJournalOperationKind.Insert, null, addValues, null, addIdentity)
                 }, operationKind: ChangeJournalOperationKind.Insert, databaseName: addDbName);
-                await ReloadCurrentPageFastAsync(-1, preferred);
+                if (_activeVm != addVm || addVm.CurrentTable != addTable || _activeDbName != addDbName) return;
+                addVm.NotifyInserted(1);
+                if (addVm.ColumnView.HasFilters) await addVm.RefreshTotalCountAsync();
+                if (!suggestScopedRecord) addVm.CurrentPage = addVm.TotalPages;
+                await ReloadCurrentPageFastAsync(-1, addIdentity);
                 if (suggestScopedRecord && addValues.TryGetValue(recordColumn.Name, out var record))
                     StatusText.Text = $"Строка добавлена · Record = {FormatLogValue(record)}";
             }
@@ -555,14 +550,7 @@ namespace Configurator
                 var afterIdentity = usesValueIdentity ? new Dictionary<string, object>(afterValues) :
                     keyColumns.ToDictionary(key => key, key => afterValues[key]);
                 var changedDetails = string.Join("; ", editWindow.Values.Select(x => $"{x.Key}: {FormatLogValue(oldValues.TryGetValue(x.Key, out var ov) ? ov : null)} → {FormatLogValue(x.Value)}"));
-                LogAction($"Изменена строка · {updateTable}", async () =>
-                {
-                    var undoDb = new DatabaseService(_connection.ToConnectionString(updateDbName));
-                    var undoValues = oldValues.Where(pair => editColumns.Any(column =>
-                        column.Name.Equals(pair.Key, StringComparison.OrdinalIgnoreCase) && !column.IsReadOnly && !column.IsIdentity))
-                        .ToDictionary(pair => pair.Key, pair => pair.Value);
-                    await undoDb.UpdateRowByValuesAsync(updateTable, afterValues, undoValues);
-                }, category: "Изменение", source: updateTable, details: changedDetails,
+                LogAction($"Изменена строка · {updateTable}", category: "Изменение", source: updateTable, details: changedDetails,
                 journalChanges: new[]
                 {
                     CreateJournalChange(updateTable, ChangeJournalOperationKind.Update, oldValues, afterValues, oldIdentity, afterIdentity)
@@ -607,37 +595,38 @@ namespace Configurator
 
             try
             {
-                var values = await _activeVm.DuplicateCurrentRowAsync();
-                var duplicateTable = _activeVm.CurrentTable;
+                var duplicateVm = _activeVm;
+                var duplicateTable = duplicateVm.CurrentTable;
                 var duplicateDbName = _activeDbName;
+                var keys = duplicateVm.KeyColumns.ToList();
+                var sourceIdentity = new Dictionary<string, object>(duplicateVm.UsesValueIdentity
+                    ? duplicateVm.CurrentIdentityValues : duplicateVm.CurrentKeyValues);
+                var values = await duplicateVm.DuplicateCurrentRowAsync(returnSnapshot: true);
                 if (values.Count == 0)
                 {
                     Configurator.Infrastructure.ModernDialog.Show("Нет данных для дублирования.");
                     return;
                 }
 
-                _activeVm.NotifyInserted(1);
-                if (_activeVm.ColumnView.HasFilters)
-                    await _activeVm.RefreshTotalCountAsync();
-                bool usedScopedRecord = !string.IsNullOrEmpty(_activeVm.PlcColumn) &&
-                    _activeVm.Columns.Any(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase) && !c.IsReadOnly && !c.IsIdentity);
-                if (!usedScopedRecord) _activeVm.CurrentPage = _activeVm.TotalPages;
-
                 string newRecordMsg = "";
-                if (values.TryGetValue(_activeVm.RecordColumn, out var recordValue))
-                    newRecordMsg = $" Новый {_activeVm.RecordColumn} = {recordValue}";
+                if (duplicateVm.RecordColumn is string recordName && values.TryGetValue(recordName, out var recordValue))
+                    newRecordMsg = $" Новый {recordName} = {recordValue}";
 
-                var duplicateIdentity = _activeVm.BuildIdentityValues(values);
+                var duplicateIdentity = keys.Count > 0 ? keys.ToDictionary(key => key, key => values[key]) : duplicateVm.BuildIdentityValues(values);
                 string duplicateDetails = string.Join("; ", values.Select(x => $"{x.Key}={FormatLogValue(x.Value)}"));
-                LogAction($"Дублирована строка · {duplicateTable}{newRecordMsg}", async () =>
-                {
-                    var undoDb = new DatabaseService(_connection.ToConnectionString(duplicateDbName));
-                    await undoDb.DeleteRowsByValuesAsync(duplicateTable, new List<Dictionary<string, object>> { values });
-                }, category: "Дублирование", source: duplicateTable, details: duplicateDetails,
+                LogAction($"Дублирована строка · {duplicateTable}{newRecordMsg}", category: "Дублирование", source: duplicateTable, details: duplicateDetails,
                 journalChanges: new[]
                 {
-                    CreateJournalChange(duplicateTable, ChangeJournalOperationKind.Duplicate, null, values, null, duplicateIdentity)
+                    CreateJournalChange(duplicateTable, ChangeJournalOperationKind.Duplicate, null, values, sourceIdentity, duplicateIdentity)
                 }, operationKind: ChangeJournalOperationKind.Duplicate, databaseName: duplicateDbName);
+
+                if (_activeVm != duplicateVm || duplicateVm.CurrentTable != duplicateTable || _activeDbName != duplicateDbName) return;
+                duplicateVm.NotifyInserted(1);
+                if (duplicateVm.ColumnView.HasFilters)
+                    await duplicateVm.RefreshTotalCountAsync();
+                bool usedScopedRecord = !string.IsNullOrEmpty(duplicateVm.PlcColumn) &&
+                    duplicateVm.Columns.Any(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase) && !c.IsReadOnly && !c.IsIdentity);
+                if (!usedScopedRecord) duplicateVm.CurrentPage = duplicateVm.TotalPages;
 
                 // Ищем копию по тем значениям, которые реально были вставлены.
                 // Это работает и для PLC + Record, и для keyless таблиц.

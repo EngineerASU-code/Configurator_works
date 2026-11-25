@@ -134,10 +134,10 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
             keyColumn => keyColumn, keyColumn => (object?)normalizedValues[keyColumn], StringComparer.OrdinalIgnoreCase));
     }
 
-    public Task CreateRecordsAsync(string tableName, IReadOnlyList<IReadOnlyDictionary<string, object?>> records, CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<IReadOnlyDictionary<string, object?>>> CreateRecordsAsync(string tableName, IReadOnlyList<IReadOnlyDictionary<string, object?>> records, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (records == null || records.Count == 0) return Task.CompletedTask;
+        if (records == null || records.Count == 0) return Task.FromResult<IReadOnlyList<IReadOnlyDictionary<string, object?>>>(Array.Empty<IReadOnlyDictionary<string, object?>>());
         var backup = _project.LocalRecords.Select(r => new ProjectRecord
         {
             TableName = r.TableName, Key = r.Key, RowVersion = r.RowVersion,
@@ -146,14 +146,18 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
         _suspendNotifications = true;
         try
         {
+            var snapshots = new List<IReadOnlyDictionary<string, object?>>(records.Count);
             foreach (var record in records)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                CreateRecordAsync(tableName, record, cancellationToken).GetAwaiter().GetResult();
+                var keys = CreateRecordAndGetKeyAsync(tableName, record, cancellationToken).GetAwaiter().GetResult();
+                var snapshot = new Dictionary<string, object?>(record, StringComparer.OrdinalIgnoreCase);
+                foreach (var pair in keys) snapshot[pair.Key] = pair.Value;
+                snapshots.Add(snapshot);
             }
             _suspendNotifications = false;
             Touch();
-            return Task.CompletedTask;
+            return Task.FromResult<IReadOnlyList<IReadOnlyDictionary<string, object?>>>(snapshots);
         }
         catch
         {

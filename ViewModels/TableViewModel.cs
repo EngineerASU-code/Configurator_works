@@ -134,7 +134,12 @@ namespace Configurator
                 sorts.Add(new TableColumnSort(name, System.ComponentModel.ListSortDirection.Ascending, column?.UsesTextOrdering == true));
             }
 
-            var data = await _db.GetColumnViewPageAsync(CurrentTable, CurrentPage, PageSize, sorts, ColumnView.Filters, ct);
+            // Snapshot navigation state before leaving the dispatcher. Opening a guarded
+            // connection and materializing buffered SQL rows can both run synchronously.
+            var table = CurrentTable;
+            var page = CurrentPage;
+            var filters = ColumnView.Filters.ToArray();
+            var data = await Task.Run(() => _db.GetColumnViewPageAsync(table, page, PageSize, sorts, filters, ct), ct);
             ct.ThrowIfCancellationRequested();
             CurrentPageData = data;
             return data;
@@ -302,7 +307,14 @@ namespace Configurator
             InvalidateCountCache();
         }
 
-        public async Task<Dictionary<string, object>> DuplicateCurrentRowAsync(CancellationToken ct = default)
+        internal async Task<Dictionary<string, object>> InsertAndGetSnapshotAsync(Dictionary<string, object> values, CancellationToken ct = default)
+        {
+            var inserted = await _db.InsertRowAndGetSnapshotAsync(CurrentTable, values, ct);
+            InvalidateCountCache();
+            return inserted;
+        }
+
+        public async Task<Dictionary<string, object>> DuplicateCurrentRowAsync(CancellationToken ct = default, bool returnSnapshot = false)
         {
             // Если между расчётом Record и INSERT другой клиент успел занять
             // это значение, пересчитываем его несколько раз. Это особенно важно
@@ -314,6 +326,7 @@ namespace Configurator
                 var values = await BuildDuplicateValuesAsync(ct);
                 try
                 {
+                    if (returnSnapshot) return await InsertAndGetSnapshotAsync(values, ct);
                     await InsertAsync(values, ct);
                     return values;
                 }

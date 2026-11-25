@@ -1,7 +1,11 @@
 #nullable enable
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Configurator.Core.Architecture;
 using Configurator.Core.Compare;
 using Configurator.Core.Projects;
 
@@ -52,11 +56,24 @@ public static class CompareTransfer
                 var (project, fingerprint) = await ProjectPackageService.ReadForCompareAsync(file, cancellationToken).ConfigureAwait(false);
                 if (!fingerprint.Equals(preview.Target.PackageFingerprint, StringComparison.OrdinalIgnoreCase))
                     throw new CompareTransferException("Локальный проект изменился после сравнения. Повторите сравнение.");
-                var currentTarget = new ProjectCompareSettings(project.TextLists, project.ThemePresets);
+                var currentTarget = CompareProjectSettingsRestore.CloneSettings(
+                    new ProjectCompareSettings(project.TextLists, project.ThemePresets));
                 if (!CompareMetadataTransferPreview.FingerprintProjectSettings(currentTarget).Equals(preview.TargetFingerprint, StringComparison.OrdinalIgnoreCase))
                     throw new CompareTransferException("Целевые проектные настройки изменились после сравнения. Повторите сравнение.");
-                ApplyProjectSettings(project.TextLists, project.ThemePresets, preview);
-                await new ProjectPackageService().SaveAsync(path, project, cancellationToken, requireExisting: true, reservedFile: file).ConfigureAwait(false);
+                var lists = currentTarget.TextLists.ToList();
+                var themes = currentTarget.ThemePresets.Select(item => item.Clone()).ToList();
+                ApplyProjectSettings(lists, themes, preview);
+                var after = new ProjectCompareSettings(lists, themes);
+                var entry = CompareProjectSettingsRestore.CreateEntry(preview, currentTarget, after);
+                project.TextLists = lists;
+                project.ThemePresets = themes;
+                var journal = new ChangeJournalService();
+                journal.BindOfflineProject(project, changed: () => { }, mode: 2);
+                if (!journal.Record(entry))
+                    throw new CompareTransferException("Настройки обновлены, но запись журнала не подготовлена. Изменение локального проекта отменено.");
+                string savedFingerprint = await new ProjectPackageService().SaveForCompareAsync(path, project, file, cancellationToken).ConfigureAwait(false);
+                preview.SavedPackage = (project, savedFingerprint);
+                preview.RecordedEntry = entry;
             }
             else
             {
@@ -66,10 +83,19 @@ public static class CompareTransfer
                     ?? throw new CompareTransferException("Не удалось прочитать целевые проектные настройки.");
                 if (!CompareMetadataTransferPreview.FingerprintProjectSettings(targetSettings).Equals(preview.TargetFingerprint, StringComparison.OrdinalIgnoreCase))
                     throw new CompareTransferException("Целевые проектные настройки изменились после сравнения. Повторите сравнение.");
-                var lists = targetSettings.TextLists.ToList();
-                var themes = targetSettings.ThemePresets.Select(item => item.Clone()).ToList();
+                var before = CompareProjectSettingsRestore.CloneSettings(targetSettings);
+                var lists = before.TextLists.ToList();
+                var themes = before.ThemePresets.Select(item => item.Clone()).ToList();
                 ApplyProjectSettings(lists, themes, preview);
-                await preview.Target.SaveProjectSettingsAsync(new ProjectCompareSettings(lists, themes), preview.TargetFingerprint, cancellationToken).ConfigureAwait(false);
+                var after = new ProjectCompareSettings(lists, themes);
+                var entry = CompareProjectSettingsRestore.CreateEntry(preview, before, after);
+                await preview.Target.SaveProjectSettingsAsync(after, preview.TargetFingerprint, cancellationToken).ConfigureAwait(false);
+                var journal = new ChangeJournalService();
+                var (server, database) = CompareProjectSettingsRestore.ParseOnlineOrigin(preview.Target.Origin);
+                journal.BindOnlineProject(server, database, preview.Target.Workspace.DisplayName, 2);
+                if (!journal.Record(entry))
+                    throw new CompareTransferException("Настройки перенесены, но запись журнала не сохранена.");
+                preview.RecordedEntry = entry;
             }
             return;
         }
@@ -99,7 +125,7 @@ public static class CompareTransfer
         if (string.IsNullOrWhiteSpace(source.PackagePath) || string.IsNullOrWhiteSpace(source.PackageFingerprint))
             throw new CompareTransferException("Не удалось проверить исходный локальный проект. Повторите сравнение.");
         await using var file = new FileStream(Path.GetFullPath(source.PackagePath), FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 81920, useAsync: true);
-        var (_, currentFingerprint) = await ProjectPackageService.ReadForCompareAsync(file, cancellationToken).ConfigureAwait(false);
+        var currentFingerprint = await ProjectPackageService.ReadFingerprintForCompareAsync(file, cancellationToken).ConfigureAwait(false);
         if (!currentFingerprint.Equals(source.PackageFingerprint, StringComparison.OrdinalIgnoreCase))
             throw new CompareTransferException("Исходный локальный проект изменился после сравнения. Повторите сравнение.");
     }
@@ -166,18 +192,50 @@ public static class CompareTransfer
             throw new CompareTransferException("Схема целевого объекта изменилась после сравнения. Повторите сравнение.");
 
         ValidateOfflineTarget(dataSource, schema, preview, createsObject);
-        if (checkUserPermission) EnsureUserPermission(createsObject);
+        if (checkUserPermission) EnsureUserPermission(createsObject, preview.DeletesRecord);
         await VerifyOnlineSourceAsync(preview, cancellationToken).ConfigureAwait(false);
 
+        var originalRecords = project.LocalRecords.Select(CloneRecord).ToList();
+        var originalArchitecture = (JsonObject)(project.Architecture?.DeepClone() ?? new JsonObject());
         using var workspace = new ProjectWorkspace(dataSource, dataSource);
-        if (createsObject)
-            await workspace.CreateRecordAsync(schema.TableName, preview.Values, cancellationToken).ConfigureAwait(false);
-        else
-            await workspace.UpdateRecordAsync(schema.TableName, schema.KeyColumns, preview.KeyValues, preview.Values, cancellationToken)
-                .ConfigureAwait(false);
+        try
+        {
+            ProjectRecord? created = null;
+            if (preview.DeletesRecord)
+            {
+                if (await workspace.DeleteRecordsAsync(schema.TableName, schema.KeyColumns, new[] { preview.KeyValues }, cancellationToken).ConfigureAwait(false) != 1)
+                    throw new CompareTransferException("Целевая запись изменилась.");
+            }
+            else if (createsObject)
+            {
+                await workspace.CreateRecordAsync(schema.TableName, preview.Values, cancellationToken).ConfigureAwait(false);
+                if (preview.CopiesComputedArea)
+                {
+                    string key = ProjectKeyCodec.Encode(schema, schema.KeyColumns, name => ProjectKeyCodec.ToNode(preview.KeyValues[name]));
+                    created = dataSource.GetRecords(schema.TableName).Single(record => RecordKey(schema, record) == key);
+                    created.Values["Area"] = preview.SourceRecord!.Values["Area"]?.DeepClone();
+                }
+            }
+            else
+                await workspace.UpdateRecordAsync(schema.TableName, schema.KeyColumns, preview.KeyValues, preview.Values, cancellationToken)
+                    .ConfigureAwait(false);
 
-        await new ProjectPackageService().SaveAsync(path, project, cancellationToken, requireExisting: true, reservedFile: file)
-            .ConfigureAwait(false);
+            var entry = CreateRowJournalEntry(preview, created: created);
+            var journal = new ChangeJournalService();
+            journal.BindOfflineProject(project, changed: () => { }, mode: 3);
+            if (!journal.Record(entry))
+                throw new CompareTransferException("Перенос выполнен, но запись журнала не подготовлена. Изменение локального проекта отменено.");
+
+            string savedFingerprint = await new ProjectPackageService().SaveForCompareAsync(path, project, file, cancellationToken).ConfigureAwait(false);
+            preview.SavedPackage = (project, savedFingerprint);
+            preview.RecordedEntry = entry;
+        }
+        catch
+        {
+            project.LocalRecords = originalRecords;
+            project.Architecture = originalArchitecture;
+            throw;
+        }
     }
 
     private static async Task ApplyOnlineAsync(CompareTransferPreview preview, bool createsObject,
@@ -185,7 +243,7 @@ public static class CompareTransfer
     {
         if ((!createsObject && preview.ExpectedRecord is null) || preview.TargetSchema is null)
             throw new CompareTransferException("Не удалось проверить целевую запись. Повторите сравнение.");
-        if (preview.Values.Count == 0)
+        if (!preview.DeletesRecord && preview.Values.Count == 0)
             throw new CompareTransferException("Нет выбранных полей для переноса.");
         if (preview.TargetMetadataFingerprint is null)
             throw new CompareTransferException("Не удалось подтвердить текущие классы и логические связи. Повторите сравнение.");
@@ -198,23 +256,177 @@ public static class CompareTransfer
         var currentMetadata = CompareEngine.FingerprintMetadata(currentClasses, currentRelations);
         if (!preview.TargetMetadataFingerprint.Equals(currentMetadata, StringComparison.OrdinalIgnoreCase))
             throw new CompareTransferException("Классы или логические связи изменились после сравнения. Повторите сравнение.");
-        if (checkUserPermission) EnsureUserPermission(createsObject);
+        if (checkUserPermission) EnsureUserPermission(createsObject, preview.DeletesRecord);
         await VerifyOnlineSourceAsync(preview, cancellationToken).ConfigureAwait(false);
 
         try
         {
-            await workspace.UpdateCompareRecordAsync(preview.TargetSchema, preview.ExpectedRecord,
-                preview.KeyValues, preview.Values, cancellationToken).ConfigureAwait(false);
+            var change = await workspace.UpdateCompareRecordAsync(preview.TargetSchema, preview.ExpectedRecord,
+                preview.KeyValues, preview.Values, cancellationToken, preview.DeletesRecord).ConfigureAwait(false);
+            RecordOnlineJournal(preview, change);
         }
+        catch (CompareRecordConflictException) { throw; }
         catch (InvalidOperationException ex)
         {
             throw new CompareTransferException(ex.Message);
         }
     }
 
-    private static void EnsureUserPermission(bool createsObject)
+    private static void RecordOnlineJournal(CompareTransferPreview preview, ChangeJournalRowChange capturedChange)
     {
-        var permission = createsObject ? Permission.AddData : Permission.EditData;
+        var entry = CreateRowJournalEntry(preview, capturedChange);
+        var origin = preview.Target.Origin ?? string.Empty;
+        var separator = origin.IndexOf('\0');
+        if (separator <= 0 || separator == origin.Length - 1)
+            throw new CompareTransferException("Перенос выполнен, но не удалось определить целевую базу для журнала.");
+
+        var server = origin[..separator];
+        var database = origin[(separator + 1)..];
+        var journal = new ChangeJournalService();
+        journal.BindOnlineProject(server, database, preview.Target.Workspace.DisplayName, 3);
+        if (!journal.Record(entry))
+            throw new CompareTransferException("Перенос выполнен, но запись журнала не сохранена.");
+        preview.RecordedEntry = entry;
+    }
+
+    internal static ChangeJournalEntry CreateRowJournalEntry(CompareTransferPreview preview, ChangeJournalRowChange? capturedChange = null,
+        ProjectRecord? created = null)
+    {
+        var schema = preview.TargetSchema ?? throw new CompareTransferException("Не удалось сформировать журнал переноса без схемы целевой таблицы.");
+        var before = preview.ExpectedRecord?.Values;
+        var after = before is null ? new JsonObject() : (JsonObject)before.DeepClone();
+        foreach (var pair in preview.Values)
+            after[pair.Key] = ProjectKeyCodec.ToNode(pair.Value);
+
+        var beforeValues = capturedChange?.Before ?? (before is null
+            ? new Dictionary<string, ChangeJournalValue>(StringComparer.OrdinalIgnoreCase)
+            : JournalValues(before, schema));
+        var afterValues = capturedChange?.After ?? JournalValues(
+            created?.Values ?? (preview.DeletesRecord ? new JsonObject() : after), schema, includeComputed: created is not null);
+        var identity = capturedChange?.IdentityAfter ?? JournalIdentity(preview.KeyValues, schema);
+        var kind = capturedChange?.Kind ?? (preview.DeletesRecord ? ChangeJournalOperationKind.Delete : before is null ? ChangeJournalOperationKind.Insert : ChangeJournalOperationKind.Update);
+        bool valuesAreRestorable = schema.KeyColumns.All(key => schema.Columns.Any(column =>
+                column.Name.Equals(key, StringComparison.OrdinalIgnoreCase) && IsSupportedJournalType(column.DataType))) &&
+            (kind is ChangeJournalOperationKind.Insert or ChangeJournalOperationKind.Delete
+                ? schema.Columns.All(column => IsSupportedJournalType(column.DataType))
+                : preview.Values.Keys.All(name => schema.Columns.Any(column =>
+                    column.Name.Equals(name, StringComparison.OrdinalIgnoreCase) && IsSupportedJournalType(column.DataType))));
+        var change = capturedChange ?? new ChangeJournalRowChange
+        {
+            TableName = schema.TableName,
+            Kind = kind,
+            Before = beforeValues,
+            After = afterValues,
+            IdentityBefore = before is null
+                ? new Dictionary<string, ChangeJournalValue>(StringComparer.OrdinalIgnoreCase)
+                : identity,
+            IdentityAfter = preview.DeletesRecord ? new() : identity,
+            AfterIsCompleteOfflineRecord = created is not null
+        };
+
+        bool offline = preview.Target.Workspace.IsOffline;
+        var server = string.Empty;
+        var database = string.Empty;
+        if (!offline)
+        {
+            var origin = preview.Target.Origin ?? string.Empty;
+            var separator = origin.IndexOf('\0');
+            if (separator > 0 && separator < origin.Length - 1)
+            {
+                server = origin[..separator];
+                database = origin[(separator + 1)..];
+            }
+        }
+
+        return new ChangeJournalEntry
+        {
+            Category = "Compare",
+            Source = schema.TableName,
+            Description = preview.DeletesRecord ? "Удаление объекта Compare" : before is null ? "Перенос объекта Compare" : "Изменение объекта Compare",
+            Details = string.Join(", ", preview.KeyValues.Select(pair => $"{pair.Key}={pair.Value}")),
+            OperationKind = kind,
+            RestoreIncludesAllChanges = valuesAreRestorable,
+            ProjectType = offline ? "Offline" : "Online",
+            ProjectId = offline ? (preview.Target.ProjectId ?? string.Empty) : $"online:{server.ToLowerInvariant()}/{database.ToLowerInvariant()}",
+            ProjectName = offline ? (preview.Target.OfflineProject?.Manifest?.Name ?? preview.Target.Workspace.DisplayName) : database,
+            Server = server,
+            Database = database,
+            Mode = 3,
+            UserRole = UserAuthorizationService.CurrentRole?.Name ?? string.Empty,
+            EntityType = "Объект",
+            EntityIdentity = string.Join("; ", preview.KeyValues.Select(pair => $"{pair.Key}={pair.Value}")),
+            Result = "Успешно",
+            Changes = new List<ChangeJournalRowChange> { change }
+        };
+    }
+
+    private static Dictionary<string, ChangeJournalValue> JournalValues(JsonObject values, ProjectTableSchema schema, bool includeComputed = false)
+    {
+        var result = new Dictionary<string, ChangeJournalValue>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in values)
+        {
+            var column = schema.Columns.FirstOrDefault(item => item.Name.Equals(pair.Key, StringComparison.OrdinalIgnoreCase));
+            if (column is null || (!includeComputed && (column.IsComputed || column.IsReadOnly))) continue;
+            result[pair.Key] = ChangeJournalValue.FromObject(ToJournalObject(pair.Value, column.DataType));
+        }
+        return result;
+    }
+
+    private static Dictionary<string, ChangeJournalValue> JournalIdentity(
+        IReadOnlyDictionary<string, object?> values, ProjectTableSchema schema)
+    {
+        var result = new Dictionary<string, ChangeJournalValue>(StringComparer.OrdinalIgnoreCase);
+        foreach (var key in schema.KeyColumns)
+        {
+            var column = schema.Columns.FirstOrDefault(item => item.Name.Equals(key, StringComparison.OrdinalIgnoreCase));
+            if (column is null || !values.TryGetValue(key, out var value)) continue;
+            result[key] = ChangeJournalValue.FromObject(value ?? DBNull.Value);
+        }
+        return result;
+    }
+
+    private static object ToJournalObject(JsonNode? node, string sqlType)
+    {
+        if (node is null) return DBNull.Value;
+        var type = sqlType.ToLowerInvariant() switch
+        {
+            "bit" => typeof(bool),
+            "tinyint" => typeof(byte),
+            "smallint" => typeof(short),
+            "int" => typeof(int),
+            "bigint" => typeof(long),
+            "real" => typeof(float),
+            "float" => typeof(double),
+            "decimal" or "numeric" or "money" or "smallmoney" => typeof(decimal),
+            "uniqueidentifier" => typeof(Guid),
+            "date" or "datetime" or "datetime2" or "smalldatetime" => typeof(DateTime),
+            "datetimeoffset" => typeof(DateTimeOffset),
+            "time" => typeof(TimeSpan),
+            "binary" or "varbinary" or "image" or "timestamp" or "rowversion" => typeof(byte[]),
+            "char" or "nchar" or "varchar" or "nvarchar" or "text" or "ntext" or "xml" => typeof(string),
+            _ => typeof(string)
+        };
+        return JsonSerializer.Deserialize(node.ToJsonString(), type) ?? DBNull.Value;
+    }
+
+    private static bool IsSupportedJournalType(string sqlType) => sqlType.ToLowerInvariant() is
+        "bit" or "tinyint" or "smallint" or "int" or "bigint" or "real" or "float" or
+        "decimal" or "numeric" or "money" or "smallmoney" or "uniqueidentifier" or
+        "date" or "datetime" or "datetime2" or "smalldatetime" or "datetimeoffset" or "time" or
+        "binary" or "varbinary" or "image" or "timestamp" or "rowversion" or
+        "char" or "nchar" or "varchar" or "nvarchar" or "text" or "ntext" or "xml";
+
+    private static ProjectRecord CloneRecord(ProjectRecord record) => new()
+    {
+        TableName = record.TableName,
+        Key = record.Key,
+        RowVersion = record.RowVersion,
+        Values = (JsonObject)(record.Values?.DeepClone() ?? new JsonObject())
+    };
+
+    private static void EnsureUserPermission(bool createsObject, bool deletes)
+    {
+        var permission = deletes ? Permission.DeleteData : createsObject ? Permission.AddData : Permission.EditData;
         if (!PermissionPolicy.CanEnterMode(UserAuthorizationService.CurrentUser, UserAuthorizationService.CurrentRole, 3) ||
             !UserAuthorizationService.Has(permission))
             throw new CompareTransferException("У текущего пользователя нет разрешения на выбранное действие.");
@@ -225,7 +437,7 @@ public static class CompareTransfer
         if (preview.Source.Workspace.IsOffline) return;
         var expected = preview.SourceRecord;
         var schema = preview.SourceSchema;
-        if (expected is null || schema is null || preview.SourceKeyValues.Count != schema.KeyColumns.Count)
+        if (schema is null || preview.SourceKeyValues.Count != schema.KeyColumns.Count)
             throw new CompareTransferException("Не удалось проверить исходную запись. Повторите сравнение.");
         var currentSchema = await preview.Source.Workspace.RefreshSchemaAsync(schema.TableName, cancellationToken).ConfigureAwait(false);
         if (currentSchema is null || !SameSchema(schema, currentSchema))
@@ -234,7 +446,8 @@ public static class CompareTransfer
         {
             TableName = schema.TableName, Filters = preview.SourceKeyValues, PageSize = 2
         }, cancellationToken).ConfigureAwait(false);
-        if (page.TotalCount != 1 || page.Items.Count != 1 ||
+        if (expected is null && preview.DeletesRecord && page.TotalCount == 0) return;
+        if (expected is null || page.TotalCount != 1 || page.Items.Count != 1 ||
             !JsonNode.DeepEquals(expected.Values, page.Items[0].Values) ||
             !string.Equals(expected.RowVersion, page.Items[0].RowVersion, StringComparison.Ordinal))
             throw new CompareTransferException("Исходная запись изменилась после сравнения. Повторите сравнение.");
@@ -251,18 +464,37 @@ public static class CompareTransfer
 
         if (createsObject)
         {
+            var physicalTable = preview.Target.PhysicalSchema?.FindTable(schema.TableName);
+            if (preview.KeyValues.TryGetValue("Record", out var number))
+            {
+                bool uniqueRecord = physicalTable?.Keys.Any(key => key.IsUnique && key.Columns.Count == 1 &&
+                    key.Columns.Contains("Record", StringComparer.OrdinalIgnoreCase)) == true;
+                if (matching.Count != 0 || (uniqueRecord && dataSource.GetRecords(schema.TableName).Any(row =>
+                    CompareValues.Compare(row.Values["Record"], ProjectKeyCodec.ToNode(number), null, null) == CompareStatus.Equal)))
+                    throw new CompareRecordConflictException();
+            }
             if (matching.Count != 0)
                 throw new CompareTransferException("Ключ объекта уже существует в целевом локальном проекте. Повторите сравнение.");
 
-            EnsureNameIsAvailable(dataSource.GetRecords(schema.TableName), preview.Values);
-            if (CompareTransferPreview.IsValveTable(schema))
+            bool offlinePid = preview.Source.Workspace.IsOffline && CompareTransferPreview.IsEquipmentTable(schema) &&
+                schema.TableName.Equals("dbo.Reglers", StringComparison.OrdinalIgnoreCase);
+            bool uniqueName = !offlinePid || physicalTable is null || !physicalTable.Keys.Any(key => key.IsUnique) ||
+                physicalTable.Keys.Any(key => key.IsUnique && key.Columns.Contains("Name", StringComparer.OrdinalIgnoreCase));
+            EnsureNameIsAvailable(dataSource.GetRecords(schema.TableName), preview.Values, uniqueName);
+            if (CompareTransferPreview.IsEquipmentTable(schema))
             {
-                foreach (var (table, fields, values) in CompareTransferPreview.ValveLookups(preview.Values))
+                var lookupValues = new Dictionary<string, object?>(preview.Values, StringComparer.OrdinalIgnoreCase);
+                if (preview.CopiesComputedArea)
+                    lookupValues["Area"] = ReadString(preview.SourceRecord!.Values["Area"]);
+                foreach (var (table, fields, values) in CompareTransferPreview.EquipmentLookups(schema, lookupValues))
                 {
-                    if (!dataSource.GetRecords(table).Any(record => fields.Select((field, index) =>
+                    bool HasMatch(IReadOnlyList<ProjectRecord> rows) => rows.Any(record => fields.Select((field, index) =>
                         record.Values.TryGetPropertyValue(field, out var value) &&
-                        CompareValues.Compare(value, ProjectKeyCodec.ToNode(values[index]), null, null) == CompareStatus.Equal).All(equal => equal)))
-                        throw new CompareTransferException($"Для клапана отсутствует связанная запись в {table}.");
+                        CompareValues.Compare(value, ProjectKeyCodec.ToNode(values[index]), null, null) == CompareStatus.Equal).All(equal => equal));
+                    if (!HasMatch(dataSource.GetRecords(table)) &&
+                        !(offlinePid && CanKeepMissingPidLookup(preview, table, fields) &&
+                          !HasMatch(new OfflineProjectDataSource(preview.Source.OfflineProject!).GetRecords(table))))
+                        throw new CompareTransferException($"Для объекта отсутствует связанная запись в {table}.");
                 }
             }
             return;
@@ -298,14 +530,29 @@ public static class CompareTransfer
         return true;
     }
 
-    private static void EnsureNameIsAvailable(IReadOnlyList<ProjectRecord> records, IReadOnlyDictionary<string, object?> values)
+    private static bool CanKeepMissingPidLookup(CompareTransferPreview preview, string table, string[] fields)
+    {
+        if (table is not ("dbo.Reglers_Types" or "dbo.AnaIN" or "dbo.AnaOUT") ||
+            preview.Source.OfflineProject is null) return false;
+        bool IsCapturedLogicalLookup(CompareSource source)
+        {
+            var relations = source.PhysicalSchema?.Relations.Where(relation =>
+                relation.SourceTable.Equals("dbo.Reglers", StringComparison.OrdinalIgnoreCase) &&
+                relation.TargetTable.Equals(table, StringComparison.OrdinalIgnoreCase)).ToArray();
+            return relations is not null && relations.Any(relation => relation.TargetColumns.SequenceEqual(fields, StringComparer.OrdinalIgnoreCase)) &&
+                relations.All(relation => relation.Kind != DatabaseRelationKind.PhysicalForeignKey);
+        }
+        return IsCapturedLogicalLookup(preview.Source) && IsCapturedLogicalLookup(preview.Target);
+    }
+
+    private static void EnsureNameIsAvailable(IReadOnlyList<ProjectRecord> records, IReadOnlyDictionary<string, object?> values, bool uniqueName)
     {
         var nameField = values.FirstOrDefault(pair => pair.Key.Equals("Name", StringComparison.OrdinalIgnoreCase));
         if (nameField.Key is null) return;
         if (nameField.Value is not string name || string.IsNullOrWhiteSpace(name))
             throw new CompareTransferException("Для создания объекта требуется непустое имя.");
 
-        if (records.Any(record => record.Values.Any(pair => pair.Key.Equals("Name", StringComparison.OrdinalIgnoreCase) &&
+        if (uniqueName && records.Any(record => record.Values.Any(pair => pair.Key.Equals("Name", StringComparison.OrdinalIgnoreCase) &&
             string.Equals(ReadString(pair.Value)?.TrimEnd(), name.TrimEnd(), StringComparison.OrdinalIgnoreCase))))
             throw new CompareTransferException("В целевом локальном проекте уже есть объект с таким именем.");
     }
@@ -314,7 +561,9 @@ public static class CompareTransfer
         value is JsonValue scalar && scalar.TryGetValue<string>(out var text) ? text : null;
 }
 
-public sealed class CompareTransferException : InvalidOperationException
+public sealed class CompareRecordConflictException() : CompareTransferException("Record уже занят. Введите другой Record.") { }
+
+public class CompareTransferException : InvalidOperationException
 {
     public CompareTransferException(string safeMessage) : base(safeMessage) { }
 }

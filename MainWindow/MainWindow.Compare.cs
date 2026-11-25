@@ -54,12 +54,12 @@ public partial class MainWindow
         bool canUseOnline = _workspaceModeChosen && !_isOfflineWorkspace && !_offlineSelectionRequired;
         IEnumerable<string> databases = canUseOnline ? GetActiveDatabases() : Array.Empty<string>();
         bool canRequestWrite = (canShowMode3 && (UserAuthorizationService.Has(Permission.ManageTextLists) ||
-            UserAuthorizationService.Has(Permission.EditData) || UserAuthorizationService.Has(Permission.AddData))) ||
+            UserAuthorizationService.Has(Permission.EditData) || UserAuthorizationService.Has(Permission.AddData) || UserAuthorizationService.Has(Permission.DeleteData))) ||
             (canShowMode2 && (UserAuthorizationService.Has(Permission.Mode2Manage) ||
                 UserAuthorizationService.Has(Permission.ManageClasses) || UserAuthorizationService.Has(Permission.ManageRelations) ||
                 UserAuthorizationService.Has(Permission.ManageTextLists)));
 
-        static bool IsTransferAuthorized(CompareDifference difference)
+        static bool IsTransferAuthorized(CompareDifference difference, bool aToB)
         {
             if (difference.MetadataKind == CompareMetadataKind.ClassDefinition)
                 return PermissionPolicy.CanEnterMode(UserAuthorizationService.CurrentUser, UserAuthorizationService.CurrentRole, 2) &&
@@ -73,8 +73,14 @@ public partial class MainWindow
                 return (PermissionPolicy.CanEnterMode(UserAuthorizationService.CurrentUser, UserAuthorizationService.CurrentRole, 2) ||
                     PermissionPolicy.CanEnterMode(UserAuthorizationService.CurrentUser, UserAuthorizationService.CurrentRole, 3)) &&
                     (UserAuthorizationService.Has(Permission.Mode2Manage) || UserAuthorizationService.Has(Permission.ManageTextLists));
+            var required = Permission.EditData;
+            if (difference.Column is null && difference.Status is (CompareStatus.OnlyA or CompareStatus.OnlyB))
+            {
+                bool sourceExists = aToB == (difference.Status == CompareStatus.OnlyA);
+                required = sourceExists ? Permission.AddData : Permission.DeleteData;
+            }
             return PermissionPolicy.CanEnterMode(UserAuthorizationService.CurrentUser, UserAuthorizationService.CurrentRole, 3) &&
-                UserAuthorizationService.Has(difference.Column is null && difference.Status is (CompareStatus.OnlyA or CompareStatus.OnlyB) ? Permission.AddData : Permission.EditData);
+                UserAuthorizationService.Has(required);
         }
 
         var window = new CompareWindow(
@@ -95,6 +101,12 @@ public partial class MainWindow
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             ApplyTransferAsync = CompareTransfer.ApplyAsync,
             ApplyMetadataTransferAsync = CompareTransfer.ApplyMetadataAsync
+        };
+        window.JournalChanged += (entry, path) =>
+        {
+            _compareActions[entry.OperationId] = (entry, path);
+            ShowLastAction(entry.DisplayDescription);
+            RefreshActionLogUi();
         };
         window.Closed += (_, _) => _compareWindow = null;
         _compareWindow = window;

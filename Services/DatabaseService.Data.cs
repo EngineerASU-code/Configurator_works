@@ -84,7 +84,8 @@ namespace Configurator
                 foreach (var parameter in filterParameters) command.Parameters.Add(parameter);
                 command.CommandTimeout = 60;
                 SessionTestLog.Trace("SQL-ЗАПРОС", $"DatabaseService.GetTableDataPageAsync: {command.CommandText}; parameters=[{string.Join(", ", command.Parameters.Cast<SqlParameter>().Select(p => p.ParameterName + "=" + (p.ParameterName.Contains("password", StringComparison.OrdinalIgnoreCase) ? "<redacted>" : Convert.ToString(p.Value, CultureInfo.InvariantCulture))))}]");
-                using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct);
+                // ReadAsync buffers the complete row so GetValues does not stream columns synchronously.
+                using var reader = await command.ExecuteReaderAsync(CommandBehavior.Default, ct);
                 var pageData = new DataTable();
                 for (int i = 0; i < reader.FieldCount; i++)
                     pageData.Columns.Add(reader.GetName(i), reader.GetFieldType(i));
@@ -213,7 +214,8 @@ namespace Configurator
                 await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection, ct);
                 using var command = new SqlCommand($"SELECT * FROM {QuoteTableName(tableName)}", connection);
                 command.CommandTimeout = 0;
-                using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct);
+                // ReadAsync buffers the complete row so GetValues does not stream columns synchronously.
+                using var reader = await command.ExecuteReaderAsync(CommandBehavior.Default, ct);
                 var table = new DataTable();
                 table.Load(reader);
                 return table;

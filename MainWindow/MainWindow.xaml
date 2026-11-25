@@ -10,16 +10,15 @@
         Background="{DynamicResource BrushBase}"
         SnapsToDevicePixels="True">
     <Grid>
-        <Grid.RowDefinitions><RowDefinition Height="42"/><RowDefinition Height="64"/><RowDefinition Height="1"/><RowDefinition Height="*"/><RowDefinition Height="82"/></Grid.RowDefinitions>
+        <Grid.RowDefinitions><RowDefinition Height="42"/><RowDefinition Height="64"/><RowDefinition Height="1"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
         <Menu Grid.Row="0" Padding="6,0" Background="{DynamicResource BrushPanel}" Foreground="{DynamicResource BrushText}">
-            <MenuItem Header="Файл" Style="{StaticResource TopMenuItemStyle}"><MenuItem x:Name="MenuCloseOfflineProject" Header="Закрыть Offline-проект" Click="MenuCloseOfflineProject_Click" IsEnabled="False"/><MenuItem Header="Сформировать лог файл" Click="MenuExportSessionLog_Click"/><Separator/><MenuItem x:Name="MenuExportProject" Header="Экспорт проекта (SQL backup)" Click="MenuFileExportProject_Click"/><MenuItem x:Name="MenuSaveLocalCopy" Header="Сохранить локальную копию (.cfgproj)" Click="MenuFileSaveLocalProject_Click"/><Separator/><MenuItem Header="Выход" Click="MenuFileExit_Click"/></MenuItem>
+            <MenuItem Header="Файл" Style="{StaticResource TopMenuItemStyle}"><MenuItem x:Name="MenuCloseOfflineProject" Header="Закрыть Offline-проект" Click="MenuCloseOfflineProject_Click" IsEnabled="False"/><MenuItem Header="Сформировать лог файл" Click="MenuExportSessionLog_Click"/><Separator/><MenuItem x:Name="MenuExportProject" Header="Экспорт проекта (SQL backup)" Click="MenuFileExportProject_Click"/><MenuItem x:Name="MenuRestoreDatabase" Header="Импорт проекта (SQL backup)" Click="MenuRestoreDatabase_Click"/><MenuItem x:Name="MenuSaveLocalCopy" Header="Сохранить локальную копию (.cfgproj)" Click="MenuFileSaveLocalProject_Click"/><Separator/><MenuItem Header="Выход" Click="MenuFileExit_Click"/></MenuItem>
             <MenuItem Header="Вид" Style="{StaticResource TopMenuItemStyle}"><MenuItem x:Name="IntroSetting" Header="Показывать вступительную анимацию" IsCheckable="True" Click="IntroSetting_Click"/><Separator/><MenuItem Header="Тема оформления" Click="MenuViewTheme_Click"/><MenuItem Header="На весь экран" Click="MenuViewFullscreen_Click"/></MenuItem>
-            <MenuItem x:Name="MenuDatabase" Header="База данных" Style="{StaticResource TopMenuItemStyle}"><MenuItem x:Name="MenuRemoveDb" Header="Удалить выбранную базу" Click="BtnRemoveDb_Click" IsEnabled="False"/><MenuItem Header="Добавить базу" Click="BtnOpenConnection_Click"/><MenuItem Header="Экспорт выбранной БД в Excel" Click="MenuDatabaseExportExcel_Click"/><Separator/><MenuItem Header="Свободный ввод" Click="MenuDatabaseFreeSql_Click"/></MenuItem>
+            <MenuItem x:Name="MenuDatabase" Header="База данных" Style="{StaticResource TopMenuItemStyle}"><MenuItem Header="Добавить базу" Click="BtnOpenConnection_Click"/><MenuItem Header="Экспорт выбранной БД в Excel" Click="MenuDatabaseExportExcel_Click"/><Separator/><MenuItem Header="Свободный ввод" Click="MenuDatabaseFreeSql_Click"/></MenuItem>
             <MenuItem Header="Опции" Style="{StaticResource TopMenuItemStyle}" SubmenuOpened="MenuOptions_SubmenuOpened">
                 <MenuItem x:Name="MenuAddressMap" Header="Карта адресов PLC" Click="MenuAddressMap_Click" Visibility="Collapsed"/>
                 <MenuItem x:Name="MenuCompare" Header="Сравнение проектов" Click="MenuCompare_Click" Visibility="Collapsed"/>
                 <MenuItem x:Name="MenuCheckRecord" Header="Проверить Record" Click="MenuOptionsCheckRecord_Click" Visibility="Collapsed"/>
-                <MenuItem x:Name="MenuUserSettings" Header="Настройки пользователей" Click="MenuUserSettings_Click" Visibility="Collapsed"/>
                 <MenuItem x:Name="MenuActionLog" Header="Журнал операций" Click="MenuOptionsActionLog_Click"/>
             </MenuItem>
             <MenuItem Header="Справка" Style="{StaticResource TopMenuItemStyle}"><MenuItem Header="Документация" Click="MenuHelpDocs_Click"/><MenuItem Header="Горячие клавиши" Click="MenuHelpHotkeys_Click"/><MenuItem Header="О программе" Click="MenuHelpAbout_Click"/></MenuItem>
@@ -51,7 +50,7 @@
                 </Grid>
             </Border>
         </Grid>
-        <Border Grid.Row="4" MinHeight="76" Margin="0" Background="{DynamicResource BrushPanel}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,1,0,0" Padding="12,5">
+        <Border Grid.Row="4" MinHeight="58" Background="{DynamicResource BrushBase}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,1,0,0" Padding="12,5">
             <Grid VerticalAlignment="Center" Margin="4,2">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="1.05*" MinWidth="170"/>
@@ -59,27 +58,25 @@
                     <ColumnDefinition Width="1.15*" MinWidth="210"/>
                     <ColumnDefinition Width="Auto" MinWidth="245"/>
                 </Grid.ColumnDefinitions>
-                <Border Grid.Column="0" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="10" Padding="12,7" Margin="0,0,10,0" Background="{DynamicResource BrushBase}">
+                <Border Grid.Column="0" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,0,1,0" Padding="10,0,14,0">
                     <StackPanel VerticalAlignment="Center">
                         <TextBlock Text="ПОЛЬЗОВАТЕЛЬ" Foreground="{DynamicResource BrushTextSecondary}" FontSize="10"/>
-                        <Button x:Name="CurrentUserText" Content="—" Style="{StaticResource InlineUserTextButton}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" VerticalContentAlignment="Center" Padding="2,2" Margin="0,1,0,0" ToolTip="Нажмите, чтобы сменить пользователя" Click="MenuSwitchUser_Click" Cursor="Hand"/>
+                        <Button x:Name="CurrentUserText" Content="—" Style="{StaticResource InlineUserTextButton}" Background="Transparent" FontSize="14" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" VerticalContentAlignment="Center" Padding="2,2" Margin="0,1,0,0" ToolTip="Нажмите, чтобы сменить пользователя" Click="MenuSwitchUser_Click" Cursor="Hand"/>
                     </StackPanel>
                 </Border>
-                <Border Grid.Column="1" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="10" Padding="12,7" Margin="0,0,10,0" Background="{DynamicResource BrushBase}">
+                <Border Grid.Column="1" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,0,1,0" Padding="10,0,14,0">
                     <StackPanel VerticalAlignment="Center">
                         <TextBlock Text="ПОСЛЕДНЕЕ ДЕЙСТВИЕ" Foreground="{DynamicResource BrushTextSecondary}" FontSize="10"/>
-                        <Button Style="{StaticResource InlineUserTextButton}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" VerticalContentAlignment="Center" Padding="2,2" Margin="0,1,0,0" ToolTip="Открыть журнал операций" Click="MenuOptionsActionLog_Click">
-                            <TextBlock x:Name="LastActionText" Text="Готово" Foreground="{DynamicResource BrushText}" TextTrimming="CharacterEllipsis" MaxWidth="420"/>
-                        </Button>
+                        <TextBlock x:Name="LastActionText" Text="Нет действий" Margin="2,3,2,2" Foreground="{DynamicResource BrushText}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
                     </StackPanel>
                 </Border>
-                <Border Grid.Column="2" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="10" Padding="12,7" Margin="0,0,10,0" Background="{DynamicResource BrushBase}">
+                <Border Grid.Column="2" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,0,1,0" Padding="10,0,14,0">
                     <StackPanel VerticalAlignment="Center">
                         <TextBlock Text="ТЕКУЩИЙ ПРОЕКТ" Foreground="{DynamicResource BrushTextSecondary}" FontSize="10"/>
-                        <Button x:Name="CurrentProjectText" Content="не выбран" Style="{StaticResource InlineUserTextButton}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="2,2" Margin="0,1,0,0" ToolTip="Нажмите, чтобы выбрать проект" Click="FooterProject_Click" Cursor="Hand"/>
+                        <Button x:Name="CurrentProjectText" Content="не выбран" Style="{StaticResource InlineUserTextButton}" Background="Transparent" FontSize="14" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" Padding="2,2" Margin="0,1,0,0" ToolTip="Нажмите, чтобы выбрать проект" Click="FooterProject_Click" Cursor="Hand"/>
                     </StackPanel>
                 </Border>
-                <Border Grid.Column="3" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="8" Padding="10,6" Background="{DynamicResource BrushBase}" MinWidth="230">
+                <Border Grid.Column="3" Padding="10,0" MinWidth="230">
                     <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center">
                         <TextBlock Text="РЕЖИМ РАБОТЫ" Foreground="{DynamicResource BrushTextSecondary}" FontSize="10" Margin="0,0,0,4" TextAlignment="Center" HorizontalAlignment="Center"/>
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">

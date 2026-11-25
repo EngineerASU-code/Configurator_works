@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Data;
 using System.Linq;
 using System.Threading;
@@ -37,59 +37,31 @@ namespace Configurator
         {
             _leftPanel.ServerTree.Items.Clear();
             _leftPanel.SetLoadingStatus(_failedDatabases.Count > 0
-                ? $"Подключено: {_connection.ConnectedDatabases.Count} · недоступно: {_failedDatabases.Count}"
+                ? $"Подключено: {_connection.ConnectedDatabases.Count - _failedDatabases.Count} · недоступно: {_failedDatabases.Count}"
                 : $"Подключено: {_connection.ConnectedDatabases.Count}", false);
             _loadedTreeNodes.Clear();
 
             foreach (var dbName in _connection.ConnectedDatabases)
             {
                 bool failed = _failedDatabases.Contains(dbName);
-                var header = failed ? "❌ " + dbName : dbName;
 
                 var dbItem = new TreeViewItem
                 {
-                    Header = CreateTreeHeader("▣  ONLINE · " + header, "SQL SERVER · АКТУАЛЬНЫЕ ДАННЫЕ", true),
                     FontWeight = FontWeights.Bold,
                     Padding = new Thickness(7, 6, 7, 6),
                     Margin = new Thickness(1, 3, 1, 3),
-                    Tag = dbName,
-                    ToolTip = failed ? "База недоступна. Выберите её и используйте «База данных → Удалить выбранную базу» либо контекстное меню, чтобы убрать из списка опроса." : "База проекта",
-                    // Keep unavailable databases selectable so the user can remove them from the polling list.
-                    IsEnabled = true,
-                    Opacity = failed ? 0.72 : 1.0
+                    Tag = dbName
                 };
-                if (failed)
-                {
-                    var removeUnavailable = new MenuItem { Header = "Убрать из списка опроса" };
-                    removeUnavailable.Click += (s, e) =>
-                    {
-                        dbItem.IsSelected = true;
-                        _activeDbName = dbName;
-                        RemoveSelectedDatabase();
-                        UpdateAddDbButtonState();
-                        ApplyAuthorizationUi();
-                    };
-                    dbItem.ContextMenu = new ContextMenu();
-                    dbItem.ContextMenu.Items.Add(removeUnavailable);
-                }
-
+                SetDatabaseNodeAvailability(dbItem, dbName, !failed);
                 dbItem.Selected += (s, e) =>
                 {
                     e.Handled = true;
+                    ClearActiveTable();
                     _activeDbName = dbName;
-                    UpdateRemoveDbMenuState();
+                    RefreshActionLogUi();
                 };
 
-                if (!failed)
-                {
-                    dbItem.Items.Add(new TreeViewItem { Header = "Загрузка...", IsEnabled = false });
-                    dbItem.Expanded += (s, e) => OnDatabaseExpanded(dbName, dbItem);
-                }
-                else
-                {
-                    dbItem.Items.Clear();
-                    dbItem.IsExpanded = false;
-                }
+                dbItem.Expanded += (s, e) => OnDatabaseExpanded(dbName, dbItem);
 
                 _leftPanel.ServerTree.Items.Add(dbItem);
             }
@@ -97,8 +69,18 @@ namespace Configurator
             _leftPanel.EmptyTreePlaceholder.Visibility = _leftPanel.ServerTree.Items.Count == 0
                 ? Visibility.Visible
                 : Visibility.Collapsed;
+        }
 
-            UpdateRemoveDbMenuState();
+        internal static void SetDatabaseNodeAvailability(TreeViewItem node, string database, bool available)
+        {
+            node.IsExpanded = false;
+            node.Items.Clear();
+            node.IsEnabled = true;
+            node.Opacity = available ? 1.0 : 0.72;
+            node.Header = CreateTreeHeader(database, available ? "ONLINE · SQL SERVER" : "НЕТ СВЯЗИ", true);
+            node.ToolTip = available ? "База проекта" : "База недоступна. Delete — убрать подключение из списка.";
+            if (available)
+                node.Items.Add(new TreeViewItem { Header = "Раскройте для загрузки таблиц…", IsEnabled = false });
         }
 
         private async void OnDatabaseExpanded(string dbName, TreeViewItem dbItem)
@@ -121,6 +103,7 @@ namespace Configurator
             try
             {
                 var tables = await vm.GetTableListAsync();
+                if (_failedDatabases.Contains(dbName) || !_leftPanel.ServerTree.Items.Contains(dbItem)) return;
 
                 dbItem.Items.Clear();
 
@@ -170,10 +153,7 @@ namespace Configurator
             }
             catch (Exception ex)
             {
-                MarkDatabaseUnavailable(dbName, ex);
-                dbItem.Items.Clear();
-                dbItem.Items.Add(new TreeViewItem { Header = "БД недоступна · обновите подключение", IsEnabled = false });
-                dbItem.IsExpanded = false;
+                if (_leftPanel.ServerTree.Items.Contains(dbItem)) MarkDatabaseUnavailable(dbName, ex);
             }
         }
 
@@ -186,7 +166,6 @@ namespace Configurator
             {
                 // WPF may raise Selected again on repeated clicks; keep the current page
                 // and avoid issuing the same SELECT/OFFSET query again.
-                UpdateRemoveDbMenuState();
                 return;
             }
 
@@ -195,6 +174,7 @@ namespace Configurator
             _dataLoadCts = new CancellationTokenSource();
             var selectionToken = _dataLoadCts.Token;
             _activeDbName = dbName;
+            RefreshActionLogUi();
 
             string cacheKey = VmCacheKey(dbName);
             if (!_vms.ContainsKey(cacheKey))
@@ -244,7 +224,6 @@ namespace Configurator
 
             if (_loadGeneration != selectionGeneration || selectionToken.IsCancellationRequested) return;
             _ = LoadDataAsync();
-            UpdateRemoveDbMenuState();
         }
 
 
@@ -263,28 +242,35 @@ namespace Configurator
             return panel;
         }
 
-        public void RemoveSelectedDatabase()
+        private void ServerTree_DeleteKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
         {
-            string dbNameToRemove = "";
+            if (e.Key != System.Windows.Input.Key.Delete || System.Windows.Input.Keyboard.Modifiers != System.Windows.Input.ModifierKeys.None ||
+                _isOfflineWorkspace || _leftPanel.ServerTree.SelectedItem is not TreeViewItem selected ||
+                selected.Parent != _leftPanel.ServerTree || selected.Tag is not string dbNameToRemove) return;
 
-            if (_leftPanel.ServerTree?.SelectedItem is TreeViewItem selectedItem)
+            e.Handled = true;
+            if (e.IsRepeat || !UserAuthorizationService.Require(Permission.ManageDatabases)) return;
+            if (Configurator.Infrastructure.ModernDialog.Show(this,
+                $"Убрать подключение к базе «{dbNameToRemove}» из списка опроса? Данные на SQL Server сохранятся.",
+                "Удаление подключения", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+
+            int knownIndex = _connection.KnownDatabases.IndexOf(dbNameToRemove);
+            if (knownIndex >= 0)
             {
-                if (selectedItem.Parent is TreeView)
+                _connection.KnownDatabases.RemoveAt(knownIndex);
+                try { _connection.SaveToFile(); }
+                catch (Exception ex)
                 {
-                    dbNameToRemove = selectedItem.Tag?.ToString() ?? "";
-                }
-                else if (selectedItem.Parent is TreeViewItem parentItem
-                    && parentItem.Parent is TreeView)
-                {
-                    dbNameToRemove = parentItem.Tag?.ToString() ?? "";
+                    _connection.KnownDatabases.Insert(knownIndex, dbNameToRemove);
+                    Configurator.Infrastructure.ModernDialog.Show(this,
+                        Configurator.Infrastructure.UserErrorMessage.Format(ex), "Не удалось убрать подключение",
+                        MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
                 }
             }
 
-            if (string.IsNullOrEmpty(dbNameToRemove))
-                return;
-
             _connection.ConnectedDatabases.Remove(dbNameToRemove);
-            _connection.KnownDatabases.Remove(dbNameToRemove);
+            _freeSqlWindow?.SetDatabaseAvailable(dbNameToRemove, false);
             _failedDatabases.Remove(dbNameToRemove);
             _loadedTreeNodes.Remove(dbNameToRemove);
             _vms.Remove(VmCacheKey(dbNameToRemove));
@@ -292,6 +278,7 @@ namespace Configurator
             bool wasActive = (_activeDbName == dbNameToRemove);
 
             RebuildTree();
+            UpdateAddDbButtonState();
 
             if (wasActive)
             {
@@ -305,16 +292,6 @@ namespace Configurator
                 _selectedDbName = "";
                 _mode2ProjectSelectedOnEntry = _mode3ProjectSelectedOnEntry = false;
                 UpdateCurrentProjectText();
-            }
-            UpdateRemoveDbMenuState();
-
-            try
-            {
-                _connection.SaveToFile();
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[RemoveSelectedDatabase] Save failed: {ex.Message}");
             }
         }
     }

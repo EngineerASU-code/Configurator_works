@@ -25,6 +25,8 @@ public sealed class CompareMetadataTransferPreview
     public string? BlockReason { get; }
     public string Description { get; }
     internal CompareSource Source { get; }
+    internal ChangeJournalEntry? RecordedEntry { get; set; }
+    internal (ConfiguratorProject Project, string Fingerprint)? SavedPackage { get; set; }
     internal CompareSource Target { get; }
     internal CompareMetadataKind Kind { get; }
     internal string Key { get; }

@@ -18,6 +18,7 @@ namespace Configurator
 {
     public partial class MainWindow : Window
     {
+        private FreeSqlWindow _freeSqlWindow;
         private ConnectionSettings _connection = new ConnectionSettings();
         private Dictionary<string, TableViewModel> _vms = new Dictionary<string, TableViewModel>();
         private TableViewModel _activeVm;
@@ -39,7 +40,6 @@ namespace Configurator
         private CancellationTokenSource _reconnectCts;
         private CancellationTokenSource _dataLoadCts;
         private bool _fieldsPanelExpanded = false;
-        private readonly ActionLogService _actionLog = new ActionLogService();
         private readonly SessionTestLog _sessionTestLog = new SessionTestLog();
         private readonly ChangeJournalService _changeJournal = new ChangeJournalService();
         private TemplateArchitectureView _templateEditor;
@@ -71,6 +71,8 @@ namespace Configurator
                 System.Windows.Application.Current.DispatcherUnhandledException -= MainWindow_DispatcherUnhandledExceptionForTestLog;
                 _sessionTestLog.Add("СЕССИЯ", "Программа закрывается; диагностический лог очищается без автосохранения");
                 _sessionTestLog.Clear();
+                _freeSqlWindow?.Close();
+                InputManager.Current.PreProcessInput -= ProjectUndoInput;
                 _offlineAutoSaveTimer.Stop();
                 foreach (var reserved in _offlineProjectLocks.Values)
                     try { reserved.Dispose(); } catch { /* process shutdown must not be blocked by cleanup */ }
@@ -83,14 +85,13 @@ namespace Configurator
 
             ThemeManager.InitializeDefault();
             _fieldsBuilder = new DisplayFieldsBuilder(_rightPanel.FieldsContainer);
-            _actionLog.Changed += ActionLog_Changed;
             _changeJournal.Changed += ActionLog_Changed;
 
             WireUpEvents();
             // At process start there is deliberately no active identity. Do not evaluate
             // screen visibility or database permissions until LoginWindow succeeds.
             UserAuthorizationService.Changed += UserAuthorizationService_Changed;
-            PreviewKeyDown += MainWindow_PreviewKeyDown;
+            InputManager.Current.PreProcessInput += ProjectUndoInput;
             // До выбора источника данных Offline не активен: для него нужен открытый .cfgproj.
             _isOfflineWorkspace = false;
             OfflineModeButton.IsEnabled = true;
@@ -105,6 +106,7 @@ namespace Configurator
         private void UpdateWorkspaceModeUi()
         {
             if (OnlineModeButton == null || OfflineModeButton == null) return;
+            RefreshActionLogUi();
 
             // Offline can always be requested from Online; a project must be selected before its editor is unlocked.
             OfflineModeButton.IsEnabled = true;
@@ -122,6 +124,7 @@ namespace Configurator
             // File actions are source-specific: Online creates/opens a snapshot; Offline only saves
             // the already-open package. Never let an Offline user accidentally export or replace it.
             if (MenuExportProject != null) MenuExportProject.IsEnabled = !_isOfflineWorkspace;
+            if (MenuRestoreDatabase != null) MenuRestoreDatabase.IsEnabled = !_isOfflineWorkspace && _workspaceModeChosen;
             if (MenuSaveLocalCopy != null) MenuSaveLocalCopy.IsEnabled = !_isOfflineWorkspace;
             if (MenuCloseOfflineProject != null) MenuCloseOfflineProject.IsEnabled = _isOfflineWorkspace && _openedLocalProject != null;
             if (MenuDatabase != null) MenuDatabase.IsEnabled = !_isOfflineWorkspace && !_offlineSelectionRequired && _currentMode == 1;
@@ -242,7 +245,7 @@ namespace Configurator
             Mode4View.Visibility = Visibility.Collapsed;
             WorkspaceSelectionOverlay.Visibility = Visibility.Collapsed;
             MenuDatabase.IsEnabled = false;
-            MenuRemoveDb.IsEnabled = false;
+            MenuRestoreDatabase.IsEnabled = false;
             MenuExportProject.IsEnabled = false;
             MenuSaveLocalCopy.IsEnabled = false;
             OnlineModeButton.IsEnabled = false;
@@ -355,6 +358,14 @@ namespace Configurator
             _rightPanel.BtnNext.Click += BtnNext_Click;
             _rightPanel.BtnLast.Click += BtnLast_Click;
             _rightPanel.DataTableGrid.SelectionChanged += DataTableGrid_SelectionChanged;
+            PreviewKeyDown += (_, e) =>
+            {
+                if (_currentMode != 1 || Keyboard.Modifiers != ModifierKeys.Control || e.Key != Key.N) return;
+                e.Handled = true;
+                if (!e.IsRepeat && _rightPanel.BtnAdd.IsEnabled && !_tablePasteInProgress && !_tableDeleteInProgress)
+                    BtnAdd_Click(this, e);
+            };
+            _rightPanel.DataTableGrid.PreviewMouseRightButtonDown += OpenTableRowMenu;
             _rightPanel.DataTableGrid.PreviewKeyDown += DataTableGrid_ClipboardKeyDown;
             _rightPanel.DataTableGrid.MouseLeftButtonUp += DataTableGrid_MouseLeftButtonUp;
             _rightPanel.DataTableGrid.PreviewMouseLeftButtonDown += DataTableGrid_PreviewMouseLeftButtonDown;
@@ -362,7 +373,7 @@ namespace Configurator
             _rightPanel.DataTableGrid.CurrentCellChanged += (s, e) => QueueSelectionStateUpdate();
             SetFieldsPanelExpanded(false, false);
             if (_leftPanel.ServerTree != null)
-                _leftPanel.ServerTree.SelectedItemChanged += (s, e) => UpdateRemoveDbMenuState();
+                _leftPanel.ServerTree.PreviewKeyDown += ServerTree_DeleteKeyDown;
             // Do not call ActivateMode here: WireUpEvents runs in the constructor,
             // before InitializeAsync displays LoginWindow. Permission checks at this
             // stage see CurrentUser == null and used to show a false access-denied error.
@@ -377,12 +388,6 @@ namespace Configurator
             OnDatabaseExpanded(dbName, dbItem);
         }
 
-        private void UpdateRemoveDbMenuState()
-        {
-            var menuItem = this.FindName("MenuRemoveDb") as MenuItem;
-            if (menuItem != null) menuItem.IsEnabled = _leftPanel.ServerTree?.SelectedItem != null;
-        }
-
         private void UpdateAddDbButtonState()
         {
             _leftPanel.SetAddDbButtonEnabled(true);
@@ -395,14 +400,11 @@ namespace Configurator
             bool canAdd = UserAuthorizationService.Has(Permission.Mode1Add);
             bool canEdit = UserAuthorizationService.Has(Permission.Mode1Edit);
             bool canDelete = UserAuthorizationService.Has(Permission.Mode1Delete);
-            bool canDb = UserAuthorizationService.Has(Permission.ManageDatabases);
             bool canText = UserAuthorizationService.Has(Permission.ManageTextLists);
             bool canExport = UserAuthorizationService.Has(Permission.ExportData);
             bool canSql = UserAuthorizationService.Has(Permission.FreeSql);
             bool canJournalRestore = UserAuthorizationService.Has(Permission.RestoreJournal);
             if (_rightPanel != null) { bool tableMode = _currentMode == 1 && UserAuthorizationService.Has(Permission.Mode1View); bool hasTable = Configurator.Core.Projects.ProjectWriteGuard.IsDataTableWritable(_isOfflineWorkspace ? _offlineCurrentTableName : _activeVm?.CurrentTable); _rightPanel.BtnAdd.IsEnabled = tableMode && canAdd && hasTable; _rightPanel.BtnUpdate.IsEnabled = tableMode && canEdit && hasTable && _rightPanel.DataTableGrid?.SelectedItem != null; _rightPanel.BtnDuplicate.IsEnabled = tableMode && canAdd && hasTable && _rightPanel.DataTableGrid?.SelectedItem != null; _rightPanel.BtnDelete.IsEnabled = tableMode && canDelete && hasTable && _rightPanel.DataTableGrid?.SelectedItems.Count > 0; }
-            MenuUserSettings.Visibility = UserAuthorizationService.IsAdministrator ? Visibility.Visible : Visibility.Collapsed;
-            if (MenuRemoveDb != null) MenuRemoveDb.IsEnabled = canDb && _leftPanel?.ServerTree?.SelectedItem != null;
             UpdateCurrentProjectText();
             if (CurrentUserText != null)
             {
@@ -509,10 +511,16 @@ namespace Configurator
             }
         }
 
+        private void CloseConnectionWindows()
+        {
+            CloseCompareWindow();
+            _freeSqlWindow?.Close();
+        }
+
         private void UserAuthorizationService_Changed(object sender, EventArgs e)
         {
-            if (Dispatcher.CheckAccess()) CloseCompareWindow();
-            else Dispatcher.BeginInvoke(new Action(CloseCompareWindow));
+            if (Dispatcher.CheckAccess()) CloseConnectionWindows();
+            else Dispatcher.BeginInvoke(new Action(CloseConnectionWindows));
 
             // Login() raises Changed synchronously before LoginWindow sets
             // DialogResult and closes. Applying permissions here can call ActivateMode(),
@@ -525,12 +533,6 @@ namespace Configurator
 
             if (Dispatcher.CheckAccess()) ApplyAuthorizationUi();
             else Dispatcher.BeginInvoke(new Action(() => ApplyAuthorizationUi()));
-        }
-
-        private void MenuUserSettings_Click(object sender, RoutedEventArgs e)
-        {
-            if (UserAuthorizationService.IsAdministrator)
-                new UserSettingsWindow { Owner = this }.ShowDialog();
         }
 
         private async void MenuSwitchUser_Click(object sender, RoutedEventArgs e)
@@ -576,7 +578,7 @@ namespace Configurator
                     _connection.Password != window.Settings.Password;
                 if (connectionChanged)
                 {
-                    CloseCompareWindow();
+                    CloseConnectionWindows();
                     _databaseRefreshCancellation?.Cancel();
                     _loadGeneration++;
                     _vms.Clear();
@@ -591,6 +593,7 @@ namespace Configurator
                 _connection.Password = window.Settings.Password;
                 if (_connection.ConnectedDatabases.Any(db => db.Equals(dbName, StringComparison.OrdinalIgnoreCase))) return false;
                 _connection.ConnectedDatabases.Add(dbName);
+                _freeSqlWindow?.SetDatabaseAvailable(dbName, true);
                 if (connectionChanged)
                 {
                     _selectedDbName = "";
@@ -610,7 +613,6 @@ namespace Configurator
             window.ShowDialog();
         }
 
-        private void BtnRemoveDb_Click(object sender, RoutedEventArgs e) { if (!UserAuthorizationService.Require(Permission.ManageDatabases)) return; RemoveSelectedDatabase(); UpdateAddDbButtonState(); ApplyAuthorizationUi(); }
         private void BtnToggleFields_Click(object sender, RoutedEventArgs e) { SetFieldsPanelExpanded(!_fieldsPanelExpanded, true); }
 
         private void SetFieldsPanelExpanded(bool expanded, bool syncMenu)
@@ -717,6 +719,7 @@ namespace Configurator
                 SetOfflineEditorButtons();
             }
             _currentMode = mode;
+            RefreshActionLogUi();
             // Editing is controlled only by explicit per-operation permissions, never by role name.
             if (_templateEditor != null) _templateEditor.IsEnabled = true;
             EditorModeView.Visibility = mode == 1 ? Visibility.Visible : Visibility.Collapsed;
@@ -937,14 +940,71 @@ namespace Configurator
                     "Свободный ввод SQL", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
-            var window = new FreeSqlWindow(_connection.ToConnectionString, activeDatabases, _selectedDbName) { Owner = this };
-            window.ShowDialog();
+            if (_freeSqlWindow is { } existing)
+            {
+                if (existing.WindowState == WindowState.Minimized) existing.WindowState = WindowState.Normal;
+                existing.Activate();
+                return;
+            }
+            var window = new FreeSqlWindow(_connection.ToConnectionString, activeDatabases, _selectedDbName);
+            _freeSqlWindow = window;
+            window.Closed += (_, _) => _freeSqlWindow = null;
+            window.ChangesCommitted += (database, changes) => LogAction(
+                $"Свободный SQL · {changes[0].KindDisplay} · {changes[0].TableName} · строк: {changes.Count}",
+                category: "Свободный SQL", source: changes[0].TableName, journalChanges: changes, databaseName: database);
+            window.Show();
         }
 
         private void MenuHelpHotkeys_Click(object sender, RoutedEventArgs e) { var window = new HotkeysWindow { Owner = this }; window.ShowDialog(); }
         private void MenuHelpAbout_Click(object sender, RoutedEventArgs e)
         {
-            Configurator.Infrastructure.ModernDialog.Show("Configurator\nФундамент Online/Offline · Переносимый проект · Основа безопасной синхронизации\n\nProgram/Matrix работают как расширяемые иерархии.", "О программе", MessageBoxButton.OK, MessageBoxImage.Information);
+            Configurator.Infrastructure.ModernDialog.Show("""
+                GASS Configurator
+                Редактор проектов автоматизации для работы с SQL Server (Online) и локальными копиями .cfgproj (Offline).
+
+                Работа с проектом
+                Редактируйте строки таблиц, создавайте объекты по одному или группами. В разделе программ доступны последовательности, шаги и параметры.
+
+                Проверка и сравнение
+                В меню «Опции» откройте «Проверить Record», выберите базу, PLC и класс, чтобы найти свободные номера внутри занятого диапазона. «Карта адресов PLC» показывает свободные биты и конфликты адресов. «Сравнение проектов» позволяет проверить различия перед выборочным переносом.
+
+                Копии и история
+                В меню «Файл» можно сохранить локальную копию .cfgproj, создать SQL backup или восстановить его в новую базу. Для просмотра изменений и доступной отмены откройте «Опции → Журнал операций».
+
+                Доступность команд зависит от режима и прав пользователя.
+                """, "О программе", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+
+        private async void MenuRestoreDatabase_Click(object sender, RoutedEventArgs e)
+        {
+            const string title = "Восстановление базы из .bak";
+            if (_isOfflineWorkspace || !_workspaceModeChosen || !UserAuthorizationService.Require(Permission.ManageDatabases)) return;
+            if (!_connection.IsValid())
+            {
+                Configurator.Infrastructure.ModernDialog.Show("Сначала укажите подключение к SQL Server через «Добавить базу».", title);
+                return;
+            }
+            var dialog = new Microsoft.Win32.OpenFileDialog { Title = title, Filter = "SQL Server backup (*.bak)|*.bak" };
+            if (dialog.ShowDialog(this) != true) return;
+            var name = Microsoft.VisualBasic.Interaction.InputBox(
+                $"Сервер: {_connection.Server}\nИмя новой базы (существующие базы сохраняются):", title,
+                System.IO.Path.GetFileNameWithoutExtension(dialog.FileName) + "_restored").Trim();
+            if (name.Length == 0) return;
+            MenuRestoreDatabase.IsEnabled = false;
+            try
+            {
+                StatusText.Text = $"Восстановление базы {name}…";
+                var db = new DatabaseService(_connection.ToConnectionString("master"));
+                await db.RestoreDatabaseAsync(name, dialog.FileName);
+                StatusText.Text = $"База {name} восстановлена";
+                Configurator.Infrastructure.ModernDialog.Show($"База {name} восстановлена. Выберите её через «Добавить базу».", title);
+            }
+            catch (Exception ex)
+            {
+                StatusText.Text = "Ошибка восстановления базы";
+                Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), title, MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally { MenuRestoreDatabase.IsEnabled = !_isOfflineWorkspace && _workspaceModeChosen; }
         }
 
         private async void MenuFileExportProject_Click(object sender, RoutedEventArgs e)
@@ -970,7 +1030,7 @@ namespace Configurator
             if (!UserAuthorizationService.Require(Permission.ManageTextLists)) return;
             var activeDatabases = GetActiveDatabases();
             if (activeDatabases.Count == 0) { Configurator.Infrastructure.ModernDialog.Show("Сначала подключите хотя бы одну активную базу данных.", "Текстовые списки", MessageBoxButton.OK, MessageBoxImage.Information); return; }
-            var window = new LookupSettingsWindow(_connection, activeDatabases, _selectedDbName) { Owner = this }; window.ShowDialog();
+            var window = new LookupSettingsWindow(_connection, activeDatabases, _selectedDbName, ProjectEditor_ChangeJournalRequested) { Owner = this }; window.ShowDialog();
         }
 
         private void MenuFileExit_Click(object sender, RoutedEventArgs e) => Close();

@@ -23,6 +23,7 @@ public sealed class ProgramSupportTableData
 {
     public required ProgramSupportTableDefinition Definition { get; init; }
     public required DataTable Rows { get; init; }
+    internal Dictionary<DataRow, (ProgramSupportDeletionPlan Plan, IReadOnlyDictionary<string, object> Replacement)> StagedDeletions { get; } = new();
     public required IReadOnlyList<string> Columns { get; init; }
     public required IReadOnlySet<string> IdentityColumns { get; init; }
     public required IReadOnlySet<string> ComputedColumns { get; init; }

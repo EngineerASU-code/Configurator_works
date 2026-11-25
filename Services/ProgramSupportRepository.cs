@@ -5,11 +5,12 @@ using System.Data;
 using System.Linq;
 using System.Threading.Tasks;
 using Configurator.Core.Projects;
+using Configurator.Core.Workspace;
 using Microsoft.Data.SqlClient;
 
 namespace Configurator;
 
-public sealed class ProgramSupportRepository
+public sealed partial class ProgramSupportRepository
 {
     private readonly string _connectionString;
     private readonly OfflineProjectDataSource? _offline;
@@ -211,16 +212,18 @@ public sealed class ProgramSupportRepository
         if (!tableData.CanWrite || definition.ReadOnly)
             throw new InvalidOperationException(tableData.WriteBlockReason ?? definition.ReadOnlyReason ?? "Запись для этой таблицы заблокирована.");
 
+        var replacements = new List<ChangeJournalRowChange>();
         if (_offline != null)
         {
-            await SaveOfflineAsync(tableData, scope);
-            PublishJournal(tableData);
+            var insertSnapshots = await SaveOfflineAsync(tableData, scope, replacements);
+            PublishJournal(tableData, insertSnapshots, replacements);
             return;
         }
 
         await using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
         await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection);
         using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable);
+        var onlineInsertSnapshots = new Dictionary<DataRow, IReadOnlyDictionary<string, object?>>();
         try
         {
             var metadata = await GetMetadataAsync(connection, transaction, definition);
@@ -246,12 +249,13 @@ public sealed class ProgramSupportRepository
                             if (await parent.ExecuteScalarAsync() == null)
                                 throw new InvalidOperationException("Выбранная очередь отсутствует в текущей программе.");
                         }
-                        await InsertAsync(connection, transaction, tableData, row, scope, metadata);
+                        onlineInsertSnapshots[row] = await InsertAsync(connection, transaction, tableData, row, scope, metadata);
                         break;
                     case DataRowState.Modified:
                         await UpdateAsync(connection, transaction, tableData, row, scope, metadata);
                         break;
                     case DataRowState.Deleted:
+                        await ApplyStagedDeletionReplacementAsync(tableData, row, replacements, connection, transaction);
                         await DeleteAsync(connection, transaction, tableData, row, scope, metadata);
                         break;
                 }
@@ -263,14 +267,15 @@ public sealed class ProgramSupportRepository
             try { await transaction.RollbackAsync(); } catch { }
             throw;
         }
-        PublishJournal(tableData);
+        PublishJournal(tableData, onlineInsertSnapshots, replacements);
     }
 
-    private void PublishJournal(ProgramSupportTableData tableData)
+    private void PublishJournal(ProgramSupportTableData tableData,
+        IReadOnlyDictionary<DataRow, IReadOnlyDictionary<string, object?>> insertSnapshots, IReadOnlyList<ChangeJournalRowChange> replacements)
     {
         if (ChangeJournalRequested == null) return;
         var definition = tableData.Definition;
-        var changes = new List<ChangeJournalRowChange>();
+        var changes = new List<ChangeJournalRowChange>(replacements);
         foreach (DataRow row in tableData.Rows.Rows)
         {
             var kind = row.RowState switch
@@ -285,14 +290,24 @@ public sealed class ProgramSupportRepository
                 names.Where(name => row.HasVersion(version) && row.Table.Columns.Contains(name))
                     .ToDictionary(name => name, name => ChangeJournalValue.FromObject(row[name, version]), StringComparer.OrdinalIgnoreCase);
             var columns = row.Table.Columns.Cast<DataColumn>().Select(column => column.ColumnName);
+            var insertSnapshot = kind == ChangeJournalOperationKind.Insert && insertSnapshots.TryGetValue(row, out var snapshot)
+                ? snapshot
+                : null;
+            var after = insertSnapshot == null
+                ? Values(columns, DataRowVersion.Current)
+                : insertSnapshot.ToDictionary(pair => pair.Key, pair => ChangeJournalValue.FromObject(pair.Value!), StringComparer.OrdinalIgnoreCase);
             changes.Add(new ChangeJournalRowChange
             {
                 TableName = definition.TableName,
                 Kind = kind.Value,
                 Before = Values(columns, DataRowVersion.Original),
-                After = Values(columns, DataRowVersion.Current),
+                After = after,
                 IdentityBefore = Values(definition.KeyColumns, DataRowVersion.Original),
-                IdentityAfter = Values(definition.KeyColumns, DataRowVersion.Current)
+                IdentityAfter = insertSnapshot == null
+                    ? Values(definition.KeyColumns, DataRowVersion.Current)
+                    : definition.KeyColumns.Where(insertSnapshot.ContainsKey)
+                        .ToDictionary(name => name, name => ChangeJournalValue.FromObject(insertSnapshot[name]!), StringComparer.OrdinalIgnoreCase),
+                AfterIsCompleteOfflineRecord = _offline != null && insertSnapshot != null
             });
         }
         if (changes.Count == 0) return;
@@ -311,7 +326,9 @@ public sealed class ProgramSupportRepository
             EntityType = definition.TableName,
             Description = $"{definition.Caption} · записей: {changes.Count}",
             OperationKind = changes.Count == 1 ? changes[0].Kind : ChangeJournalOperationKind.Composite,
-            RestoreIncludesAllChanges = changes.All(change => change.Kind != ChangeJournalOperationKind.Insert),
+            RestoreIncludesAllChanges = changes.All(change => change.Kind != ChangeJournalOperationKind.Insert ||
+                (definition.KeyColumns.All(change.IdentityAfter.ContainsKey) &&
+                    (_offline != null ? change.AfterIsCompleteOfflineRecord : change.After.Count == tableData.Columns.Count))),
             Changes = changes
         });
     }
@@ -398,7 +415,8 @@ public sealed class ProgramSupportRepository
         };
     }
 
-    private async Task SaveOfflineAsync(ProgramSupportTableData tableData, IReadOnlyDictionary<string, object> scope)
+    private async Task<IReadOnlyDictionary<DataRow, IReadOnlyDictionary<string, object?>>> SaveOfflineAsync(
+        ProgramSupportTableData tableData, IReadOnlyDictionary<string, object> scope, List<ChangeJournalRowChange> replacements)
     {
         var definition = tableData.Definition;
         var schema = _offline!.GetSchema(definition.TableName)
@@ -406,6 +424,7 @@ public sealed class ProgramSupportRepository
         if (!schema.HasStableKey || !SameColumns(schema.KeyColumns, definition.KeyColumns))
             throw new InvalidOperationException("Изменение отменено: ключ таблицы в локальном снимке отличается от проверенного ключа редактора.");
         var crud = (IProjectCrudDataSource)_offline;
+        var insertSnapshots = new Dictionary<DataRow, IReadOnlyDictionary<string, object?>>();
         await _offline.ExecuteMutationTransactionAsync(async () =>
         {
             foreach (DataRow row in tableData.Rows.Rows)
@@ -430,13 +449,36 @@ public sealed class ProgramSupportRepository
                         if (!included || (row[column] == DBNull.Value && metadata.HasDefault)) continue;
                         values[column.ColumnName] = row[column] == DBNull.Value ? null : row[column];
                     }
-                    await ((IProjectCreateWithKeyDataSource)_offline).CreateRecordAndGetKeyAsync(schema.TableName, values);
+                    if (UsesScopedMatrixRecord(definition) &&
+                        schema.Columns.FirstOrDefault(column => column.Name.Equals("Record", StringComparison.OrdinalIgnoreCase)) is
+                            { IsIdentity: false, IsComputed: false, IsReadOnly: false })
+                    {
+                        var suggestion = new ScopedRecordSuggestion();
+                        foreach (var record in _offline.GetRecords(schema.TableName))
+                            if (definition.ScopeColumns.All(column => OfflineEquals(record.Values[column], scope[column])))
+                                suggestion.Add(record.Values["Record"]?.ToString());
+                        values["Record"] = Convert.ChangeType(suggestion.GetValue(), row.Table.Columns["Record"]!.DataType);
+                    }
+                    var generatedKey = await ((IProjectCreateWithKeyDataSource)_offline).CreateRecordAndGetKeyAsync(schema.TableName, values);
+                    var created = _offline.GetRecords(schema.TableName).SingleOrDefault(record =>
+                        definition.KeyColumns.All(column => generatedKey.TryGetValue(column, out var expected) &&
+                            record.Values.TryGetPropertyValue(column, out var actual) && OfflineEquals(actual, expected)));
+                    if (created == null)
+                        throw new InvalidOperationException($"Не удалось перечитать созданную запись {definition.TableName} по выданному ключу.");
+                    var actualSnapshot = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var pair in created.Values)
+                    {
+                        var column = schema.Columns.FirstOrDefault(item => item.Name.Equals(pair.Key, StringComparison.OrdinalIgnoreCase));
+                        if (column != null) actualSnapshot[pair.Key] = OfflineValue(pair.Value, column.DataType);
+                    }
+                    insertSnapshots[row] = actualSnapshot;
                     continue;
                 }
                 var version = row.RowState == DataRowState.Deleted ? DataRowVersion.Original : DataRowVersion.Current;
                 var key = definition.KeyColumns.ToDictionary(name => name, name => (object?)row[name, version], StringComparer.OrdinalIgnoreCase);
                 if (row.RowState == DataRowState.Deleted)
                 {
+                    await ApplyStagedDeletionReplacementAsync(tableData, row, replacements, null, null);
                     EnsureNoOfflineDependents(definition, row);
                     int count = await crud.DeleteRecordsAsync(schema.TableName, schema.KeyColumns, new[] { key });
                     if (count != 1) throw new InvalidOperationException("Состав локального снимка изменился; удаление отменено.");
@@ -456,39 +498,12 @@ public sealed class ProgramSupportRepository
                 if (changes.Count > 0) await crud.UpdateRecordAsync(schema.TableName, schema.KeyColumns, key, changes);
             }
         });
+        return insertSnapshots;
     }
 
     private void EnsureNoOfflineDependents(ProgramSupportTableDefinition definition, DataRow row)
     {
-        (string Table, string[] Columns, string[] ParentColumns)[] checks = definition.TableName switch
-        {
-            "dbo.Prog_Recipe" => new (string Table, string[] Columns, string[] ParentColumns)[]
-            { ("dbo.Prog_Recipes", new[] { "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Seq_Record", "Recipe_Record" }, new[] { "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Seq_Record", "Record" }) },
-            "dbo.Prog_Queue" => new (string Table, string[] Columns, string[] ParentColumns)[]
-            { ("dbo.Prog_QueueSelections", new[] { "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Seq_Record", "Queue_Record" }, new[] { "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Seq_Record", "Record" }) },
-            "dbo.Matrix_List" => new (string Table, string[] Columns, string[] ParentColumns)[]
-            {
-                ("dbo.Matrix_CommandList", new[] { "PLC", "PLC_Class_Number", "Record" }, new[] { "PLC", "PLC_Class_Number", "Record" }),
-                ("dbo.Matrix_Commands", new[] { "PLC", "PLC_Class_Number", "Record" }, new[] { "PLC", "PLC_Class_Number", "Record" }),
-                ("dbo.Matrix_DeviceList", new[] { "PLC", "PLC_Class_Number", "Record" }, new[] { "PLC", "PLC_Class_Number", "Record" }),
-                ("dbo.Matrix_DeviceListType", new[] { "PLC", "PLC_Class_Number", "Record" }, new[] { "PLC", "PLC_Class_Number", "Record" }),
-                ("dbo.Matrix_Devices", new[] { "PLC", "PLC_Class_Number", "Record" }, new[] { "PLC", "PLC_Class_Number", "Record" }),
-                ("dbo.Prog_Queue", new[] { "PLC", "PLC_Class_Matrix_Number", "Matrix_Record" }, new[] { "PLC", "PLC_Class_Number", "Record" }),
-                ("dbo.Prog_QueueSelections", new[] { "PLC", "PLC_Class_Matrix_Number", "Matrix_Record" }, new[] { "PLC", "PLC_Class_Number", "Record" })
-            },
-            "dbo.Matrix_CommandList" => new (string Table, string[] Columns, string[] ParentColumns)[]
-            { ("dbo.Matrix_Commands", new[] { "PLC", "PLC_Class_Number", "Record", "CmdNumber" }, new[] { "PLC", "PLC_Class_Number", "Record", "CmdNumber" }) },
-            "dbo.Matrix_DeviceList" => new (string Table, string[] Columns, string[] ParentColumns)[]
-            {
-                ("dbo.Matrix_Devices", new[] { "PLC", "PLC_Class_Number", "Record", "DeviceList" }, new[] { "PLC", "PLC_Class_Number", "Record", "DeviceList" }),
-                ("dbo.Prog_QueueSelections", new[] { "PLC", "PLC_Class_Matrix_Number", "Matrix_Record", "Matrix_DeviceList" }, new[] { "PLC", "PLC_Class_Number", "Record", "DeviceList" })
-            },
-            "dbo.Matrix_DeviceListType" => new (string Table, string[] Columns, string[] ParentColumns)[]
-            { ("dbo.Matrix_Devices", new[] { "PLC", "PLC_Class_Number", "Record", "Position" }, new[] { "PLC", "PLC_Class_Number", "Record", "Position" }) },
-            _ => []
-        };
-
-        foreach (var check in checks)
+        foreach (var check in KnownDependencies(definition.TableName))
         {
             var childSchema = _offline!.GetSchema(check.Table);
             if (childSchema == null || check.Columns.Any(name => !childSchema.Columns.Any(column => column.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))) continue;
@@ -560,7 +575,7 @@ public sealed class ProgramSupportRepository
         return value;
     }
 
-    private async Task InsertAsync(SqlConnection connection, SqlTransaction transaction, ProgramSupportTableData tableData,
+    private async Task<IReadOnlyDictionary<string, object?>> InsertAsync(SqlConnection connection, SqlTransaction transaction, ProgramSupportTableData tableData,
         DataRow row, IReadOnlyDictionary<string, object> scope, TableMetadata metadata)
     {
         var definition = tableData.Definition;
@@ -600,9 +615,25 @@ public sealed class ProgramSupportRepository
             insertValues.Add(parameter);
             command.Parameters.AddWithValue(parameter, row[name] ?? DBNull.Value);
         }
-        command.CommandText = $"DECLARE @affected TABLE (Marker int NOT NULL); INSERT INTO {QuoteTable(definition.TableName)} ({string.Join(", ", insertColumns)}) OUTPUT 1 INTO @affected(Marker) VALUES ({string.Join(", ", insertValues)}); SELECT COUNT(*) FROM @affected;";
-        if (await ExecuteAffectedCountAsync(command) != 1)
-            throw new InvalidOperationException("Добавление не затронуло ровно одну строку; транзакция отменена.");
+        var keyDefinitions = definition.KeyColumns.Select(column => Quote(column) + " sql_variant").ToList();
+        var outputColumns = string.Join(", ", definition.KeyColumns.Select(Quote));
+        var outputValues = string.Join(", ", definition.KeyColumns.Select(column => "INSERTED." + Quote(column)));
+        var joins = string.Join(" AND ", definition.KeyColumns.Select(column => $"target.{Quote(column)} = inserted.{Quote(column)}"));
+        command.CommandText = $"DECLARE @inserted TABLE ({string.Join(", ", keyDefinitions)}); " +
+            $"INSERT INTO {QuoteTable(definition.TableName)} ({string.Join(", ", insertColumns)}) " +
+            $"OUTPUT {outputValues} INTO @inserted ({outputColumns}) VALUES ({string.Join(", ", insertValues)}); " +
+            $"SELECT target.* FROM {QuoteTable(definition.TableName)} AS target INNER JOIN @inserted AS inserted ON {joins};";
+        var snapshot = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        await using var reader = await command.ExecuteReaderAsync();
+        if (!await reader.ReadAsync())
+            throw new InvalidOperationException("Не удалось перечитать созданную строку по её ключу; транзакция отменена.");
+        for (var index = 0; index < reader.FieldCount; index++)
+            snapshot[reader.GetName(index)] = reader.IsDBNull(index) ? DBNull.Value : reader.GetValue(index);
+        if (await reader.ReadAsync())
+            throw new InvalidOperationException("Ключ созданной строки не уникален; транзакция отменена.");
+        if (metadata.Columns.Keys.Any(column => !snapshot.ContainsKey(column)))
+            throw new InvalidOperationException("Снимок созданной строки неполон; транзакция отменена.");
+        return snapshot;
     }
 
     private async Task UpdateAsync(SqlConnection connection, SqlTransaction transaction, ProgramSupportTableData tableData,
@@ -666,69 +697,16 @@ public sealed class ProgramSupportRepository
     private static async Task<int> CountKnownDependentsAsync(SqlConnection connection, SqlTransaction transaction,
         ProgramSupportTableDefinition definition, DataRow row)
     {
-        string? childTable = null;
-        string? childField = null;
-        string? targetField = null;
-        switch (definition.TableName)
-        {
-            case "dbo.Prog_Recipe": childTable = "dbo.Prog_Recipes"; childField = "Recipe_Record"; targetField = "Record"; break;
-            case "dbo.Prog_Queue": childTable = "dbo.Prog_QueueSelections"; childField = "Queue_Record"; targetField = "Record"; break;
-        }
         int count = 0;
-        if (childTable != null && childField != null && targetField != null)
-        {
-            string scopePredicate = definition.ScopeColumns.Select((name, i) => $"{Quote(name)}=@s{i}").Aggregate((a, b) => a + " AND " + b);
-            string sql = $"SELECT COUNT_BIG(1) FROM {QuoteTable(childTable)} WHERE {scopePredicate} AND {Quote(childField)}=@target;";
-            using var command = new SqlCommand(sql, connection, transaction);
-            for (int i = 0; i < definition.ScopeColumns.Count; i++)
-                command.Parameters.AddWithValue("@s" + i, row[definition.ScopeColumns[i], DataRowVersion.Original]);
-            command.Parameters.AddWithValue("@target", row[targetField, DataRowVersion.Original]);
-            count += Convert.ToInt32(await command.ExecuteScalarAsync());
-        }
-        return count + await CountMatrixDependentsAsync(connection, transaction, definition, row);
-    }
-
-    private static async Task<int> CountMatrixDependentsAsync(SqlConnection connection, SqlTransaction transaction,
-        ProgramSupportTableDefinition definition, DataRow row)
-    {
-        var checks = definition.TableName switch
-        {
-            "dbo.Matrix_List" => new (string Table, string[] Columns, string[] Values)[]
-            {
-                ("dbo.Matrix_CommandList", new[] { "PLC", "PLC_Class_Number", "Record" }, new[] { "PLC", "PLC_Class_Number", "Record" }),
-                ("dbo.Matrix_Commands", new[] { "PLC", "PLC_Class_Number", "Record" }, new[] { "PLC", "PLC_Class_Number", "Record" }),
-                ("dbo.Matrix_DeviceList", new[] { "PLC", "PLC_Class_Number", "Record" }, new[] { "PLC", "PLC_Class_Number", "Record" }),
-                ("dbo.Matrix_DeviceListType", new[] { "PLC", "PLC_Class_Number", "Record" }, new[] { "PLC", "PLC_Class_Number", "Record" }),
-                ("dbo.Matrix_Devices", new[] { "PLC", "PLC_Class_Number", "Record" }, new[] { "PLC", "PLC_Class_Number", "Record" }),
-                ("dbo.Prog_Queue", new[] { "PLC", "PLC_Class_Matrix_Number", "Matrix_Record" }, new[] { "PLC", "PLC_Class_Number", "Record" }),
-                ("dbo.Prog_QueueSelections", new[] { "PLC", "PLC_Class_Matrix_Number", "Matrix_Record" }, new[] { "PLC", "PLC_Class_Number", "Record" })
-            },
-            "dbo.Matrix_CommandList" => new (string Table, string[] Columns, string[] Values)[]
-            {
-                ("dbo.Matrix_Commands", new[] { "PLC", "PLC_Class_Number", "Record", "CmdNumber" }, new[] { "PLC", "PLC_Class_Number", "Record", "CmdNumber" })
-            },
-            "dbo.Matrix_DeviceList" => new (string Table, string[] Columns, string[] Values)[]
-            {
-                ("dbo.Matrix_Devices", new[] { "PLC", "PLC_Class_Number", "Record", "DeviceList" }, new[] { "PLC", "PLC_Class_Number", "Record", "DeviceList" }),
-                ("dbo.Prog_QueueSelections", new[] { "PLC", "PLC_Class_Matrix_Number", "Matrix_Record", "Matrix_DeviceList" }, new[] { "PLC", "PLC_Class_Number", "Record", "DeviceList" })
-            },
-            "dbo.Matrix_DeviceListType" => new (string Table, string[] Columns, string[] Values)[]
-            {
-                ("dbo.Matrix_Devices", new[] { "PLC", "PLC_Class_Number", "Record", "Position" }, new[] { "PLC", "PLC_Class_Number", "Record", "Position" })
-            },
-            _ => Array.Empty<(string Table, string[] Columns, string[] Values)>()
-        };
-
-        int count = 0;
-        foreach (var check in checks)
+        foreach (var check in KnownDependencies(definition.TableName))
         {
             using var exists = new SqlCommand("SELECT CASE WHEN OBJECT_ID(@table) IS NULL THEN 0 ELSE 1 END;", connection, transaction);
             exists.Parameters.AddWithValue("@table", check.Table);
             if (Convert.ToInt32(await exists.ExecuteScalarAsync()) == 0) continue;
             string predicate = string.Join(" AND ", check.Columns.Select((column, index) => $"{Quote(column)}=@m{index}"));
-            using var command = new SqlCommand($"SELECT COUNT_BIG(1) FROM {QuoteTable(check.Table)} WHERE {predicate};", connection, transaction);
+            using var command = new SqlCommand($"SELECT COUNT_BIG(1) FROM {QuoteTable(check.Table)} WITH (UPDLOCK,HOLDLOCK) WHERE {predicate};", connection, transaction);
             for (int i = 0; i < check.Columns.Length; i++)
-                command.Parameters.AddWithValue("@m" + i, row[check.Values[i], DataRowVersion.Original]);
+                command.Parameters.AddWithValue("@m" + i, row[check.ParentColumns[i], DataRowVersion.Original]);
             count = checked(count + Convert.ToInt32(await command.ExecuteScalarAsync()));
         }
         return count;
@@ -799,14 +777,26 @@ ORDER BY fk.object_id, fkc.constraint_column_id;";
         return $"{Quote(column)}=@{parameter}";
     }
 
+    internal static bool UsesScopedMatrixRecord(ProgramSupportTableDefinition definition) =>
+        definition.Id is "matrix-list" or "program-matrix";
+
     private static async Task<object> NextRecordAsync(SqlConnection connection, SqlTransaction transaction,
         ProgramSupportTableDefinition definition, IReadOnlyDictionary<string, object> scope, Type recordType)
     {
         string where = string.Join(" AND ", definition.ScopeColumns.Select((column, index) => $"{Quote(column)}=@s{index}"));
-        using var command = new SqlCommand($"SELECT COALESCE(MAX(CONVERT(bigint,{Quote("Record")})),0)+1 FROM {QuoteTable(definition.TableName)} WITH (UPDLOCK,HOLDLOCK) WHERE {where};", connection, transaction);
+        string record = Quote("Record");
+        bool useGap = UsesScopedMatrixRecord(definition);
+        string value = useGap ? record : $"COALESCE(MAX(CONVERT(bigint,{record})),0)+1";
+        using var command = new SqlCommand($"SELECT {value} FROM {QuoteTable(definition.TableName)} WITH (UPDLOCK,HOLDLOCK) WHERE {where};", connection, transaction);
         AddScopeParameters(command, definition, scope);
-        object next = await command.ExecuteScalarAsync() ?? 1L;
-        return Convert.ChangeType(next, recordType, System.Globalization.CultureInfo.InvariantCulture);
+        if (!useGap)
+            return Convert.ChangeType(await command.ExecuteScalarAsync() ?? 1L, recordType, System.Globalization.CultureInfo.InvariantCulture);
+
+        using var reader = await command.ExecuteReaderAsync();
+        var suggestion = new ScopedRecordSuggestion();
+        while (await reader.ReadAsync())
+            suggestion.Add(reader.GetValue(0));
+        return Convert.ChangeType(suggestion.GetValue(), recordType, System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private static async Task<TableMetadata> GetMetadataAsync(SqlConnection connection, SqlTransaction? transaction,

@@ -21,14 +21,15 @@ public partial class MainWindow
                     var source = new OnlineProjectDataSource(connection, database);
                     return Task.FromResult(new ProjectWorkspace(source, new OnlineProjectCrudDataSource(connection),
                         architecture: new ProjectArchitectureDataSource(source.Server, source.Database)));
-                }, CanEdit: UserAuthorizationService.Has(Permission.Mode1Edit)));
+                }, CanEdit: UserAuthorizationService.Has(Permission.Mode1Edit), Server: _connection.Server, Database: database));
             }
         }
         foreach (var (path, project) in _offlineProjects)
             sources.Add(new($"Offline · {project.Manifest.Name} · {path}", ct => Task.FromResult(OfflineMapWorkspace(project)), Path: path));
 
         new PlcAddressWindow(sources, async (path, ct) =>
-            OfflineMapWorkspace((await _projectPackageService.OpenForCompareAsync(path, ct)).Project)) { Owner = this }.ShowDialog();
+            OfflineMapWorkspace((await _projectPackageService.OpenForCompareAsync(path, ct)).Project),
+            ProjectEditor_ChangeJournalRequested) { Owner = this }.ShowDialog();
     }
 
     private static ProjectWorkspace OfflineMapWorkspace(ConfiguratorProject project) =>

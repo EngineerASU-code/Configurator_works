@@ -79,6 +79,60 @@ namespace Configurator
         }
     }
 
+    public async Task RestoreDatabaseAsync(string databaseName, string backupPath, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(databaseName) || databaseName.Length > 128 || databaseName.Any(char.IsControl))
+            throw new ArgumentException("Введите имя новой базы длиной до 128 символов.");
+        string path = System.IO.Path.GetFullPath(backupPath);
+        var builder = new SqlConnectionStringBuilder(_connectionString) { InitialCatalog = "master" };
+        if (!IsLocalServer(builder.DataSource) && !new Uri(path).IsUnc)
+            throw new InvalidOperationException("Для удалённого сервера выберите .bak по общему сетевому пути UNC, доступному службе SQL Server.");
+        using var connection = SqlProviderGuard.CreateConnection(builder.ConnectionString);
+        await SqlProviderGuard.OpenConnectionAsync(connection, ct);
+        using var info = new SqlCommand("""
+            SELECT DB_ID(@name), SERVERPROPERTY('InstanceDefaultDataPath'), SERVERPROPERTY('InstanceDefaultLogPath')
+            """, connection);
+        info.Parameters.Add("@name", SqlDbType.NVarChar, 128).Value = databaseName;
+        string dataDir, logDir;
+        using (var reader = await info.ExecuteReaderAsync(ct))
+        {
+            await reader.ReadAsync(ct);
+            if (!reader.IsDBNull(0)) throw new InvalidOperationException("База с таким именем уже существует. Укажите новое имя.");
+            dataDir = Convert.ToString(reader.GetValue(1));
+            logDir = Convert.ToString(reader.GetValue(2));
+        }
+        if (string.IsNullOrWhiteSpace(dataDir) || string.IsNullOrWhiteSpace(logDir))
+            throw new InvalidOperationException("SQL Server не сообщил пути каталогов данных и журнала.");
+
+        var moves = new List<string>();
+        string prefix = "Configurator_" + Guid.NewGuid().ToString("N");
+        try
+        {
+            using var list = new SqlCommand("RESTORE FILELISTONLY FROM DISK = @path", connection);
+            list.Parameters.Add("@path", SqlDbType.NVarChar, -1).Value = path;
+            using (var files = await list.ExecuteReaderAsync(ct))
+            {
+                while (await files.ReadAsync(ct))
+                {
+                    string type = (string)files["Type"];
+                    string dir = type == "L" ? logDir : dataDir;
+                    string extension = type switch { "L" => ".ldf", "D" => moves.Count == 0 ? ".mdf" : ".ndf", "S" or "F" => "", _ => throw new InvalidOperationException("Неизвестный тип файла в резервной копии.") };
+                    string dest = dir.TrimEnd('\\', '/') + (dir.Contains('\\') ? "\\" : "/") + prefix + "_" + moves.Count + extension;
+                    moves.Add($"MOVE N'{EscapeSqlLiteral((string)files["LogicalName"])}' TO N'{EscapeSqlLiteral(dest)}'");
+                }
+            }
+            if (moves.Count == 0) throw new InvalidOperationException("В резервной копии нет файлов базы.");
+            using var restore = new SqlCommand($"IF DB_ID(@name) IS NOT NULL THROW 50000, N'База уже существует.', 1; RESTORE DATABASE @name FROM DISK = @path WITH {string.Join(", ", moves)}, RECOVERY", connection) { CommandTimeout = 0 };
+            restore.Parameters.Add("@name", SqlDbType.NVarChar, 128).Value = databaseName;
+            restore.Parameters.Add("@path", SqlDbType.NVarChar, -1).Value = path;
+            await restore.ExecuteNonQueryAsync(ct);
+        }
+        catch (SqlException ex) when (ex.Errors.Cast<SqlError>().Any(e => e.Number == 3201))
+        {
+            throw new InvalidOperationException("SQL Server не может открыть .bak. Выберите каталог, доступный службе SQL Server для чтения.", ex);
+        }
+    }
+
     private static bool IsLocalServer(string dataSource)
     {
         if (string.IsNullOrWhiteSpace(dataSource)) return false;

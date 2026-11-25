@@ -23,6 +23,11 @@ public sealed class OfflineObjectDeletionGuardTests
         var option = Assert.Single(options);
         var candidate = Assert.Single(option.Candidates);
         Assert.Equal(new object[] { 2 }, candidate.Values);
+        Assert.Equal("Зависимый", option.Hit.SourceName);
+        Assert.Equal("Удаляемый", option.Hit.TargetName);
+        Assert.Equal(1, option.Hit.TargetKey["Id"]);
+        Assert.Equal("Замена", candidate.Display);
+        Assert.Equal(2, candidate.DisplayKey["Id"]);
 
         var replacement = new ReferenceReplacement
         {
@@ -80,10 +85,10 @@ public sealed class OfflineObjectDeletionGuardTests
         await using var db = await CompareLocalDb.CreateAsync();
         await db.ExecuteAsync("""
             CREATE TABLE dbo.Area (AreaId int NOT NULL PRIMARY KEY, Name nvarchar(50) NOT NULL);
-            CREATE TABLE dbo.Equipment (EquipmentId int NOT NULL PRIMARY KEY, AreaId int NOT NULL,
+            CREATE TABLE dbo.Equipment (EquipmentId int NOT NULL PRIMARY KEY, AreaId int NOT NULL, Name nvarchar(50) NOT NULL,
                 CONSTRAINT FK_Equipment_Area FOREIGN KEY (AreaId) REFERENCES dbo.Area(AreaId));
             INSERT dbo.Area (AreaId, Name) VALUES (1, N'Old'), (2, N'Replacement');
-            INSERT dbo.Equipment (EquipmentId, AreaId) VALUES (10, 1);
+            INSERT dbo.Equipment (EquipmentId, AreaId, Name) VALUES (10, 1, N'Dependent');
             """);
 
         var sqlSchema = await new DatabaseArchitectureAnalyzer(db.ConnectionString).AnalyzeAsync();
@@ -97,6 +102,13 @@ public sealed class OfflineObjectDeletionGuardTests
         var hit = Assert.Single(plan.Dependencies);
         var onlineCandidate = Assert.Single(await onlineGuard.GetReplacementCandidatesAsync(hit,
             new Dictionary<string, object> { ["AreaId"] = 1 }));
+        Assert.Empty(await onlineGuard.GetReplacementCandidatesAsync(hit, plan.Request.Key,
+            excludedTargets: [new Dictionary<string, object> { ["AreaId"] = 2 }]));
+        Assert.Equal("Dependent", DependencyRecordLabel.Name(hit.SourceValues));
+        Assert.Equal("Old", hit.TargetName);
+        Assert.Equal(1, hit.TargetKey["AreaId"]);
+        Assert.Equal("Replacement", onlineCandidate.Display);
+        Assert.Equal(2, onlineCandidate.DisplayKey["AreaId"]);
         await onlineGuard.ExecuteAsync(plan, [new ReferenceReplacement
         {
             SourceTable = hit.SourceTable, SourceColumns = hit.Relation.SourceColumns,
@@ -198,7 +210,7 @@ public sealed class OfflineObjectDeletionGuardTests
         var childSchema = new ProjectTableSchema
         {
             TableName = "dbo.Children", KeyColumns = ["Id"], HasStableKey = true,
-            Columns = [new ProjectColumnSchema { Name = "Id", DataType = "int" }, new ProjectColumnSchema { Name = "ParentId", DataType = "int" }]
+            Columns = [new ProjectColumnSchema { Name = "Id", DataType = "int" }, new ProjectColumnSchema { Name = "ParentId", DataType = "int" }, new ProjectColumnSchema { Name = "Name", DataType = "nvarchar" }]
         };
         var project = new ConfiguratorProject
         {
@@ -217,7 +229,7 @@ public sealed class OfflineObjectDeletionGuardTests
         project.LocalRecords.Add(new ProjectRecord
         {
             TableName = "dbo.Children", Key = ProjectKeyCodec.Encode(childSchema, childSchema.KeyColumns, _ => JsonValue.Create(10)),
-            Values = new JsonObject { ["Id"] = 10, ["ParentId"] = 1 }
+            Values = new JsonObject { ["Id"] = 10, ["ParentId"] = 1, ["Name"] = "Зависимый" }
         });
         return project;
     }

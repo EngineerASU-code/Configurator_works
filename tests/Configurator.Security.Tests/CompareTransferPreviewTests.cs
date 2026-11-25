@@ -56,12 +56,14 @@ public sealed class CompareTransferPreviewTests
 
         var candidate = CompareTransferPreview.Evaluate(a, b, missing, aToB: true);
         Assert.True(candidate.IsAllowed, candidate.BlockReason);
-        Assert.False(CompareTransferPreview.Evaluate(a, b, missing, aToB: false).IsAllowed);
-        Assert.False(CompareTransferPreview.Evaluate(a, b, withDependencies, aToB: true).IsAllowed);
+        Assert.True(CompareTransferPreview.Evaluate(a, b, missing, aToB: false).DeletesRecord);
+        Assert.True(CompareTransferPreview.Evaluate(a, b, withDependencies, aToB: true).IsAllowed);
     }
 
-    [Fact]
-    public async Task MissingValveOffersOnlyTheDirectionWithASourceRecord()
+    [Theory]
+    [InlineData("Valves", "valve")]
+    [InlineData("Reglers", "pid")]
+    public async Task MissingEquipmentOffersCreationAndDeletion(string tableName, string classId)
     {
         using var files = new CompareTestDirectory();
         var (a, b) = await OpenPairAsync(files);
@@ -69,7 +71,7 @@ public sealed class CompareTransferPreviewTests
         using var workspaceB = (IDisposable)b.Workspace;
         var schema = new ProjectTableSchema
         {
-            TableName = "dbo.Valves", HasStableKey = true,
+            TableName = "dbo." + tableName, HasStableKey = true,
             KeyColumns = { "Record", "PLC", "PLC_Class_Number" },
             Columns =
             {
@@ -81,7 +83,7 @@ public sealed class CompareTransferPreviewTests
                 new ProjectColumnSchema { Name = "MS_X", DataType = "real" }
             }
         };
-        var definition = new ClassDefinition { Id = "valve", Name = "Valve", IsSystem = true, Available = true };
+        var definition = new ClassDefinition { Id = classId, Name = classId, IsSystem = true, Available = true };
         definition.StorageMappings.Add(new StorageMapping { TableName = schema.TableName });
         var table = new CompareTable(schema, definition,
             new HashSet<string> { "PLC", "PLC_Class_Number", "Type", "Area" }, false);
@@ -93,14 +95,17 @@ public sealed class CompareTransferPreviewTests
                 ["Record"] = 2, ["PLC"] = 8, ["PLC_Class_Number"] = 1, ["Type"] = 0, ["Area"] = "077", ["MS_X"] = 1.25
             }
         };
-        a.PhysicalSchema!.Tables.Add(new DatabaseTable { Name = "Valves" });
-        var row = new CompareDifference("Valve", null, "Valve", CompareStatus.OnlyB,
+        a.PhysicalSchema!.Tables.Add(new DatabaseTable { Name = tableName });
+        b.PhysicalSchema!.Tables.Add(new DatabaseTable { Name = tableName });
+        var row = new CompareDifference(classId, null, classId, CompareStatus.OnlyB,
             Pair: new CompareRecordPair(table, table, null, record));
 
         var preview = CompareTransferPreview.Evaluate(a, b, row, aToB: false);
         Assert.True(preview.IsAllowed, preview.BlockReason);
+        var reverse = row with { Status = CompareStatus.OnlyA, Pair = new CompareRecordPair(table, table, record, null) };
+        Assert.True(CompareTransferPreview.Evaluate(a, b, reverse, aToB: true).IsAllowed);
         Assert.Contains("Добавить объект", preview.Description);
-        Assert.False(CompareTransferPreview.Evaluate(a, b, row, aToB: true).IsAllowed);
+        Assert.True(CompareTransferPreview.Evaluate(a, b, row, aToB: true).DeletesRecord);
     }
 
     internal static async Task<(CompareSource A, CompareSource B)> OpenPairAsync(

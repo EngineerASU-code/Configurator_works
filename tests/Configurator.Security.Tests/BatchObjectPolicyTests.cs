@@ -9,7 +9,7 @@ public sealed class BatchObjectPolicyTests
     public void Next_record_uses_existing_and_pending_reservations_for_selected_plc()
     {
         var next = BatchObjectPolicy.NextFreeRecord("2",
-            new[] { "2|1", "2|2", "1|90" },
+            new[] { "2|1", "2|2", "2|05", "1|4", "1|90" },
             new[] { "2|3" });
         Assert.Equal(4, next);
     }

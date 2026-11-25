@@ -36,6 +36,7 @@ public partial class ProgramSupportControl : UserControl
     public ProgramSupportControl()
     {
         InitializeComponent();
+        RowsGrid.PreviewKeyDown += (_, e) => Mode3DeleteShortcut.Handle(e, DeleteButton);
         Loaded += ProgramSupportControl_Loaded;
         Unloaded += ProgramSupportControl_Unloaded;
         _suppressSectionSelection = true;
@@ -321,6 +322,11 @@ public partial class ProgramSupportControl : UserControl
     private bool CanSavePendingChanges(bool showAuthorizationMessage)
     {
         if (_tableData == null || !_tableData.CanWrite) return false;
+        if (ProgramSupportRepository.HasStagedDeletionReplacements(_tableData) && !UserAuthorizationService.Has(Permission.EditData))
+        {
+            if (showAuthorizationMessage) UserAuthorizationService.Require(Permission.EditData);
+            return false;
+        }
         bool hasChanges = false;
         foreach (DataRow row in _tableData.Rows.Rows)
         {
@@ -457,20 +463,35 @@ public partial class ProgramSupportControl : UserControl
         catch (Exception ex) { StatusText.Text = Configurator.Infrastructure.UserErrorMessage.Format(ex); }
     }
 
-    private void Delete_Click(object sender, RoutedEventArgs e)
+    private async void Delete_Click(object sender, RoutedEventArgs e)
     {
-        if (_busy || _tableData == null || !_tableData.CanWrite || !_tableData.Definition.AllowDelete
-            || RowsGrid.SelectedItem is not DataRowView selected) return;
-        Permission required = selected.Row.RowState == DataRowState.Added ? Permission.AddData : Permission.DeleteData;
-        if (!UserAuthorizationService.Require(required)) return;
+        if (_busy || _repository == null || _context == null || _tableData == null || !_tableData.CanWrite ||
+            !_tableData.Definition.AllowDelete || !CommitGridEdits() || RowsGrid.SelectedItem is not DataRowView selected) return;
+        var tableData = _tableData;
+        var repository = _repository;
+        var context = _context;
+        var row = selected.Row;
+        int contextVersion = _contextVersion;
+        bool IsCurrent() => contextVersion == _contextVersion && ReferenceEquals(tableData, _tableData);
+
+        SetBusy(true);
         try
         {
-            if (selected.Row.RowState == DataRowState.Added) selected.Row.Table.Rows.Remove(selected.Row);
-            else selected.Row.Delete();
-            StatusText.Text = "Строка помечена для удаления. Нажмите «Сохранить», чтобы применить изменение.";
-            UpdateActionState();
+            if (_recipeDetails?.HasPendingChanges() == true && !await _recipeDetails.PrepareForContextChangeAsync()) return;
+            if (!IsCurrent()) return;
+            var scope = ProgramSupportRepository.GetProgramScope(tableData.Definition, context);
+            bool added = row.RowState == DataRowState.Added;
+            if (await ProgramSupportDeletionInteraction.StageAsync(Window.GetWindow(this), repository, tableData, row, scope, IsCurrent))
+                StatusText.Text = added ? "Новая строка удалена." : "Строка помечена для удаления. Нажмите «Сохранить», чтобы применить изменение.";
         }
-        catch (Exception ex) { StatusText.Text = Configurator.Infrastructure.UserErrorMessage.Format(ex); }
+        catch (Exception ex)
+        {
+            if (IsCurrent()) StatusText.Text = Configurator.Infrastructure.UserErrorMessage.Format(ex);
+        }
+        finally
+        {
+            if (IsCurrent()) SetBusy(false);
+        }
     }
 
     private async void Save_Click(object sender, RoutedEventArgs e) => await SaveCurrentAsync();

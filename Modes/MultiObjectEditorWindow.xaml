@@ -41,7 +41,7 @@
         <Border Grid.Row="1" Background="{DynamicResource BrushPanel}"
                 BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="10"
                 Padding="8" ClipToBounds="True">
-            <DataGrid x:Name="RowsGrid" AutoGenerateColumns="False" CanUserAddRows="False"
+            <DataGrid x:Name="RowsGrid" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False"
                       HeadersVisibility="Column" SelectionMode="Single" SelectionUnit="FullRow"
                       IsReadOnly="False" GridLinesVisibility="Horizontal"
                       HorizontalGridLinesBrush="{DynamicResource BrushGridLine}"
@@ -98,7 +98,7 @@
             <StackPanel Grid.Column="1" Orientation="Horizontal">
                 <Button x:Name="BtnCancel" Content="Отмена" Click="Cancel_Click" Height="40"
                         MinWidth="110" Margin="0,0,8,0" Style="{StaticResource BtnSecondary}" IsCancel="True"/>
-                <Button x:Name="BtnAccept" Content="Добавить объекты" Click="Accept_Click" Height="40"
+                <Button IsDefault="True" x:Name="BtnAccept" Content="Добавить объекты" Click="Accept_Click" Height="40"
                         MinWidth="180" Style="{StaticResource BtnPrimary}"
                         ToolTip="Проверить и добавить подготовленные строки (Ctrl+Enter)"/>
             </StackPanel>

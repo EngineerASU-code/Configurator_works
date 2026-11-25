@@ -14,7 +14,7 @@ namespace Configurator;
 /// <summary>Rebuilds the address map while holding SQL locks through the update.</summary>
 internal static class PlcAddressReassignment
 {
-    internal static async Task ExecuteAsync(string connectionString, IProjectArchitectureDataSource architecture,
+    internal static async Task<ChangeJournalRowChange> ExecuteAsync(string connectionString, IProjectArchitectureDataSource architecture,
         AddressOwner expected, string newAddress, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(expected);
@@ -106,15 +106,81 @@ internal static class PlcAddressReassignment
             update.CommandText = $"UPDATE {QuoteTable(schemaNow.TableName)} SET {Quote(field.Name)}=@address WHERE {string.Join(" AND ", predicates)}";
             if (await update.ExecuteNonQueryAsync(ct).ConfigureAwait(false) != 1)
                 throw new InvalidOperationException("Не удалось однозначно изменить запись. Обновите карту.");
+            var actualAfter = await ReadUpdatedValueAsync(connection, transaction, schemaNow.TableName, field.Name,
+                schemaNow.KeyColumns, matches[0].Values, schemaNow, ct).ConfigureAwait(false);
             if (definitionsSnapshot != JsonSerializer.Serialize(await architecture.GetClassDefinitionsAsync(ct).ConfigureAwait(false)))
                 throw new InvalidOperationException("Определения классов изменились. Обновите карту.");
+            var beforeValues = new Dictionary<string, ChangeJournalValue>(StringComparer.OrdinalIgnoreCase)
+            {
+                [field.Name] = ChangeJournalValue.FromObject(ReadStoredValue(matches[0].Values[field.Name]!, field.DataType))
+            };
+            var afterValues = new Dictionary<string, ChangeJournalValue>(StringComparer.OrdinalIgnoreCase)
+            {
+                [field.Name] = ChangeJournalValue.FromObject(actualAfter)
+            };
+            var identity = schemaNow.KeyColumns.ToDictionary(column => column,
+                column => ChangeJournalValue.FromObject(ReadStoredValue(matches[0].Values[column]!,
+                    schemaNow.Columns.Single(item => item.Name.Equals(column, StringComparison.OrdinalIgnoreCase)).DataType)),
+                StringComparer.OrdinalIgnoreCase);
+            var change = new ChangeJournalRowChange
+            {
+                TableName = schemaNow.TableName,
+                Kind = ChangeJournalOperationKind.Update,
+                Before = beforeValues,
+                After = afterValues,
+                IdentityBefore = new Dictionary<string, ChangeJournalValue>(identity, StringComparer.OrdinalIgnoreCase),
+                IdentityAfter = new Dictionary<string, ChangeJournalValue>(identity, StringComparer.OrdinalIgnoreCase)
+            };
             await transaction.CommitAsync(ct).ConfigureAwait(false);
+            return change;
         }
         catch
         {
             await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
             throw;
         }
+    }
+
+    private static async Task<object> ReadUpdatedValueAsync(SqlConnection connection, SqlTransaction transaction,
+        string table, string field, IReadOnlyList<string> keyColumns, JsonObject snapshot,
+        ProjectTableSchema schema, CancellationToken ct)
+    {
+        var predicates = new List<string>();
+        await using var command = new SqlCommand { Connection = connection, Transaction = transaction };
+        for (var index = 0; index < keyColumns.Count; index++)
+        {
+            var column = keyColumns[index];
+            if (!snapshot.TryGetPropertyValue(column, out var node) || node == null)
+                throw new InvalidOperationException("Невозможно подтвердить новое значение: в снимке отсутствует ключ.");
+            var type = schema.Columns.Single(item => item.Name.Equals(column, StringComparison.OrdinalIgnoreCase)).DataType;
+            var parameter = "@key" + index;
+            predicates.Add(Quote(column) + " = " + parameter);
+            command.Parameters.AddWithValue(parameter, ReadStoredValue(node, type));
+        }
+        command.CommandText = $"SELECT TOP (2) {Quote(field)} FROM {QuoteTable(table)} WITH (UPDLOCK,HOLDLOCK) WHERE {string.Join(" AND ", predicates)}";
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        if (!await reader.ReadAsync(ct).ConfigureAwait(false))
+            throw new InvalidOperationException("Не удалось подтвердить новое значение адреса после изменения.");
+        var value = reader.IsDBNull(0) ? DBNull.Value : reader.GetValue(0);
+        if (await reader.ReadAsync(ct).ConfigureAwait(false))
+            throw new InvalidOperationException("После изменения ключ адреса соответствует нескольким строкам.");
+        return value;
+    }
+
+    private static object ReadStoredValue(JsonNode node, string sqlType)
+    {
+        var text = node.ToString();
+        return sqlType.ToLowerInvariant() switch
+        {
+            "tinyint" => byte.Parse(text, CultureInfo.InvariantCulture),
+            "smallint" => short.Parse(text, CultureInfo.InvariantCulture),
+            "int" => int.Parse(text, CultureInfo.InvariantCulture),
+            "bigint" => long.Parse(text, CultureInfo.InvariantCulture),
+            "uniqueidentifier" => Guid.Parse(text),
+            "bit" => bool.Parse(text),
+            "decimal" or "numeric" => decimal.Parse(text, CultureInfo.InvariantCulture),
+            _ => text
+        };
     }
 
     private static bool IsRelevant(ProjectTableSchema table)

@@ -13,7 +13,7 @@ namespace Configurator;
 internal static class OfflineObjectDeletionGuard
 {
     public static IReadOnlyList<DependencyReplacementWindow.DependencyOption> BuildOptions(
-        OfflineProjectDataSource source, string tableName, IReadOnlyList<Dictionary<string, object?>> targets)
+        OfflineProjectDataSource source, string tableName, IReadOnlyList<Dictionary<string, object?>> targets, Func<DatabaseGraphRelation, bool>? includeRelation = null)
     {
         var project = source.Project;
         var captured = DatabaseGraphRelationMaterializer.ReadCapturedSchema(project.Architecture["physicalSchema"]);
@@ -25,16 +25,31 @@ internal static class OfflineObjectDeletionGuard
         var selectedValues = targets.Select(target => target).ToList();
         var options = new List<DependencyReplacementWindow.DependencyOption>();
 
-        foreach (var relation in relations.Where(r => r.Target.Equals(resolved, StringComparison.OrdinalIgnoreCase)))
+        foreach (var relation in relations.Where(r => r.Target.Equals(resolved, StringComparison.OrdinalIgnoreCase) && (includeRelation?.Invoke(r) ?? true)))
         {
             var sourceTable = schema.FindTable(relation.Source)!;
+            var targetSchema = source.GetSchema(relation.Target);
             var targetTable = schema.FindTable(relation.Target)!;
+            var plcLabels = relation.SourceColumns.Contains("PLC", StringComparer.OrdinalIgnoreCase)
+                ? ReplacementCandidate.IndexPlcLabels(OfflineLookupOptionsService.Get(project, null, relation.Source, new FieldDefinition { Name = "PLC" }))
+                : null;
             var columnPairs = relation.SourceColumns.Zip(relation.TargetColumns).Select(pair => (
                 Source: sourceTable.Columns.Single(c => c.Name.Equals(pair.First, StringComparison.OrdinalIgnoreCase)),
                 Target: targetTable.Columns.Single(c => c.Name.Equals(pair.Second, StringComparison.OrdinalIgnoreCase)))).ToArray();
 
+            var targetRecords = source.GetRecords(relation.Target);
             foreach (var target in selectedValues)
             {
+                var keyColumns = targetSchema is { HasStableKey: true, KeyColumns.Count: > 0 } && targetSchema.KeyColumns.All(target.ContainsKey)
+                    ? targetSchema.KeyColumns : relation.TargetColumns;
+                var targetName = DependencyRecordLabel.Name(target);
+                if (targetName.Length == 0)
+                {
+                    var matches = targetRecords.Where(record => IsSelectedTarget(record, keyColumns, [target])).Take(2).ToArray();
+                    if (matches.Length == 1) targetName = DependencyRecordLabel.Name(matches[0].Values);
+                }
+                var targetKey = keyColumns.ToDictionary(column => column, column => target.TryGetValue(column, out var value)
+                    ? value is JsonNode node ? ToValue(node, "") : value : null, StringComparer.OrdinalIgnoreCase);
                 var deletedValues = columnPairs.Select(pair => target.TryGetValue(pair.Target.Name, out var value)
                     ? value
                     : throw new InvalidOperationException($"В объекте отсутствует значение поля связи «{pair.Target.Name}».")).ToArray();
@@ -52,6 +67,9 @@ internal static class OfflineObjectDeletionGuard
                     {
                         SourceTable = relation.Source,
                         SourceKey = dependentIdentity,
+                        SourceName = DependencyRecordLabel.Name(dependent.Values),
+                        TargetName = targetName,
+                        TargetKey = targetKey,
                         SourceReferenceValues = columnPairs.ToDictionary(pair => pair.Source.Name,
                             pair => ToValue(dependent.Values[pair.Source.Name], pair.Source.DataType), StringComparer.OrdinalIgnoreCase),
                         SourceColumnDescription = string.Join(", ", relation.SourceColumns),
@@ -70,9 +88,9 @@ internal static class OfflineObjectDeletionGuard
                     hit.Relation.SourceColumns.AddRange(relation.SourceColumns);
                     hit.Relation.TargetColumns.AddRange(relation.TargetColumns);
 
-                    var candidates = source.GetRecords(relation.Target)
+                    var candidates = targetRecords
                         .Where(candidate => !IsSelectedTarget(candidate, relation.TargetColumns, selectedValues))
-                        .Select(candidate => BuildCandidate(candidate, relation.TargetColumns, targetTable.Columns.Select(c => c.Name)))
+                        .Select(candidate => BuildCandidate(candidate, relation.TargetColumns, targetSchema, plcLabels))
                         .Where(candidate => candidate != null).Cast<ReplacementCandidate>().ToList();
                     if (candidates.Count == 0)
                         throw new InvalidOperationException($"Зависимые записи «{relation.Source}» ссылаются на «{relation.Target}», но в локальной копии нет допустимой записи для замены.");
@@ -80,7 +98,6 @@ internal static class OfflineObjectDeletionGuard
                     options.Add(new DependencyReplacementWindow.DependencyOption
                     {
                         Hit = hit,
-                        CurrentValue = string.Join(" · ", deletedValues.Select(FormatValue)),
                         Candidates = candidates
                     });
                 }
@@ -90,9 +107,9 @@ internal static class OfflineObjectDeletionGuard
     }
 
     public static void Check(OfflineProjectDataSource source, string tableName,
-        IReadOnlyList<Dictionary<string, object?>> targets)
+        IReadOnlyList<Dictionary<string, object?>> targets, Func<DatabaseGraphRelation, bool>? includeRelation = null)
     {
-        if (BuildOptions(source, tableName, targets).Count > 0)
+        if (BuildOptions(source, tableName, targets, includeRelation).Count > 0)
             throw new InvalidOperationException("Удаление остановлено: найдены связанные записи. Сначала выберите замену связи.");
     }
 
@@ -113,7 +130,7 @@ internal static class OfflineObjectDeletionGuard
         return identity;
     }
 
-    private static ReplacementCandidate? BuildCandidate(ProjectRecord record, IReadOnlyList<string> columns, IEnumerable<string> tableColumns)
+    private static ReplacementCandidate? BuildCandidate(ProjectRecord record, IReadOnlyList<string> columns, ProjectTableSchema? schema, IReadOnlyDictionary<string, string>? plcLabels)
     {
         var values = new List<object>();
         foreach (var column in columns)
@@ -121,14 +138,14 @@ internal static class OfflineObjectDeletionGuard
             if (!record.Values.TryGetPropertyValue(column, out var value) || value == null) return null;
             values.Add(ToValue(value, ""));
         }
-        var displayColumn = tableColumns.FirstOrDefault(name =>
-            name.Equals("NameL1", StringComparison.OrdinalIgnoreCase) || name.Equals("Name_L1", StringComparison.OrdinalIgnoreCase) ||
-            name.Equals("Name", StringComparison.OrdinalIgnoreCase) || name.Equals("DescriptionL1", StringComparison.OrdinalIgnoreCase));
-        var display = displayColumn != null && !columns.Contains(displayColumn, StringComparer.OrdinalIgnoreCase) &&
-            record.Values.TryGetPropertyValue(displayColumn, out var label) && label != null
-                ? ToValue(label, "").ToString() ?? string.Empty
-                : string.Join(" · ", values.Select(FormatValue));
-        return new ReplacementCandidate { Values = values, Display = display };
+        return new ReplacementCandidate
+        {
+            Values = values,
+            Display = DependencyRecordLabel.Name(record.Values),
+            DisplayKey = schema is { HasStableKey: true, KeyColumns.Count: > 0 }
+                ? GetStableIdentity(schema, record) : columns.Zip(values).ToDictionary(pair => pair.First, pair => pair.Second),
+            PlcLabels = plcLabels
+        };
     }
 
     private static bool IsSelectedTarget(ProjectRecord candidate, IReadOnlyList<string> relationColumns,
@@ -149,12 +166,6 @@ internal static class OfflineObjectDeletionGuard
             CultureInfo.InvariantCulture.CompareInfo.Compare(a.TrimEnd(' '), b.TrimEnd(' '),
                 CompareOptions.IgnoreCase | CompareOptions.IgnoreNonSpace | CompareOptions.IgnoreKanaType | CompareOptions.IgnoreWidth) == 0;
     }
-
-    private static string FormatValue(object? value) => value switch
-    {
-        null or DBNull => "<NULL>",
-        _ => Convert.ToString(value, CultureInfo.InvariantCulture) ?? ""
-    };
 
     private static object ToValue(JsonNode? node, string dataType)
     {

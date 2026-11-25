@@ -57,11 +57,9 @@ public partial class ProjectModeView
                 var candidates = BuildOfflineReplacementCandidates(source, dependency, targetKey);
                 if (candidates.Count == 0 || candidates.All(candidate => candidate.IsConflict))
                     throw new InvalidOperationException($"Для зависимости {dependency.Hit.SourceTable}.{dependency.Hit.SourceColumnDescription} нет безопасного значения для замены.");
-                var firstTargetColumn = dependency.Relation.TargetColumns[0];
                 options.Add(new DependencyReplacementWindow.DependencyOption
                 {
                     Hit = dependency.Hit,
-                    CurrentValue = targetKey.TryGetValue(firstTargetColumn, out var current) ? current : "",
                     Candidates = candidates
                 });
             }
@@ -295,6 +293,9 @@ public partial class ProjectModeView
                     {
                         SourceTable = relation.SourceTable,
                         SourceKey = sourceKey,
+                        SourceName = DependencyRecordLabel.Name(record.Values),
+                        TargetName = DependencyRecordLabel.Name(target.Values),
+                        TargetKey = targetKey,
                         SourceColumnDescription = string.Join(", ", relation.SourceColumns),
                         TargetTable = relation.TargetTable,
                         Relation = relation
@@ -321,6 +322,9 @@ public partial class ProjectModeView
         var sourceSchema = source.GetSchema(dependency.Hit.SourceTable)!;
         var targetSchema = source.GetSchema(dependency.Relation.TargetTable)!;
         var targetRecords = source.GetRecords(dependency.Relation.TargetTable);
+        var plcLabels = dependency.Relation.SourceColumns.Contains("PLC", StringComparer.OrdinalIgnoreCase)
+            ? ReplacementCandidate.IndexPlcLabels(OfflineLookupOptionsService.Get(source.Project, null, dependency.Hit.SourceTable, new FieldDefinition { Name = "PLC" }))
+            : null;
         var collected = new List<(string Token, ReplacementCandidate Candidate)>();
         foreach (var record in targetRecords)
         {
@@ -346,11 +350,12 @@ public partial class ProjectModeView
             if (!usable || values.Select((value, index) => ValuesEqual(value, targetKey[dependency.Relation.TargetColumns[index]])).All(matches => matches))
                 continue;
 
-            var display = FormatOfflineLookupCandidate(record, targetSchema, dependency.Relation.TargetColumns);
             var candidate = new ReplacementCandidate
             {
                 Values = values,
-                Display = display,
+                Display = DependencyRecordLabel.Name(record.Values),
+                DisplayKey = ReadStableIdentity(record, targetSchema),
+                PlcLabels = plcLabels,
                 IsConflict = WouldConflictWithOfflineKey(source, dependency, values, out var conflict),
                 ConflictDescription = conflict
             };
@@ -381,26 +386,6 @@ public partial class ProjectModeView
         if (collision == null) return false;
         description = "такая замена создаст дубликат ключа зависимой строки";
         return true;
-    }
-
-    private static string FormatOfflineLookupCandidate(ProjectRecord record, ProjectTableSchema schema, IReadOnlyList<string> lookupColumns)
-    {
-        string Get(string name) => TryReadProjectValue(record, schema, name, out var value) && value != DBNull.Value
-            ? Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty : string.Empty;
-        var leaf = schema.TableName.Split('.').Last().Trim('[', ']');
-        var key = string.Join(" · ", lookupColumns.Select(Get));
-        if (leaf.Equals("Area", StringComparison.OrdinalIgnoreCase) || leaf.Equals("Areas", StringComparison.OrdinalIgnoreCase))
-        {
-            var number = Get("Record");
-            var name = new[] { "AreaNameL2", "AreaNameL1", "AreaName" }.Select(Get).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
-            if (!string.IsNullOrWhiteSpace(number)) return string.IsNullOrWhiteSpace(name) ? number : $"{number}. {name}";
-        }
-        else
-        {
-            var name = new[] { "NameL1", "Name", "DescriptionL1", "NameL2" }.Select(Get).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
-            if (!string.IsNullOrWhiteSpace(name)) return string.IsNullOrWhiteSpace(key) ? name : $"{key} · {name}";
-        }
-        return key;
     }
 
     private static Dictionary<string, object> SnapshotProjectRecord(ProjectRecord record, ProjectTableSchema schema)

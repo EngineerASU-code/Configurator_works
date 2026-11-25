@@ -1,6 +1,17 @@
-﻿<UserControl x:Class="Configurator.RightPanel"
+<UserControl x:Class="Configurator.RightPanel"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <UserControl.Resources>
+        <Style x:Key="ColumnFilterButton" TargetType="Button" BasedOn="{StaticResource BtnCompact}">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Style.Triggers>
+                <Trigger Property="IsKeyboardFocused" Value="True">
+                    <Setter Property="Foreground" Value="{DynamicResource BrushAccent}"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+    </UserControl.Resources>
     <Grid Background="{DynamicResource BrushBase}" Margin="24,20,24,16">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -73,7 +84,7 @@
                       Foreground="{DynamicResource BrushText}"
                       BorderThickness="0"
                       GridLinesVisibility="Horizontal"
-                      HorizontalGridLinesBrush="{DynamicResource BrushGridLine}"
+                      HorizontalGridLinesBrush="{DynamicResource BrushBorder}"
                       VerticalGridLinesBrush="{DynamicResource BrushGridLine}"
                       HeadersVisibility="Column"
                       CanUserAddRows="False" CanUserDeleteRows="False"
@@ -88,8 +99,9 @@
                 <DataGrid.ColumnHeaderStyle>
                     <Style TargetType="DataGridColumnHeader"
                            BasedOn="{StaticResource {x:Type DataGridColumnHeader}}">
-                        <Setter Property="BorderBrush" Value="{DynamicResource BrushGridLine}"/>
-                        <Setter Property="BorderThickness" Value="0,0,1,1"/>
+                        <Setter Property="Background" Value="{DynamicResource BrushBase}"/>
+                        <Setter Property="BorderBrush" Value="{DynamicResource BrushBorder}"/>
+                        <Setter Property="BorderThickness" Value="0,0,0,1"/>
                         <Setter Property="Padding" Value="0"/>
                         <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
                     </Style>
@@ -126,10 +138,10 @@
             </Grid.ColumnDefinitions>
 
             <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
-                <Button x:Name="BtnAdd" Content="＋ Добавить" Style="{StaticResource BtnPrimary}" Width="124" Margin="0,0,8,0"/>
-                <Button x:Name="BtnUpdate" Content="Изменить" Style="{StaticResource BtnSecondary}" Width="124" Margin="0,0,8,0"/>
-                <Button x:Name="BtnDuplicate" Content="Дублировать" Style="{StaticResource BtnSecondary}" Width="124" Margin="0,0,8,0"/>
-                <Button x:Name="BtnDelete" Content="Удалить" Style="{StaticResource BtnSecondary}" Width="124" Margin="0,0,8,0"/>
+                <Button x:Name="BtnAdd" Visibility="Collapsed" Content="＋ Добавить" Style="{StaticResource BtnPrimary}" Width="124" Margin="0,0,8,0"/>
+                <Button x:Name="BtnUpdate" Visibility="Collapsed" Content="Изменить" Style="{StaticResource BtnSecondary}" Width="124" Margin="0,0,8,0"/>
+                <Button x:Name="BtnDuplicate" Visibility="Collapsed" Content="Дублировать" Style="{StaticResource BtnSecondary}" Width="124" Margin="0,0,8,0"/>
+                <Button x:Name="BtnDelete" Visibility="Collapsed" Content="Удалить" Style="{StaticResource BtnSecondary}" Width="124" Margin="0,0,8,0"/>
             </WrapPanel>
 
             <StackPanel Grid.Column="1" Orientation="Horizontal">

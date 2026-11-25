@@ -21,10 +21,17 @@ public sealed class PlcAddressReassignmentTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => workspace.ReassignPlcAddressAsync(owner, "I2.0"));
         Assert.Equal(2, await db.DecimalAsync("SELECT COUNT(*) FROM dbo.Valves WHERE Address_Input='I1.0'"));
 
-        await workspace.ReassignPlcAddressAsync(owner, "I3.0");
+        var captured = await workspace.ReassignPlcAddressAsync(owner, "I3.0");
         Assert.Equal(1, await db.DecimalAsync("SELECT COUNT(*) FROM dbo.Valves WHERE Address_Input='I3.0'"));
         await Assert.ThrowsAsync<InvalidOperationException>(() => workspace.ReassignPlcAddressAsync(owner, "I4.0"));
         Assert.Equal(0, await db.DecimalAsync("SELECT COUNT(*) FROM dbo.Valves WHERE Address_Input='I4.0'"));
+
+        var entry = new ChangeJournalEntry { Changes = new() { captured } };
+        Assert.True(entry.CanRestore);
+        await new ChangeJournalService(System.IO.Path.Combine(System.IO.Path.GetTempPath(), Guid.NewGuid().ToString("N")))
+            .RestoreAsync(entry, db.ConnectionString);
+        Assert.Equal(2, await db.DecimalAsync("SELECT COUNT(*) FROM dbo.Valves WHERE Address_Input='I1.0'"));
+        Assert.Equal(0, await db.DecimalAsync("SELECT COUNT(*) FROM dbo.Valves WHERE Address_Input='I3.0'"));
     }
 
     [CompareLocalDbFact]

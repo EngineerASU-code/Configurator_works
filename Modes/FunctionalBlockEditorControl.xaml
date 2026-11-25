@@ -17,7 +17,7 @@
                     <Button x:Name="AddButton" Content="＋  Новый блок" Height="36" Margin="0,0,0,10"
                             Style="{StaticResource BtnPrimary}" Click="Add_Click" />
                 </StackPanel>
-                <ListBox x:Name="BlocksList" DisplayMemberPath="Name" SelectionChanged="BlocksList_SelectionChanged"
+                <ListBox x:Name="BlocksList" DisplayMemberPath="Name" SelectionChanged="BlocksList_SelectionChanged" PreviewKeyDown="BlocksList_PreviewKeyDown"
                          BorderBrush="{DynamicResource BrushBorder}" Background="{DynamicResource BrushBase}"
                          Foreground="{DynamicResource BrushText}" />
             </DockPanel>

@@ -19,12 +19,15 @@ public sealed class CompareTransferPreview
         BlockReason = blockReason;
     }
 
+    internal bool DeletesRecord => IsAllowed && TargetSchema is not null && SourceRecord is null && ExpectedRecord is not null;
     public bool IsAllowed => BlockReason is null;
     public string? BlockReason { get; }
     public string Description { get; }
     internal string Summary { get; private init; } = string.Empty;
 
     internal CompareSource Source { get; }
+    internal ChangeJournalEntry? RecordedEntry { get; set; }
+    internal (ConfiguratorProject Project, string Fingerprint)? SavedPackage { get; set; }
     internal CompareSource Target { get; }
     internal ProjectTableSchema? TargetSchema { get; private init; }
     internal ProjectTableSchema? SourceSchema { get; private init; }
@@ -34,6 +37,9 @@ public sealed class CompareTransferPreview
     internal ProjectRecord? ExpectedRecord { get; private init; }
     internal IReadOnlyDictionary<string, object?> KeyValues { get; private init; } = new Dictionary<string, object?>();
     internal IReadOnlyDictionary<string, object?> Values { get; private init; } = new Dictionary<string, object?>();
+    internal bool CopiesComputedArea => ExpectedRecord is null && TargetSchema is { } schema &&
+        CopiesOfflineEquipmentArea(Source, Target, schema) &&
+        SourceSchema is { } sourceSchema && FindColumn(sourceSchema, "Area")?.IsComputed == true;
 
     public static CompareTransferPreview Evaluate(
         CompareSource a, CompareSource b, CompareDifference difference, bool aToB)
@@ -41,6 +47,9 @@ public sealed class CompareTransferPreview
         var source = aToB ? a : b;
         var target = aToB ? b : a;
         CompareTransferPreview Block(string reason) => new(source, target, difference.Title, reason);
+
+        if (difference.Status == CompareStatus.KeyConflict)
+            return Block(difference.Issue ?? "Обнаружен конфликт ключа Record.");
 
         if (difference.Status is not (CompareStatus.Changed or CompareStatus.OnlyA or CompareStatus.OnlyB) ||
             difference.Pair is not { } pair)
@@ -52,15 +61,15 @@ public sealed class CompareTransferPreview
         var toTable = aToB ? pair.B : pair.A;
         var from = aToB ? pair.RecordA : pair.RecordB;
         var to = aToB ? pair.RecordB : pair.RecordA;
-        if (from is null)
-            return Block("В источнике элемента нет. Удаление не предусмотрено.");
+        if (from is null && (to is null || difference.Column is not null))
+            return Block("Нет записи для синхронизации.");
         if (fromTable?.Class is null || toTable?.Class is null ||
             !Names.Equals(fromTable.Class.Id, toTable.Class.Id) ||
             !Names.Equals(fromTable.Schema.TableName, toTable.Schema.TableName))
             return Block("Требуются один сопоставленный класс и совместимые таблицы.");
         if (!fromTable.Class.Available || !toTable.Class.Available)
             return Block("Класс недоступен в одном из источников.");
-        if (fromTable.HasUnresolvedDependencies || toTable.HasUnresolvedDependencies)
+        if (fromTable.MappingRole == "ambiguous" || toTable.MappingRole == "ambiguous")
             return Block("Не удалось подтвердить логические зависимости.");
         if (string.IsNullOrEmpty(source.ProjectId) || !Names.Equals(source.ProjectId, target.ProjectId))
         {
@@ -72,7 +81,7 @@ public sealed class CompareTransferPreview
         if (!ProjectWriteGuard.IsDataTableWritable(schema.TableName))
             return Block("Изменение реестра классов отключено.");
         if (!target.Workspace.IsOffline &&
-            (toTable.MetadataFingerprint is null || (to is null ? target.PhysicalSchema?.FindTable(schema.TableName)?.CanCompareInsert : target.PhysicalSchema?.FindTable(schema.TableName)?.CanCompareUpdate) != true))
+            (toTable.MetadataFingerprint is null || (from is not null && (to is null ? target.PhysicalSchema?.FindTable(schema.TableName)?.CanCompareInsert : target.PhysicalSchema?.FindTable(schema.TableName)?.CanCompareUpdate) != true)))
             return Block("Условия записи в эту SQL-таблицу не подтверждены.");
         if (!schema.HasStableKey || schema.KeyColumns.Count == 0 ||
             !schema.KeyColumns.SequenceEqual(fromTable.Schema.KeyColumns, Names))
@@ -88,14 +97,25 @@ public sealed class CompareTransferPreview
             foreach (var key in schema.KeyColumns)
             {
                 var column = FindColumn(schema, key);
-                if (column is null || from.Values[key] is null || (to is not null && to.Values[key] is null))
+                if (column is null || (from ?? to!).Values[key] is null || (to is not null && to.Values[key] is null))
                     return Block("В записи отсутствует значение ключа.");
-                keys.Add(column.Name, ToValue((to ?? from).Values[key], column));
+                keys.Add(column.Name, ToValue((to ?? from!).Values[key], column));
                 var sourceColumn = FindColumn(fromTable.Schema, key);
                 if (sourceColumn is null) return Block("В источнике отсутствует поле ключа.");
-                sourceKeys.Add(sourceColumn.Name, ToValue(from.Values[key], sourceColumn));
+                sourceKeys.Add(sourceColumn.Name, ToValue((from ?? to!).Values[key], sourceColumn));
             }
 
+            if (from is null)
+            {
+                var directionLabel = aToB ? "A → B" : "B → A";
+                var deletion = $"{directionLabel} · Удалить объект из {target.Workspace.DisplayName} · {schema.TableName} · {string.Join(", ", keys.Select(k => $"{k.Key}={k.Value}"))}";
+                return new CompareTransferPreview(source, target, deletion, null)
+                {
+                    Summary = deletion, SourceSchema = fromTable.Schema, TargetSchema = schema,
+                    SourceKeyValues = sourceKeys, KeyValues = keys, ExpectedRecord = to,
+                    TargetMetadataFingerprint = toTable.MetadataFingerprint
+                };
+            }
             if (difference.Column is string field)
             {
                 var column = FindColumn(schema, field);
@@ -105,8 +125,7 @@ public sealed class CompareTransferPreview
                 if (column is null || fromColumn is null || !Compatible(column, fromColumn))
                     return Block("Структура целевого поля несовместима.");
                 if (column.IsIdentity || column.IsComputed || column.IsReadOnly ||
-                    schema.KeyColumns.Contains(field, Names) || IsManagedField(field) ||
-                    fromTable.DependencyColumns.Contains(field) || toTable.DependencyColumns.Contains(field))
+                    schema.KeyColumns.Contains(field, Names))
                     return Block("Это ключевое, связанное или управляемое поле.");
                 if (!from.Values.TryGetPropertyValue(fromColumn.Name, out var value))
                     return Block("В источнике параметр отсутствует.");
@@ -137,35 +156,26 @@ public sealed class CompareTransferPreview
 
             else
             {
-                bool valve = IsValveTable(schema) &&
-                    Names.Equals(fromTable.Class.Id, "valve") && Names.Equals(toTable.Class.Id, "valve") &&
-                    fromTable.DependencyColumns.All(IsValveLookupColumn) && toTable.DependencyColumns.All(IsValveLookupColumn);
-                if ((!valve && (fromTable.Class.IsSystem || toTable.Class.IsSystem ||
-                    fromTable.Class.Types.Count != 0 || toTable.Class.Types.Count != 0 ||
-                    fromTable.DependencyColumns.Count != 0 || toTable.DependencyColumns.Count != 0)) ||
-                    fromTable.Class.StorageMappings.Count != 1 || toTable.Class.StorageMappings.Count != 1 ||
-                    fromTable.Class.ComplexTables.Count != 0 || toTable.Class.ComplexTables.Count != 0 ||
-                    !string.IsNullOrEmpty(fromTable.Class.BaseClassId) || !string.IsNullOrEmpty(toTable.Class.BaseClassId))
-                    return Block("Создание поддерживается для независимого объекта с одной явно сопоставленной таблицей.");
-                var physical = target.PhysicalSchema?.FindTable(schema.TableName);
-                if (physical is null || physical.Keys.Any(key => key.IsUnique && !key.Columns.SequenceEqual(schema.KeyColumns, Names)))
-                    return Block("Не удалось подтвердить отсутствие дополнительных ограничений уникальности.");
-
                 foreach (var column in schema.Columns)
                 {
                     var fromColumn = FindColumn(fromTable.Schema, column.Name);
+                    if (CopiesOfflineEquipmentArea(source, target, schema) && column.Name.Equals("Area", StringComparison.OrdinalIgnoreCase) &&
+                        column.IsComputed && fromColumn?.IsComputed == true && Compatible(column, fromColumn) &&
+                        from.Values.TryGetPropertyValue(fromColumn.Name, out var area))
+                    {
+                        _ = ToValue(area, column);
+                        fields.Add($"{column.Name}  {Display(area)}");
+                        continue;
+                    }
                     if (column.IsIdentity || column.IsComputed || column.IsReadOnly ||
                         fromColumn is null || !Compatible(column, fromColumn) ||
-                        !from.Values.TryGetPropertyValue(fromColumn.Name, out var value) ||
-                        (IsManagedField(column.Name) && !Names.Equals(column.Name, "Name") &&
-                         !(valve && IsValveLookupColumn(column.Name)) &&
-                         !schema.KeyColumns.Contains(column.Name, Names)))
+                        !from.Values.TryGetPropertyValue(fromColumn.Name, out var value))
                         return Block($"Поле «{column.Name}» отсутствует, несовместимо или недоступно для записи.");
                     values.Add(column.Name, ToValue(value, column));
                     fields.Add($"{column.Name}  {Display(value)}");
                 }
 
-                if (fromTable.Schema.Columns.Count != values.Count)
+                if (fromTable.Schema.Columns.Count != schema.Columns.Count)
                     return Block("Набор полей целевого объекта отличается.");
             }
 
@@ -206,12 +216,12 @@ public sealed class CompareTransferPreview
     internal CompareTransferPreview WithEdits(IReadOnlyDictionary<string, string?> edits)
     {
         if (edits.Count == 0) return this;
-        if (!IsAllowed || TargetSchema is null || ExpectedRecord is null)
+        if (!IsAllowed || TargetSchema is null || DeletesRecord)
             throw new InvalidOperationException("Редактировать можно только поля существующей записи.");
         var updated = new Dictionary<string, object?>(Values, Names);
         foreach (var (field, input) in edits)
         {
-            if (!Values.ContainsKey(field))
+            if (!Values.ContainsKey(field) || (ExpectedRecord is null && !Names.Equals(field, "Record")))
                 throw new InvalidOperationException($"Поле «{field}» недоступно для этой операции.");
             var column = FindColumn(TargetSchema, field)!;
             try
@@ -232,33 +242,41 @@ public sealed class CompareTransferPreview
                 throw new InvalidOperationException($"Проверьте значение поля «{field}» ({column.DataType}).", ex);
             }
         }
-        OfflineProjectDataSource.ValidateValues(TargetSchema, updated, false, null);
+        OfflineProjectDataSource.ValidateValues(TargetSchema, updated, ExpectedRecord is null, null);
         var changes = updated.Select(pair =>
-            $"{pair.Key}  {Display(ExpectedRecord.Values[pair.Key])} → {Display(JsonSerializer.SerializeToNode(pair.Value))}");
+            $"{pair.Key}  {Display(ExpectedRecord?.Values[pair.Key])} → {Display(JsonSerializer.SerializeToNode(pair.Value))}");
         return new CompareTransferPreview(Source, Target, $"{Summary}\n\n{string.Join("\n", changes)}", null)
         {
             Summary = Summary, TargetSchema = TargetSchema, TargetMetadataFingerprint = TargetMetadataFingerprint,
-            ExpectedRecord = ExpectedRecord, KeyValues = KeyValues, Values = updated,
+            ExpectedRecord = ExpectedRecord, KeyValues = KeyValues.ToDictionary(k => k.Key, k => ExpectedRecord is null ? updated[k.Key] : k.Value, Names), Values = updated,
             SourceSchema = SourceSchema, SourceRecord = SourceRecord, SourceKeyValues = SourceKeyValues
         };
     }
 
-    internal static bool IsValveTable(ProjectTableSchema schema) =>
-        Names.Equals(schema.TableName, "dbo.Valves") && schema.KeyColumns.Count == 3 &&
+    internal static bool IsEquipmentTable(ProjectTableSchema schema) =>
+        (Names.Equals(schema.TableName, "dbo.Valves") || Names.Equals(schema.TableName, "dbo.Reglers")) && schema.KeyColumns.Count == 3 &&
         schema.KeyColumns.Contains("Record", Names) && schema.KeyColumns.Contains("PLC", Names) &&
         schema.KeyColumns.Contains("PLC_Class_Number", Names);
 
-    private static bool IsValveLookupColumn(string field) =>
-        Names.Equals(field, "PLC") || Names.Equals(field, "PLC_Class_Number") ||
-        Names.Equals(field, "Type") || Names.Equals(field, "Area");
+    private static bool CopiesOfflineEquipmentArea(CompareSource source, CompareSource target, ProjectTableSchema schema) =>
+        source.Workspace.IsOffline && target.Workspace.IsOffline &&
+        IsEquipmentTable(schema) && FindColumn(schema, "Area")?.IsComputed == true;
 
-    internal static IEnumerable<(string Table, string[] Columns, object?[] Values)> ValveLookups(
+    internal static IEnumerable<(string Table, string[] Columns, object?[] Values)> EquipmentLookups(
+        ProjectTableSchema schema,
         IReadOnlyDictionary<string, object?> values)
     {
         yield return ("dbo.PLC", ["Record"], [values["PLC"]]);
         yield return ("dbo.PLC_CFG", ["PLC_Number", "PLC_Class_Number"], [values["PLC"], values["PLC_Class_Number"]]);
+        bool pid = Names.Equals(schema.TableName, "dbo.Reglers");
+        if (pid)
+        {
+            foreach (var (field, target) in new[] { ("AI_Number", "dbo.AnaIN"), ("AO_Number", "dbo.AnaOUT") })
+                if (values.TryGetValue(field, out var channel) && channel is not null && Convert.ToInt32(channel, CultureInfo.InvariantCulture) != 0)
+                    yield return (target, ["PLC", "Record"], [values["PLC"], channel]);
+        }
         if (values.TryGetValue("Type", out var type) && type is not null && Convert.ToInt32(type, CultureInfo.InvariantCulture) != 0)
-            yield return ("dbo.Valves_Type", ["Record"], [type]);
+            yield return (pid ? "dbo.Reglers_Types" : "dbo.Valves_Type", ["Record"], [type]);
         if (values.TryGetValue("Area", out var areaValue) && areaValue is string area && !string.IsNullOrWhiteSpace(area))
             yield return ("dbo.Areas", ["AreaName"], [area]);
     }
@@ -269,17 +287,6 @@ public sealed class CompareTransferPreview
     private static bool Compatible(ProjectColumnSchema a, ProjectColumnSchema b) =>
         Names.Equals(a.DataType, b.DataType) && a.MaxLength == b.MaxLength &&
         a.Precision == b.Precision && a.Scale == b.Scale;
-
-    private static bool IsManagedField(string name) => name.Equals("Class", StringComparison.OrdinalIgnoreCase) ||
-        name.Equals("ClassNumber", StringComparison.OrdinalIgnoreCase) ||
-        name.Equals("PLC", StringComparison.OrdinalIgnoreCase) ||
-        name.Equals("Type", StringComparison.OrdinalIgnoreCase) ||
-        name.Equals("Area", StringComparison.OrdinalIgnoreCase) ||
-        name.Equals("Unit", StringComparison.OrdinalIgnoreCase) ||
-        name.Equals("ParentId", StringComparison.OrdinalIgnoreCase) ||
-        name.Equals("Name", StringComparison.OrdinalIgnoreCase) ||
-        name.EndsWith("_Record", StringComparison.OrdinalIgnoreCase) ||
-        name.EndsWith("_Number", StringComparison.OrdinalIgnoreCase);
 
     private static string Display(JsonNode? node) => node?.ToJsonString() ?? "NULL";
 

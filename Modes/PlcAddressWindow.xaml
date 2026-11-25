@@ -10,6 +10,14 @@
             <Button x:Name="Browse" Content="Офлайн-проект" Margin="6,0,12,0" VerticalAlignment="Center" Click="BrowseProject"/>
             <Label VerticalAlignment="Center" Content="PLC" Target="{Binding ElementName=Plc}"/>
             <ComboBox x:Name="Plc" Width="95" Height="34" Margin="0" VerticalContentAlignment="Center" IsEnabled="False" SelectionChanged="SelectPlc"/>
+            <Label VerticalAlignment="Center" Content="Тип сигнала" Target="{Binding ElementName=SignalType}"/>
+            <ComboBox x:Name="SignalType" Height="34" SelectedIndex="0" IsEnabled="{Binding IsEnabled, ElementName=Filter}" SelectionChanged="SelectFilter">
+                <ComboBoxItem Content="Все"/>
+                <ComboBoxItem Content="AI"/>
+                <ComboBoxItem Content="DI"/>
+                <ComboBoxItem Content="DO"/>
+                <ComboBoxItem Content="AO"/>
+            </ComboBox>
             <Label VerticalAlignment="Center" Content="Показать байты" Margin="16,0,0,0" Target="{Binding ElementName=Filter}"/>
             <ComboBox x:Name="Filter" Height="34" Margin="0" VerticalContentAlignment="Center" IsEnabled="False" SelectedIndex="0" SelectionChanged="SelectFilter">
                 <ComboBoxItem Content="Все"/>

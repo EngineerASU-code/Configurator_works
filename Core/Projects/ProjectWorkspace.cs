@@ -139,27 +139,29 @@ public sealed class ProjectWorkspace : IProjectWorkspace, IDisposable
     public async Task UpdateRecordAsync(string tableName, IReadOnlyList<string> keyColumns, IReadOnlyDictionary<string, object?> keyValues, IReadOnlyDictionary<string, object?> values, CancellationToken cancellationToken = default)
     { EnsureWritable(); using var linked = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, cancellationToken); await _writer!.UpdateRecordAsync(tableName, keyColumns, keyValues, values, linked.Token).ConfigureAwait(false); if (!IsOffline) Interlocked.Increment(ref _revision); }
 
-    public async Task UpdateCompareRecordAsync(ProjectTableSchema schema, ProjectRecord? expectedRecord,
+    public async Task<ChangeJournalRowChange> UpdateCompareRecordAsync(ProjectTableSchema schema, ProjectRecord? expectedRecord,
         IReadOnlyDictionary<string, object?> keyValues, IReadOnlyDictionary<string, object?> values,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, bool delete = false)
     {
         EnsureWritable();
         if (IsOffline || _writer is not OnlineProjectCrudDataSource online)
             throw new NotSupportedException("Условное сравнение перед записью поддерживается только для Online-источника.");
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, cancellationToken);
-        await online.UpdateCompareRecordAsync(schema, expectedRecord, keyValues, values, linked.Token).ConfigureAwait(false);
+        var change = await online.UpdateCompareRecordAsync(schema, expectedRecord, keyValues, values, linked.Token, delete).ConfigureAwait(false);
         Interlocked.Increment(ref _revision);
+        return change;
     }
 
-    internal async Task ReassignPlcAddressAsync(Configurator.Core.Workspace.AddressOwner owner, string newAddress,
+    internal async Task<ChangeJournalRowChange> ReassignPlcAddressAsync(Configurator.Core.Workspace.AddressOwner owner, string newAddress,
         CancellationToken cancellationToken = default)
     {
         EnsureWritable();
         if (IsOffline || _writer is not OnlineProjectCrudDataSource online || _architecture == null)
             throw new NotSupportedException("Переназначение адреса доступно только для Online-проекта с разрешённой записью.");
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, cancellationToken);
-        await Configurator.PlcAddressReassignment.ExecuteAsync(online.ConnectionString, _architecture, owner, newAddress, linked.Token).ConfigureAwait(false);
+        var change = await Configurator.PlcAddressReassignment.ExecuteAsync(online.ConnectionString, _architecture, owner, newAddress, linked.Token).ConfigureAwait(false);
         Interlocked.Increment(ref _revision);
+        return change;
     }
 
     public async Task<int> DeleteRecordsAsync(string tableName, IReadOnlyList<string> keyColumns, IReadOnlyList<IReadOnlyDictionary<string, object?>> keyValues, CancellationToken cancellationToken = default)

@@ -24,6 +24,11 @@ internal sealed class PlcAddressMap
     private static readonly Regex Separator = new(@"[,;/|\r\n]+|(?<=\d)\s+(?=%?[IQ0-9])",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private readonly Dictionary<(char Area, int Offset), List<string>[]> _bytes = new();
+    private readonly HashSet<(char Area, int Offset, bool Analog)> _signalBytes = new();
+
+    internal bool ContainsSignal(AddressByteRow row, string type) =>
+        row.Area == (type[1] == 'I' ? 'I' : 'Q') && _signalBytes.Contains((row.Area, row.First, type[0] == 'A'));
+
     private readonly Dictionary<string, List<AddressOwner>> _owners = new(StringComparer.Ordinal);
     private readonly SortedDictionary<(char Area, int Start, int Width), int> _spans = new();
 
@@ -72,6 +77,9 @@ internal sealed class PlcAddressMap
                 Issues.Add($"{owner} · {part.Trim()}");
                 continue;
             }
+
+            for (int offset = start; offset < start + size; offset++)
+                _signalBytes.Add((area.Value, offset, analog));
 
             var firstBit = hasBit ? match.Groups["bit"].Value[0] - '0' : 0;
             var endBit = hasBit ? firstBit + 1 : 8;

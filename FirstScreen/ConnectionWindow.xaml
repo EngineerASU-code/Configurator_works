@@ -2,7 +2,7 @@
     <Grid Margin="28">
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
         <TextBlock Grid.Row="0" Text="Подключение к SQL Server" FontSize="22" FontWeight="SemiBold" Foreground="{DynamicResource BrushText}"/>
-        <TextBlock Grid.Row="1" Text="Последние сервер и пользователь подставляются автоматически. После добавления базы пароль сохраняется в профиле Windows в зашифрованном виде. Для входа Windows оставьте логин и пароль пустыми. Для локального SQL Server можно явно указать lpc:ИМЯ_ЭТОГО_КОМПЬЮТЕРА: только для Shared Memory сертификат не проверяется. Для остальных адресов требуется доверенный сертификат." FontSize="11" Foreground="{DynamicResource BrushTextSecondary}" Margin="0,4,0,20" TextWrapping="Wrap"/>
+        <TextBlock Grid.Row="1" Text="Последние сервер и пользователь подставляются автоматически. После добавления базы пароль сохраняется в профиле Windows в зашифрованном виде. Для входа Windows оставьте логин и пароль пустыми. Для локального SQL Server укажите имя компьютера или ИМЯ_КОМПЬЮТЕРА\ЭКЗЕМПЛЯР." FontSize="11" Foreground="{DynamicResource BrushTextSecondary}" Margin="0,4,0,20" TextWrapping="Wrap"/>
         <TextBlock Grid.Row="2" Text="Сервер" FontWeight="SemiBold" Foreground="{DynamicResource BrushText}" Margin="0,0,0,6"/>
         <TextBox Grid.Row="3" x:Name="TxtServer" Margin="0,0,0,14"/>
         <Grid Grid.Row="4" Margin="0,0,0,2">
@@ -37,7 +37,7 @@
         <Grid Grid.Row="7">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="10"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
             <Button Grid.Column="0" x:Name="BtnConnect" Content="Проверить подключение" Style="{StaticResource BtnSecondary}" Click="BtnConnect_Click"/>
-            <Button Grid.Column="2" x:Name="BtnAdd" Content="Добавить базу" Style="{StaticResource BtnPrimary}" Click="BtnAdd_Click" IsEnabled="False" MinWidth="120"/>
+            <Button IsDefault="True" Grid.Column="2" x:Name="BtnAdd" Content="Добавить базу" Style="{StaticResource BtnPrimary}" Click="BtnAdd_Click" IsEnabled="False" MinWidth="120"/>
         </Grid>
         <Border Grid.Row="8" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,1,0,0" Margin="0,18,0,0"/>
         <TextBlock x:Name="LblStatus" Grid.Row="9" Text="Готово" FontSize="11" Foreground="{DynamicResource BrushTextSecondary}" Margin="0,30,0,0" TextWrapping="Wrap"/>

@@ -1,4 +1,4 @@
-﻿#nullable enable
+#nullable enable
 using System;
 using System.Collections.Generic;
 using System.Threading;
@@ -37,15 +37,18 @@ public sealed class ProjectCrudSession : IProjectCrudDataSource, IProjectBatchCr
         return await keyed.CreateRecordAndGetKeyAsync(tableName, values, linked.Token).ConfigureAwait(false);
     }
 
-    public async Task CreateRecordsAsync(string tableName, IReadOnlyList<IReadOnlyDictionary<string, object?>> records, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<IReadOnlyDictionary<string, object?>>> CreateRecordsAsync(string tableName, IReadOnlyList<IReadOnlyDictionary<string, object?>> records, CancellationToken cancellationToken = default)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, cancellationToken);
         ThrowIfDisposed();
-        if (records == null || records.Count == 0) return;
+        if (records == null || records.Count == 0) return Array.Empty<IReadOnlyDictionary<string, object?>>();
         if (_inner is IProjectBatchCrudDataSource batch)
-            await batch.CreateRecordsAsync(tableName, records, linked.Token).ConfigureAwait(false);
+            return await batch.CreateRecordsAsync(tableName, records, linked.Token).ConfigureAwait(false);
         else if (records.Count == 1)
+        {
             await _inner.CreateRecordAsync(tableName, records[0], linked.Token).ConfigureAwait(false);
+            return records;
+        }
         else
             throw new NotSupportedException("Источник данных не поддерживает атомарное пакетное создание записей.");
     }

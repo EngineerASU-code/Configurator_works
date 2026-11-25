@@ -1,21 +1,20 @@
-﻿<Window x:Class="Configurator.DependencyReplacementWindow"
+<Window x:Class="Configurator.DependencyReplacementWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Зависимые записи" Width="820" Height="600" WindowStartupLocation="CenterOwner"
         Background="{DynamicResource BrushBase}">
     <Grid Margin="18">
-        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-        <TextBlock Text="Найдены зависимые записи" FontSize="19" FontWeight="SemiBold" Foreground="{DynamicResource BrushText}"/>
-        <TextBlock Grid.Row="1" Margin="0,5,0,12" Text="Выберите новое значение для зависимых записей. Замены и удаление применятся вместе." TextWrapping="Wrap" Foreground="{DynamicResource BrushTextSecondary}"/>
-        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <TextBlock Margin="0,0,0,12" Text="Найдены зависимые записи" FontSize="19" FontWeight="SemiBold" Foreground="{DynamicResource BrushText}"/>
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
             <StackPanel>
                 <StackPanel x:Name="GlobalGroupsHost" Margin="0,0,0,10"/>
                 <StackPanel x:Name="ItemsHost"/>
             </StackPanel>
         </ScrollViewer>
-        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
             <Button Content="Отмена" Width="100" Height="32" Margin="0,0,8,0" Style="{StaticResource BtnSecondary}" Click="Cancel_Click"/>
-            <Button Content="Применить замены и удалить" Width="230" Height="32" Style="{StaticResource BtnPrimary}" Click="Apply_Click"/>
+            <Button IsDefault="True" x:Name="ApplyButton" Content="Применить замены и удалить" Width="230" Height="32" Style="{StaticResource BtnPrimary}" Click="Apply_Click"/>
         </StackPanel>
     </Grid>
 </Window>

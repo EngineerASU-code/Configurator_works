@@ -74,6 +74,47 @@ internal sealed class SavedSqlQueryStore(string connectionString, string databas
         }
     }
 
+    internal const string JournalKind = "SavedSqlQueryV1";
+    internal sealed record Revision(int Id, string Name, string Sql, string PreviousName, string PreviousSql);
+
+    internal static Revision ReadRevision(ChangeJournalEntry entry)
+    {
+        if (entry.RestoreKind != JournalKind || entry.ProjectType != "Online" ||
+            entry.OperationKind is not (ChangeJournalOperationKind.Insert or ChangeJournalOperationKind.Update)) return null;
+        try
+        {
+            var value = System.Text.Json.JsonSerializer.Deserialize<Revision>(entry.RestorePayloadJson);
+            return value != null && !string.IsNullOrWhiteSpace(value.Name) && value.Sql != null &&
+                (entry.OperationKind == ChangeJournalOperationKind.Insert
+                    ? value.PreviousName == null && value.PreviousSql == null
+                    : value.PreviousName != null && value.PreviousSql != null) ? value : null;
+        }
+        catch (System.Text.Json.JsonException) { return null; }
+    }
+
+    internal async Task RestoreAsync(ChangeJournalEntry entry, System.Threading.CancellationToken ct)
+    {
+        var value = ReadRevision(entry) ?? throw new InvalidOperationException("Неверные данные журнала библиотеки SQL.");
+        if (entry.OperationKind == ChangeJournalOperationKind.Update)
+        {
+            await SaveAsync(value.Id, value.PreviousName, value.PreviousSql, value.Name, value.Sql);
+            return;
+        }
+
+        using var connection = await OpenAsync();
+        using var command = new SqlCommand("""
+            DELETE FROM dbo.__ConfiguratorSavedQueries WHERE Id=@id AND
+                CONVERT(varbinary(max),Name)=CONVERT(varbinary(max),@name) AND
+                CONVERT(varbinary(max),SqlText)=CONVERT(varbinary(max),@sql);
+            SELECT @@ROWCOUNT;
+            """, connection);
+        command.Parameters.Add("@id", SqlDbType.Int).Value = value.Id;
+        command.Parameters.Add("@name", SqlDbType.NVarChar, 128).Value = value.Name;
+        command.Parameters.Add("@sql", SqlDbType.NVarChar, -1).Value = value.Sql;
+        if ((int)await command.ExecuteScalarAsync(ct) != 1)
+            throw new InvalidOperationException("Сохранённый запрос уже изменён или удалён.");
+    }
+
     private async Task<SqlConnection> OpenAsync()
     {
         var connection = SqlProviderGuard.CreateConnection(connectionString);

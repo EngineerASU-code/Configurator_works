@@ -15,11 +15,13 @@ public sealed class DeletionProtectionService
 {
     private readonly string _connectionString;
     private readonly DatabaseSchema _schema;
+    private readonly LookupOptionsService _lookups;
 
     public DeletionProtectionService(string connectionString, DatabaseSchema schema)
     {
         _connectionString = connectionString ?? throw new ArgumentNullException(nameof(connectionString));
         _schema = schema ?? throw new ArgumentNullException(nameof(schema));
+        _lookups = new LookupOptionsService(new DatabaseService(connectionString));
     }
 
     public async Task<DeletionPlan> BuildPlanAsync(DeletionRequest request, CancellationToken cancellationToken = default)
@@ -57,7 +59,7 @@ public sealed class DeletionProtectionService
 
             // Self-referencing relations are checked too; a self-link must not silently
             // bypass dependency protection.
-            var hits = await FindDependentsAsync(relation, request.Key, cancellationToken);
+            var hits = await FindDependentsAsync(relation, request, targetTable, cancellationToken);
             if (hits.Count == 0) continue;
 
             plan.Dependencies.AddRange(hits);
@@ -231,8 +233,11 @@ public sealed class DeletionProtectionService
         });
     }
 
-    private async Task<List<DependencyHit>> FindDependentsAsync(DatabaseRelation relation, IReadOnlyDictionary<string, object> targetKey, CancellationToken ct)
+    private async Task<List<DependencyHit>> FindDependentsAsync(DatabaseRelation relation, DeletionRequest request, DatabaseTable targetTable, CancellationToken ct)
     {
+        var targetKey = GetDisplayKey(targetTable, request.Key, relation.TargetColumns);
+        var targetName = DependencyRecordLabel.Name(request.ExpectedValues);
+        if (targetName.Length == 0) targetName = DependencyRecordLabel.Name(request.Key);
         if (relation.TargetColumns.Count == 0 || relation.TargetColumns.Count != relation.SourceColumns.Count)
             throw new InvalidOperationException($"Не удалось проверить зависимость {relation.SourceTable} → {relation.TargetTable}: столбцы связи не сопоставлены.");
         await using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
@@ -241,7 +246,7 @@ public sealed class DeletionProtectionService
         await using var command = new SqlCommand { Connection = connection };
         for (var i = 0; i < relation.TargetColumns.Count; i++)
         {
-            if (!targetKey.TryGetValue(relation.TargetColumns[i], out var value))
+            if (!request.Key.TryGetValue(relation.TargetColumns[i], out var value))
                 throw new InvalidOperationException($"Не удалось проверить зависимость {relation.SourceTable} → {relation.TargetTable}: отсутствует значение ключа «{relation.TargetColumns[i]}».");
             var p = "@p" + i;
             where.Add($"{QuoteColumn(relation.SourceTable, relation.SourceColumns[i])} = {p}");
@@ -281,12 +286,13 @@ public sealed class DeletionProtectionService
                 .ToDictionary(column => column, column => reader[column] == DBNull.Value ? null : reader[column], StringComparer.OrdinalIgnoreCase);
             var sourceValues = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
             for (int i = 0; i < reader.FieldCount; i++) sourceValues[reader.GetName(i)] = reader.IsDBNull(i) ? DBNull.Value : reader.GetValue(i);
-            hits.Add(new DependencyHit { SourceTable = relation.SourceTable, SourceKey = sourceKey, SourceValues = sourceValues, SourceReferenceValues = sourceReferenceValues, SourceColumnDescription = string.Join(", ", relation.SourceColumns), TargetTable = relation.TargetTable, Relation = relation });
+            hits.Add(new DependencyHit { SourceTable = relation.SourceTable, SourceKey = sourceKey, SourceValues = sourceValues, SourceReferenceValues = sourceReferenceValues, SourceColumnDescription = string.Join(", ", relation.SourceColumns), TargetTable = relation.TargetTable, TargetName = targetName, TargetKey = targetKey, Relation = relation });
         }
         return hits;
     }
 
-    public async Task<List<ReplacementCandidate>> GetReplacementCandidatesAsync(DependencyHit dependency, IReadOnlyDictionary<string, object> deletedTargetKey, CancellationToken ct = default)
+    public async Task<List<ReplacementCandidate>> GetReplacementCandidatesAsync(DependencyHit dependency, IReadOnlyDictionary<string, object> deletedTargetKey, CancellationToken ct = default,
+        IReadOnlyList<IReadOnlyDictionary<string, object>> excludedTargets = null)
     {
         if (dependency?.Relation == null || dependency.Relation.TargetColumns.Count == 0 ||
             dependency.Relation.TargetColumns.Count != dependency.Relation.SourceColumns.Count) return new List<ReplacementCandidate>();
@@ -302,11 +308,10 @@ public sealed class DeletionProtectionService
         var sourceRow = await LoadSourceRowAsync(connection, dependency, sourceTable, ct);
         if (sourceRow.Count == 0) return new List<ReplacementCandidate>();
 
-        var targetColumns = _schema.FindTable(dependency.TargetTable)?.Columns ?? new List<DatabaseColumn>();
-        var displayColumn = targetColumns.Select(c => c.Name).FirstOrDefault(n => n.Equals("NameL1", StringComparison.OrdinalIgnoreCase))
-            ?? targetColumns.Select(c => c.Name).FirstOrDefault(n => n.Equals("Name_L1", StringComparison.OrdinalIgnoreCase))
-            ?? targetColumns.Select(c => c.Name).FirstOrDefault(n => n.Equals("Name", StringComparison.OrdinalIgnoreCase))
-            ?? targetColumns.Select(c => c.Name).FirstOrDefault(n => n.Equals("DescriptionL1", StringComparison.OrdinalIgnoreCase));
+        var plcLabels = dependency.Relation.SourceColumns.Contains("PLC", StringComparer.OrdinalIgnoreCase)
+            ? ReplacementCandidate.IndexPlcLabels(await _lookups.TryGetAsync(null, dependency.SourceTable, "PLC", ct))
+            : null;
+        var targetTable = _schema.FindTable(dependency.TargetTable);
         var sql = $"SELECT * FROM {QuoteTable(dependency.TargetTable)}";
         var candidateValues = new List<(List<object> Values, string DisplayName, Dictionary<string, object> Snapshot)>();
         await using (var command = new SqlCommand(sql, connection))
@@ -318,10 +323,9 @@ public sealed class DeletionProtectionService
                 for (int i = 0; i < reader.FieldCount; i++) snapshot[reader.GetName(i)] = reader.IsDBNull(i) ? DBNull.Value : reader.GetValue(i);
                 var values = columns.Select(column => snapshot[column] == DBNull.Value ? null : snapshot[column]).ToList();
                 bool skip = columns.Select((column, index) => deletedTargetKey.TryGetValue(column, out var oldValue) && ValuesEqual(oldValue, values[index])).All(equal => equal);
-                if (!skip)
+                if (!skip && !(excludedTargets?.Any(target => columns.All(column => target.TryGetValue(column, out var deletedValue) && ValuesEqual(deletedValue, snapshot[column]))) ?? false))
                 {
-                    var display = !string.IsNullOrWhiteSpace(displayColumn) && snapshot.TryGetValue(displayColumn, out var value) && value != DBNull.Value ? Convert.ToString(value) ?? "" : "";
-                    candidateValues.Add((values, display, snapshot));
+                    candidateValues.Add((values, DependencyRecordLabel.Name(snapshot), snapshot));
                 }
             }
         }
@@ -333,17 +337,13 @@ public sealed class DeletionProtectionService
         var result = new List<ReplacementCandidate>();
         foreach (var candidateValue in candidateValues)
         {
-            var values = candidateValue.Values;
-            // В окне замены показываем человекочитаемое имя справочной записи;
-            // технические ключи остаются в Values и используются при UPDATE.
-            var displayValue = !string.IsNullOrWhiteSpace(candidateValue.DisplayName)
-                ? candidateValue.DisplayName
-                : string.Join(" · ", values.Select(v => ShortReplacementValue(v)));
             var candidate = new ReplacementCandidate
             {
-                Values = values,
+                Values = candidateValue.Values,
+                PlcLabels = plcLabels,
                 TargetValues = candidateValue.Snapshot,
-                Display = displayValue
+                Display = candidateValue.DisplayName,
+                DisplayKey = GetDisplayKey(targetTable, candidateValue.Snapshot, columns)
             };
             await AnalyzeCandidateConflictsAsync(connection, dependency, sourceTable, sourceRow, candidate, ct);
             result.Add(candidate);
@@ -453,14 +453,13 @@ public sealed class DeletionProtectionService
         return int.TryParse(Convert.ToString(value), out result);
     }
 
-    private static string ShortReplacementValue(object value)
+    private static IReadOnlyDictionary<string, object> GetDisplayKey(DatabaseTable table,
+        IReadOnlyDictionary<string, object> values, IReadOnlyList<string> linkColumns)
     {
-        if (value == null || value == DBNull.Value) return "NULL";
-        var text = Convert.ToString(value) ?? "";
-        // UI-only shortening: keep the real value in Values, but display the
-        // terminal name when a legacy database stores a qualified object path.
-        int dot = text.LastIndexOf('.');
-        return dot >= 0 && dot < text.Length - 1 ? text[(dot + 1)..] : text;
+        var keyColumns = table?.Keys.FirstOrDefault(key => key.IsPrimary)?.Columns
+            ?? table?.Keys.FirstOrDefault(key => key.IsUnique)?.Columns;
+        return (keyColumns != null && keyColumns.Count > 0 && keyColumns.All(values.ContainsKey) ? keyColumns : linkColumns)
+            .ToDictionary(column => column, column => values[column], StringComparer.OrdinalIgnoreCase);
     }
 
     private static bool ValuesEqual(object a, object b)
@@ -606,9 +605,15 @@ public sealed class DeletionProtectionService
 
 public sealed class ReplacementCandidate
 {
+    internal IReadOnlyDictionary<string, string> PlcLabels { get; init; }
+
+    internal static Dictionary<string, string> IndexPlcLabels(IEnumerable<LookupOption> options) =>
+        options.GroupBy(option => option.Key, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First().Display, StringComparer.OrdinalIgnoreCase);
     public IReadOnlyList<object> Values { get; init; } = Array.Empty<object>();
     public IReadOnlyDictionary<string, object> TargetValues { get; init; } = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
     public string Display { get; init; } = "";
+    internal IReadOnlyDictionary<string, object> DisplayKey { get; init; } = new Dictionary<string, object>();
     public bool IsConflict { get; set; }
     public string ConflictDescription { get; set; } = "";
     public IReadOnlyDictionary<string, object> AutoAssignments { get; set; } = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);

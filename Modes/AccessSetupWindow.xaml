@@ -23,6 +23,6 @@
             <PasswordBox x:Name="ConfirmPasswordBox" Height="42" Padding="9,0" VerticalContentAlignment="Center"/>
             <TextBlock x:Name="ErrorText" Grid.Row="1" Margin="0,8,0,0" Foreground="{DynamicResource BrushAccent}" TextWrapping="Wrap"/>
         </Grid>
-        <Button Grid.Row="8" Content="Сохранить пароль и продолжить" Width="250" Height="44" HorizontalAlignment="Right" Style="{StaticResource BtnPrimary}" Click="Save_Click"/>
+        <Button IsDefault="True" Grid.Row="8" Content="Сохранить пароль и продолжить" Width="250" Height="44" HorizontalAlignment="Right" Style="{StaticResource BtnPrimary}" Click="Save_Click"/>
     </Grid>
 </Window>

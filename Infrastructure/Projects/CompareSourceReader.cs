@@ -16,6 +16,11 @@ public static class CompareSourceReader
         var fullPath = Path.GetFullPath(path);
         var (project, fingerprint, hasWriter) = await new ProjectPackageService().OpenForCompareAsync(fullPath, cancellationToken)
             .ConfigureAwait(false);
+        return CreateOfflineSource(fullPath, project, fingerprint, allowWrite && !hasWriter);
+    }
+
+    internal static CompareSource CreateOfflineSource(string fullPath, ConfiguratorProject project, string fingerprint, bool allowWrite)
+    {
         DatabaseSchema? schema = null;
         string? issue = null;
         try
@@ -30,7 +35,7 @@ public static class CompareSourceReader
         }
 
         var reader = new OfflineProjectDataSource(project);
-        bool writable = allowWrite && !hasWriter &&
+        bool writable = allowWrite &&
             (File.GetAttributes(fullPath) & (FileAttributes.ReadOnly | FileAttributes.ReparsePoint)) == 0;
         var workspace = new ProjectWorkspace(reader,
             architecture: new ProjectArchitectureDataSource(project, strictReads: true), allowWrite: writable);

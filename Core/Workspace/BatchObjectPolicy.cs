@@ -25,12 +25,14 @@ public static class BatchObjectPolicy
     {
         var reserved = NormalizeRecordKeys((existingRecordKeys ?? Array.Empty<string>())
             .Concat(pendingRecordKeys ?? Array.Empty<string>()));
-        var used = reserved.Select(k => k.Split('|', 2))
-            .Where(p => p.Length == 2 && p[0].Equals(plcKey ?? string.Empty, StringComparison.OrdinalIgnoreCase))
-            .Select(p => int.TryParse(p[1], out var n) ? n : 0).ToList();
-        int next = used.Count == 0 ? 1 : used.Max() + 1;
-        while (reserved.Contains(RecordKey(plcKey ?? string.Empty, next.ToString()))) next++;
-        return next;
+        var suggestion = new ScopedRecordSuggestion();
+        foreach (var key in reserved)
+        {
+            var parts = key.Split('|', 2);
+            if (parts.Length == 2 && parts[0].Equals(plcKey?.Trim() ?? string.Empty, StringComparison.OrdinalIgnoreCase))
+                suggestion.Add(parts[1]);
+        }
+        return suggestion.GetValue();
     }
 
     public static IReadOnlyList<string> ValidateRows(

@@ -45,11 +45,11 @@ public sealed class OnlineProjectCrudDataSource : IProjectCrudDataSource, IProje
             .ConfigureAwait(false);
     }
 
-    public async Task CreateRecordsAsync(string tableName, IReadOnlyList<IReadOnlyDictionary<string, object?>> records, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<IReadOnlyDictionary<string, object?>>> CreateRecordsAsync(string tableName, IReadOnlyList<IReadOnlyDictionary<string, object?>> records, CancellationToken cancellationToken = default)
     {
         ProjectWriteGuard.EnsureDataTableWritable(tableName);
         cancellationToken.ThrowIfCancellationRequested();
-        if (records == null || records.Count == 0) return;
+        if (records == null || records.Count == 0) return Array.Empty<IReadOnlyDictionary<string, object?>>();
         if (string.IsNullOrWhiteSpace(tableName)) throw new ArgumentException("Не задана таблица.", nameof(tableName));
         if (records.Any(r => r == null || r.Count == 0)) throw new InvalidOperationException("Пакет содержит пустую запись.");
         var columns = records[0].Keys.ToList();
@@ -59,7 +59,7 @@ public sealed class OnlineProjectCrudDataSource : IProjectCrudDataSource, IProje
         var quotedTable = QuoteTable(tableName);
         var quotedColumns = columns.Select(QuoteIdentifier).ToList();
         var parameterNames = columns.Select((_, i) => $"@p{i}").ToList();
-        var sql = $"INSERT INTO {quotedTable} ({string.Join(", ", quotedColumns)}) VALUES ({string.Join(", ", parameterNames)});";
+        var sql = $"INSERT INTO {quotedTable} ({string.Join(", ", quotedColumns)}) OUTPUT INSERTED.* INTO #created VALUES ({string.Join(", ", parameterNames)});";
 
         using var connection = SqlProviderGuard.CreateConnection(_connectionString);
         SqlProviderGuard.EnsureSqlAllowed("OnlineProjectCrudDataSource.CreateRecordsAsync");
@@ -67,6 +67,9 @@ public sealed class OnlineProjectCrudDataSource : IProjectCrudDataSource, IProje
         using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            var projection = await DatabaseService.JournalSnapshotProjectionAsync(connection, transaction, quotedTable, cancellationToken);
+            using var prepare = new SqlCommand($"SELECT TOP(0) {projection} INTO #created FROM {quotedTable} UNION ALL SELECT TOP(0) {projection} FROM {quotedTable};", connection, transaction);
+            await prepare.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             foreach (var record in records)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -78,7 +81,20 @@ public sealed class OnlineProjectCrudDataSource : IProjectCrudDataSource, IProje
                 }
                 await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
+            var snapshots = new List<IReadOnlyDictionary<string, object?>>(records.Count);
+            using var capture = new SqlCommand("SELECT * FROM #created", connection, transaction);
+            await using (var reader = await capture.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+            {
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    var values = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                    for (var i = 0; i < reader.FieldCount; i++) values.Add(reader.GetName(i), reader.GetValue(i));
+                    snapshots.Add(values);
+                }
+            }
+            if (snapshots.Count != records.Count) throw new InvalidOperationException("Количество созданных объектов отличается от ожидаемого.");
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return snapshots;
         }
         catch
         {
@@ -117,18 +133,18 @@ public sealed class OnlineProjectCrudDataSource : IProjectCrudDataSource, IProje
         await _database.UpdateRowAsync(tableName, keyColumns.ToList(), ToMutableDictionary(keyValues), ToMutableDictionary(values), cancellationToken).ConfigureAwait(false);
     }
 
-    internal Task UpdateCompareRecordAsync(ProjectTableSchema schema, ProjectRecord? expectedRecord,
+    internal Task<ChangeJournalRowChange> UpdateCompareRecordAsync(ProjectTableSchema schema, ProjectRecord? expectedRecord,
         IReadOnlyDictionary<string, object?> keyValues, IReadOnlyDictionary<string, object?> values,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, bool delete = false)
     {
         ArgumentNullException.ThrowIfNull(schema);
         if (keyValues == null || schema.KeyColumns.Any(key => !keyValues.ContainsKey(key)))
             throw new InvalidOperationException("Не заданы все значения стабильного ключа.");
-        if (values == null || values.Count == 0)
+        if (values == null || (!delete && values.Count == 0))
             throw new InvalidOperationException("Нет выбранных полей для переноса.");
 
         return _database.UpdateCompareRowAsync(schema, expectedRecord, ToMutableDictionary(keyValues),
-            ToMutableDictionary(values), cancellationToken);
+            ToMutableDictionary(values), cancellationToken, delete);
     }
 
     public Task<int> DeleteRecordsAsync(string tableName, IReadOnlyList<string> keyColumns,

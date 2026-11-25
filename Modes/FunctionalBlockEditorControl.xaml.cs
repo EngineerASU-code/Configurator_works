@@ -3,6 +3,7 @@ using System.IO;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using Configurator.Core.Projects;
 
 namespace Configurator;
@@ -28,7 +29,7 @@ public partial class FunctionalBlockEditorControl : UserControl
         UpdatePermissions();
     }
 
-    public event EventHandler? ProjectDataChanged;
+    public event Action<string>? ProjectDataChanged;
 
     public void ConfigureOffline(ConfiguratorProject project) => Configure(new FunctionalBlockStore(project));
 
@@ -108,7 +109,7 @@ public partial class FunctionalBlockEditorControl : UserControl
         string name = GetUniqueCopyName(_selected.Name);
         var copy = _selected.Copy(name);
         _blocks.Add(copy);
-        if (!Persist())
+        if (!Persist($"Дублирован блок «{name}»"))
         {
             _blocks.Remove(copy);
             return;
@@ -125,6 +126,15 @@ public partial class FunctionalBlockEditorControl : UserControl
         StatusText.Text = $"Создана копия «{copy.Name}».";
     }
 
+    private void BlocksList_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Delete || Keyboard.Modifiers != ModifierKeys.None ||
+            !DeleteButton.IsEnabled || !ReferenceEquals(BlocksList.SelectedItem, _selected)) return;
+
+        e.Handled = true;
+        if (!e.IsRepeat) Delete_Click(sender, e);
+    }
+
     private void Delete_Click(object sender, RoutedEventArgs e)
     {
         if (_selected == null || _isNew || !UserAuthorizationService.Has(Permission.Mode4Manage) || !ConfirmLeaveEditor()) return;
@@ -132,7 +142,7 @@ public partial class FunctionalBlockEditorControl : UserControl
                 MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         var deleted = _selected;
         _blocks.Remove(deleted);
-        if (!Persist())
+        if (!Persist($"Удалён блок «{deleted.Name}»"))
         {
             _blocks.Add(deleted);
             return;
@@ -171,7 +181,7 @@ public partial class FunctionalBlockEditorControl : UserControl
         }
 
         if (!SaveWithRollback(_blocks, _selected, _isNew, name, DescriptionBox.Text,
-                InterfaceBox.Text, SourceBox.Text, Persist)) return false;
+                InterfaceBox.Text, SourceBox.Text, () => Persist(_isNew ? $"Добавлен блок «{name}»" : $"Изменён блок «{name}»"))) return false;
         _isNew = false;
         _dirty = false;
         UpdatePermissions();
@@ -212,12 +222,12 @@ public partial class FunctionalBlockEditorControl : UserControl
         }
     }
 
-    private bool Persist()
+    private bool Persist(string description)
     {
         try
         {
             _store!.Save(_blocks);
-            ProjectDataChanged?.Invoke(this, EventArgs.Empty);
+            ProjectDataChanged?.Invoke(description);
             return true;
         }
         catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)

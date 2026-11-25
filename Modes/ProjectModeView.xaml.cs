@@ -12,6 +12,7 @@ using Configurator.Application.Architecture;
 using Configurator.Core.Architecture;
 using Configurator.Infrastructure.Database;
 using Configurator.Core.Projects;
+using Configurator.Core.Workspace;
 
 namespace Configurator;
 
@@ -47,6 +48,7 @@ public partial class ProjectModeView : UserControl
     private LookupOptionsService _onlineLookupOptionsService;
     private string _onlineLookupDatabaseKey = string.Empty;
     private int _workspaceGeneration;
+    private bool _deletingSelection;
 
     public event EventHandler OfflineProjectChanged;
     public event Action<ChangeJournalEntry> ChangeJournalRequested;
@@ -58,12 +60,18 @@ public partial class ProjectModeView : UserControl
         InitializeProgramTools();
         ApplyAuthorizationUi();
         UserAuthorizationService.Changed += (_, __) => Dispatcher.Invoke(ApplyAuthorizationUi);
+        PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key != System.Windows.Input.Key.N || System.Windows.Input.Keyboard.Modifiers != System.Windows.Input.ModifierKeys.Control ||
+                !ObjectList.IsVisible || !BtnNewObject.IsEnabled) return;
+            e.Handled = true;
+            if (!e.IsRepeat) NewObject_Click(this, e);
+        };
         ObjectList.ContextMenu = BuildObjectContextMenu();
         ObjectList.PreviewMouseRightButtonDown += ObjectList_PreviewMouseRightButtonDown;
         ObjectList.MouseDoubleClick += ObjectList_MouseDoubleClick;
         ObjectList.PreviewKeyDown += ObjectList_PreviewKeyDown;
         BtnDelete.IsEnabled = false;
-        BtnDuplicate.IsEnabled = false;
         BtnSave.IsEnabled = false;
         InitializeEmptyFilterLists();
         RefreshClasses();
@@ -136,8 +144,8 @@ public partial class ProjectModeView : UserControl
         TxtObjectCount.Text = string.Empty;
         TxtStatus.Text = "Проект не выбран";
         ClearObjectEditor();
-        BtnNewObject.IsEnabled = BtnNewObjectsBatch.IsEnabled = BtnConfigDelete.IsEnabled = false;
-        BtnDelete.IsEnabled = BtnDuplicate.IsEnabled = BtnSave.IsEnabled = false;
+        BtnNewObject.IsEnabled = BtnConfigDelete.IsEnabled = false;
+        BtnDelete.IsEnabled = BtnSave.IsEnabled = false;
     }
 
     private void ClearProjectViewForSourceChange()
@@ -151,8 +159,8 @@ public partial class ProjectModeView : UserControl
         ObjectList.ItemsSource = Array.Empty<ObjectItem>();
         TxtObjectCount.Text = string.Empty;
         ClearObjectEditor();
-        BtnNewObject.IsEnabled = BtnNewObjectsBatch.IsEnabled = BtnConfigDelete.IsEnabled = false;
-        BtnDelete.IsEnabled = BtnDuplicate.IsEnabled = BtnSave.IsEnabled = false;
+        BtnNewObject.IsEnabled = BtnConfigDelete.IsEnabled = false;
+        BtnDelete.IsEnabled = BtnSave.IsEnabled = false;
     }
 
     private void EnsureOfflineClassesMapToSnapshotTables(ConfiguratorProject project)
@@ -424,7 +432,7 @@ public partial class ProjectModeView : UserControl
             SessionTestLog.Trace("РЕЖИМ3-ЗАГРУЗКА", $"EARLY RETURN: no connection/database; connectionPresent={_connection != null}, database='{_selectedDatabase}'");
             configureTimer.Stop();
             SessionTestLog.Trace("РЕЖИМ3-ПРОИЗВОДИТЕЛЬНОСТЬ", $"online configure-total-ms={configureTimer.ElapsedMilliseconds}; result=no-project");
-            BtnNewObject.IsEnabled = BtnNewObjectsBatch.IsEnabled = BtnConfigDelete.IsEnabled = false;
+            BtnNewObject.IsEnabled = BtnConfigDelete.IsEnabled = false;
             return;
         }
         SessionTestLog.Trace("БД-ПОДКЛЮЧЕНИЕ", $"Testing database connection for '{_selectedDatabase}'");
@@ -448,7 +456,7 @@ public partial class ProjectModeView : UserControl
             SessionTestLog.Trace("РЕЖИМ3-ПРОИЗВОДИТЕЛЬНОСТЬ", $"online connection-test-ms={connectionTimer.ElapsedMilliseconds}; result=unavailable");
             configureTimer.Stop();
             SessionTestLog.Trace("РЕЖИМ3-ПРОИЗВОДИТЕЛЬНОСТЬ", $"online configure-total-ms={configureTimer.ElapsedMilliseconds}; result=unavailable");
-            BtnNewObject.IsEnabled = BtnNewObjectsBatch.IsEnabled = BtnConfigDelete.IsEnabled = false;
+            BtnNewObject.IsEnabled = BtnConfigDelete.IsEnabled = false;
             return;
         }
         connectionTimer.Stop();
@@ -627,9 +635,9 @@ public partial class ProjectModeView : UserControl
             TxtClassTitle.Text = "Элементы проекта";
             TxtObjectCount.Text = $"{items.Count} значений";
             BtnNewObject.Content = "＋  Добавить"; BtnNewObject.IsEnabled = UserAuthorizationService.Has(Permission.ManageObjects);
-            BtnNewObjectsBatch.Visibility = Visibility.Collapsed; BtnConfigDelete.Visibility = Visibility.Visible;
+            BtnConfigDelete.Visibility = Visibility.Visible;
             BtnConfigDelete.IsEnabled = false;
-            BtnDuplicate.Visibility = BtnDelete.Visibility = Visibility.Collapsed;
+            BtnDelete.Visibility = Visibility.Collapsed;
             BtnSave.Visibility = Visibility.Visible;
             BtnObjectSearch.IsEnabled = BtnObjectFilter.IsEnabled = false;
             TxtStatus.Text = $"Offline · справочник {kind}: {items.Count} значений";
@@ -646,14 +654,13 @@ public partial class ProjectModeView : UserControl
         _configurationDisplayColumn = "";
         ObjectList.ItemsSource = null;
         ClearObjectEditor();
-        BtnNewObjectsBatch.Visibility = Visibility.Collapsed;
         BtnNewObject.Content = "＋  Добавить";
         BtnConfigDelete.Visibility = Visibility.Visible;
         BtnConfigDelete.IsEnabled = false;
         TxtClassTitle.Text = "Элементы проекта";
         TxtObjectCount.Text = "";
         BtnNewObject.IsEnabled = UserAuthorizationService.Has(Permission.ManageObjects);
-        BtnDuplicate.Visibility = BtnDelete.Visibility = Visibility.Collapsed;
+        BtnDelete.Visibility = Visibility.Collapsed;
         BtnSave.Visibility = Visibility.Visible;
         BtnObjectSearch.IsEnabled = BtnObjectFilter.IsEnabled = false;
 
@@ -817,7 +824,7 @@ public partial class ProjectModeView : UserControl
             TxtObjectCount.Text = string.Empty;
             TxtClassTitle.Text = string.Empty;
             TxtStatus.Text = "Выберите конфигурацию";
-            BtnNewObject.IsEnabled = BtnNewObjectsBatch.IsEnabled = BtnDelete.IsEnabled = BtnDuplicate.IsEnabled = BtnSave.IsEnabled = false;
+            BtnNewObject.IsEnabled = BtnDelete.IsEnabled = BtnSave.IsEnabled = false;
             BtnObjectSearch.IsEnabled = BtnObjectFilter.IsEnabled = false;
             return;
         }
@@ -832,12 +839,11 @@ public partial class ProjectModeView : UserControl
         SessionTestLog.Trace("РЕЖИМ3-КЛАСС", $"Selected class='{cls.Name}', classNumber={cls.ClassNumber}, primaryStorage='{cls.PrimaryStorage?.TableName ?? "<null>"}', fieldCount={cls.Fields?.Count ?? 0}, database='{_selectedDatabase}'");
         _configurationKind = ConfigurationKind.Class;
         UpdateObjectFilterIndicator();
-        BtnDuplicate.Visibility = BtnDelete.Visibility = BtnSave.Visibility = Visibility.Visible;
+        BtnDelete.Visibility = BtnSave.Visibility = Visibility.Visible;
         BtnObjectSearch.IsEnabled = BtnObjectFilter.IsEnabled = true;
         _selectedConfigurationItem = new ConfigurationItem(ConfigurationKind.Class, cls.Name, cls.Name, false, false, cls);
         BtnConfigDelete.IsEnabled = false;
         BtnConfigDelete.Visibility = Visibility.Collapsed;
-        BtnNewObjectsBatch.Visibility = Visibility.Visible;
         await LoadActualClassFieldsAsync();
         TxtClassTitle.Text = cls.Name;
         BtnNewObject.IsEnabled = !string.IsNullOrWhiteSpace(cls.PrimaryStorage?.TableName) && !string.IsNullOrWhiteSpace(_selectedDatabase);
@@ -1023,9 +1029,17 @@ public partial class ProjectModeView : UserControl
 
     private void ObjectList_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
-        if (e.Key != System.Windows.Input.Key.Delete || ObjectList.SelectedItems.Count == 0) return;
-        DeleteObject_Click(sender, new RoutedEventArgs());
-        e.Handled = true;
+        if (System.Windows.Input.Keyboard.Modifiers == System.Windows.Input.ModifierKeys.Control &&
+            e.Key is System.Windows.Input.Key.C or System.Windows.Input.Key.V && _configurationKind == ConfigurationKind.Class)
+        {
+            e.Handled = true;
+            if (e.IsRepeat) return;
+            if (e.Key == System.Windows.Input.Key.C) CopySelectedObject();
+            else PasteCopiedObject();
+            return;
+        }
+        var deleteButton = _configurationKind == ConfigurationKind.Class ? BtnDelete : BtnConfigDelete;
+        Mode3DeleteShortcut.Handle(e, deleteButton);
     }
 
     private void ObjectList_PreviewMouseRightButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
@@ -1033,8 +1047,8 @@ public partial class ProjectModeView : UserControl
         var container = ItemsControl.ContainerFromElement(ObjectList, e.OriginalSource as DependencyObject) as ListBoxItem;
         if (container?.DataContext is ObjectItem item)
         {
-            ObjectList.SelectedItems.Clear();
-            ObjectList.SelectedItem = item;
+            if (!container.IsSelected) ObjectList.SelectedItem = item;
+            e.Handled = true;
         }
     }
 
@@ -1043,6 +1057,25 @@ public partial class ProjectModeView : UserControl
         var menu = new ContextMenu();
         var edit = new MenuItem { Header = "Открыть объект" }; edit.Click += (s, e) => BuildObjectEditor();
         menu.Items.Add(edit);
+        menu.Opened += (_, _) =>
+        {
+            menu.Items.Clear();
+            bool classMode = _configurationKind == ConfigurationKind.Class;
+            bool single = classMode && ObjectList.SelectedItems.Count == 1 && _selectedRow != null;
+            void Add(string title, bool enabled, RoutedEventHandler action)
+            {
+                var item = new MenuItem { Header = title, IsEnabled = enabled };
+                item.Click += action;
+                menu.Items.Add(item);
+            }
+            Add("Добавить", BtnNewObject.IsEnabled, NewObject_Click);
+            Add("Дублировать", single && BtnNewObject.IsEnabled, async (_, _) => await DuplicateObjectAsync(_selectedRow));
+            Add("Копировать", single, (_, _) => CopySelectedObject());
+            Add("Вставить", classMode && BtnNewObject.IsEnabled && _copiedObject.HasValue, (_, _) => PasteCopiedObject());
+            var delete = classMode ? BtnDelete : BtnConfigDelete;
+            Add("Удалить", delete.IsVisible && delete.IsEnabled, (_, e) => DeleteSelection_Click(delete, e));
+            menu.Items.Add(edit);
+        };
         return menu;
     }
 
@@ -1062,7 +1095,7 @@ public partial class ProjectModeView : UserControl
         var keyValues = keyColumns.ToDictionary(k => k, k => (object?)(_selectedRow.Table.Columns.Contains(k) ? _selectedRow[k] : null), StringComparer.OrdinalIgnoreCase);
         var updateValues = dialog.Values.Where(pair => !keyColumns.Contains(pair.Key, StringComparer.OrdinalIgnoreCase))
             .ToDictionary(pair => pair.Key, pair => (object?)pair.Value, StringComparer.OrdinalIgnoreCase);
-        await RequireCrudSource().UpdateRecordAsync(_configurationTableName, keyColumns, keyValues, updateValues);
+        await UpdateAndJournalAsync(_configurationTableName, keyColumns, keyValues, updateValues, _selectedRow, "Изменено значение справочника");
         await LoadConfigurationValuesAsync(_configurationKind);
         TxtStatus.Text = "Значение справочника изменено в локальном проекте";
     }
@@ -1096,7 +1129,7 @@ public partial class ProjectModeView : UserControl
         {
             ClearObjectEditor();
             BtnConfigDelete.IsEnabled = selected.Count == 1 && UserAuthorizationService.Has(Permission.ManageObjects);
-            BtnDuplicate.Visibility = BtnDelete.Visibility = Visibility.Collapsed;
+            BtnDelete.Visibility = Visibility.Collapsed;
             BtnSave.Visibility = Visibility.Visible;
             if (selected.Count == 1)
             {
@@ -1128,7 +1161,6 @@ public partial class ProjectModeView : UserControl
         _selectedRow = _objects.Rows[item.RowIndex];
         BuildObjectEditor();
         BtnDelete.IsEnabled = true;
-        BtnDuplicate.IsEnabled = selected.Count == 1;
         BtnSave.IsEnabled = selected.Count == 1;
         if (_selectedRow != null)
         {
@@ -1149,22 +1181,18 @@ public partial class ProjectModeView : UserControl
 
     private void NavigationPanel_Click(object sender, RoutedEventArgs e)
     {
-        bool configuration = ReferenceEquals(sender, ConfigurationPanelButton);
+        bool configuration = ReferenceEquals(sender, ConfigurationHeader) || ReferenceEquals(sender, ConfigurationRestore);
         var panel = configuration ? (FrameworkElement)ConfigurationPanel : ElementsPanel;
         var column = configuration ? ConfigurationColumn : ElementsColumn;
         var gap = configuration ? ConfigurationGap : ElementsGap;
-        var button = configuration ? ConfigurationPanelButton : ElementsPanelButton;
+        var button = configuration ? ConfigurationRestore : ElementsRestore;
 
         bool show = panel.Visibility == Visibility.Collapsed;
         panel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-        column.Width = new GridLength(show ? (configuration ? 330 : 390) : 0);
+        column.Width = new GridLength(show ? (configuration ? 330 : 390) : 28);
         gap.Width = new GridLength(show ? 10 : 0);
-        string action = configuration
-            ? (show ? "Свернуть конфигурацию" : "Показать конфигурацию")
-            : (show ? "Свернуть элементы" : "Показать элементы");
-        button.ToolTip = action;
-        System.Windows.Automation.AutomationProperties.SetName(button, action);
-        button.Tag = show ? null : "Collapsed";
+        button.Visibility = show ? Visibility.Collapsed : Visibility.Visible;
+        (show ? (configuration ? ConfigurationHeader : ElementsHeader) : button).Focus();
     }
 
     private void BuildObjectEditor()
@@ -1187,7 +1215,6 @@ public partial class ProjectModeView : UserControl
         bool hasSelection = _selectedRow != null;
         bool matrixCatalog = classMode && _selectedClass?.Name.Equals("Matrix", StringComparison.OrdinalIgnoreCase) == true;
         if (BtnNewObject != null) BtnNewObject.IsEnabled = (classMode ? UserAuthorizationService.Has(Permission.AddData) : UserAuthorizationService.Has(Permission.ManageObjects));
-        if (BtnNewObjectsBatch != null) BtnNewObjectsBatch.IsEnabled = classMode && !matrixCatalog && SupportsBatchObjects && UserAuthorizationService.Has(Permission.AddData);
         if (BtnConfigDelete != null)
         {
             BtnConfigDelete.Visibility = configMode ? Visibility.Visible : Visibility.Collapsed;
@@ -1195,7 +1222,6 @@ public partial class ProjectModeView : UserControl
         }
         if (BtnObjectSearch != null) BtnObjectSearch.IsEnabled = classMode && _selectedClass != null;
         if (BtnObjectFilter != null) BtnObjectFilter.IsEnabled = classMode && _selectedClass != null;
-        if (BtnDuplicate != null) BtnDuplicate.Visibility = classMode ? Visibility.Visible : Visibility.Collapsed;
         if (BtnDelete != null) BtnDelete.Visibility = classMode ? Visibility.Visible : Visibility.Collapsed;
         if (BtnSave != null)
         {
@@ -1207,13 +1233,12 @@ public partial class ProjectModeView : UserControl
         if (classMode && _selectedClass?.PrimaryStorage?.TableName is string table &&
             !ProjectWriteGuard.IsDataTableWritable(table))
         {
-            BtnNewObject.IsEnabled = BtnNewObjectsBatch.IsEnabled = BtnSave.IsEnabled =
-                BtnDuplicate.IsEnabled = BtnDelete.IsEnabled = false;
+            BtnNewObject.IsEnabled = BtnSave.IsEnabled =
+                BtnDelete.IsEnabled = false;
             return;
         }
         if (matrixCatalog && BtnNewObject != null) BtnNewObject.IsEnabled = false;
         if (matrixCatalog && BtnSave != null) BtnSave.IsEnabled = false;
-        if (BtnDuplicate != null) BtnDuplicate.IsEnabled = !matrixCatalog && UserAuthorizationService.Has(Permission.AddData) && BtnDuplicate.IsEnabled;
         if (BtnDelete != null) BtnDelete.IsEnabled = !matrixCatalog && UserAuthorizationService.Has(Permission.DeleteData) && BtnDelete.IsEnabled;
     }
 
@@ -1237,6 +1262,31 @@ public partial class ProjectModeView : UserControl
         return keys.Where(values.ContainsKey).ToDictionary(k => k, k => values[k], StringComparer.OrdinalIgnoreCase);
     }
 
+    private async Task UpdateAndJournalAsync(string table, IReadOnlyList<string> keys,
+        IReadOnlyDictionary<string, object> identity, IReadOnlyDictionary<string, object> values, DataRow row, string description)
+    {
+        var generation = _workspaceGeneration;
+        var before = SnapshotRow(row);
+        var after = new Dictionary<string, object>(before, StringComparer.OrdinalIgnoreCase);
+        foreach (var field in values) after[field.Key] = field.Value ?? DBNull.Value;
+        var newKey = keys.ToDictionary(key => key, key => after[key], StringComparer.OrdinalIgnoreCase);
+        await RequireCrudSource().UpdateRecordAsync(table, keys, identity, values);
+        RecordMode3Mutation(table, ChangeJournalOperationKind.Update, description, before, after, identity, newKey, generation);
+    }
+
+    private async Task CreateConfigurationAndJournalAsync(string table, Dictionary<string, object> values)
+    {
+        var generation = _workspaceGeneration;
+        var session = _crudSession ?? throw new InvalidOperationException("Проект не выбран.");
+        var keys = _offlineSource != null
+            ? _offlineSource.GetSchema(table)?.KeyColumns ?? new List<string>()
+            : await new DatabaseService(_connection.ToConnectionString(_selectedDatabase)).GetPrimaryKeyColumnsAsync(table);
+        var after = (await session.CreateRecordsAsync(table, new[] { values })).Single();
+        var identity = keys.Count > 0 ? SelectIdentity(after, keys) : after;
+        RecordMode3Mutation(table, ChangeJournalOperationKind.Insert, $"Добавлено значение справочника {table}",
+            null, after, null, identity, generation);
+    }
+
     private void RecordMode3Mutation(string table, ChangeJournalOperationKind kind, string description,
         IReadOnlyDictionary<string, object> before, IReadOnlyDictionary<string, object> after,
         IReadOnlyDictionary<string, object> identityBefore, IReadOnlyDictionary<string, object> identityAfter, int expectedGeneration = -1,
@@ -1254,8 +1304,7 @@ public partial class ProjectModeView : UserControl
             var changed = before.Keys.Union(after.Keys, StringComparer.OrdinalIgnoreCase).Any(key =>
             {
                 before.TryGetValue(key, out var a); after.TryGetValue(key, out var b);
-                return !string.Equals(Convert.ToString(a, System.Globalization.CultureInfo.InvariantCulture) ?? "",
-                    Convert.ToString(b, System.Globalization.CultureInfo.InvariantCulture) ?? "", StringComparison.Ordinal);
+                return !System.Collections.StructuralComparisons.StructuralEqualityComparer.Equals(a ?? DBNull.Value, b ?? DBNull.Value);
             });
             if (!changed) return;
         }
@@ -1292,36 +1341,10 @@ public partial class ProjectModeView : UserControl
             EntityType = "Объект",
             EntityIdentity = entityIdentity?.Count > 0 ? string.Join("; ", entityIdentity.Select(x => $"{x.Key}={x.Value}")) : "",
             Result = "Успешно",
-            Changes = new List<ChangeJournalRowChange> { change }.Concat(relatedChanges ?? Array.Empty<ChangeJournalRowChange>()).ToList()
+            Changes = kind == ChangeJournalOperationKind.Delete
+                ? (relatedChanges ?? Array.Empty<ChangeJournalRowChange>()).Append(change).ToList()
+                : new List<ChangeJournalRowChange> { change }.Concat(relatedChanges ?? Array.Empty<ChangeJournalRowChange>()).ToList()
         });
-    }
-
-    private HashSet<string> CaptureOfflineRecordKeys(string table)
-        => _offlineProject?.LocalRecords.Where(r => r.TableName.Equals(table, StringComparison.OrdinalIgnoreCase))
-            .Select(r => r.Key).ToHashSet(StringComparer.Ordinal) ?? new HashSet<string>(StringComparer.Ordinal);
-
-    private void RecordCreatedMode3Object(string table, IReadOnlyDictionary<string, object?> suppliedValues,
-        HashSet<string> previousOfflineKeys, string description, int expectedGeneration = -1,
-        ChangeJournalOperationKind operationKind = ChangeJournalOperationKind.Insert,
-        IReadOnlyDictionary<string, object> sourceValues = null)
-    {
-        if (expectedGeneration >= 0 && expectedGeneration != _workspaceGeneration)
-        {
-            System.Diagnostics.Debug.WriteLine($"[ChangeJournal] Ignored stale Mode 3 create event. capturedGeneration={expectedGeneration}; currentGeneration={_workspaceGeneration}");
-            return;
-        }
-        var values = suppliedValues.ToDictionary(x => x.Key, x => x.Value == null ? DBNull.Value : x.Value, StringComparer.OrdinalIgnoreCase);
-        if (_offlineProject != null)
-        {
-            var added = _offlineProject.LocalRecords.FirstOrDefault(r => r.TableName.Equals(table, StringComparison.OrdinalIgnoreCase) && !previousOfflineKeys.Contains(r.Key));
-            if (added != null)
-            {
-                values = added.Values.ToDictionary(x => x.Key, x => x.Value == null ? (object)DBNull.Value : x.Value.ToString(), StringComparer.OrdinalIgnoreCase);
-            }
-        }
-        var identity = ResolveMode3Identity(values);
-        var sourceIdentity = sourceValues == null ? null : ResolveMode3Identity(sourceValues);
-        RecordMode3Mutation(table, operationKind, description, sourceValues, values, sourceIdentity, identity, expectedGeneration);
     }
 
     private string DescribeDuplicate(string sourceName, string targetName, IReadOnlyDictionary<string, object> targetValues)
@@ -1419,7 +1442,7 @@ public partial class ProjectModeView : UserControl
             var tableName = _configurationTableName;
             var selectedKey = GetConfigurationKeyValue();
             SessionTestLog.Trace("РЕЖИМ3-СОХРАНЕНИЕ", $"Updating table='{tableName}'; fields={string.Join(",", updates.Keys)}; offline={_offlineProject != null}");
-            await RequireCrudSource().UpdateRecordAsync(tableName, keyColumns, keyValues, updates);
+            await UpdateAndJournalAsync(tableName, keyColumns, keyValues, updates, row, $"Изменено значение справочника «{selectedKey}»");
             SessionTestLog.Trace("РЕЖИМ3-СОХРАНЕНИЕ", $"Update completed; table='{tableName}'; offline={_offlineProject != null}");
             foreach (var pair in updates) row[pair.Key] = pair.Value ?? DBNull.Value;
             try
@@ -1500,8 +1523,8 @@ public partial class ProjectModeView : UserControl
     private void ProjectModeView_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
         if (e.Key != System.Windows.Input.Key.S ||
-            (System.Windows.Input.Keyboard.Modifiers & System.Windows.Input.ModifierKeys.Control) == 0 ||
-            !BtnSave.IsEnabled) return;
+            System.Windows.Input.Keyboard.Modifiers != System.Windows.Input.ModifierKeys.Control ||
+            !BtnSave.IsVisible || !BtnSave.IsEnabled || e.IsRepeat) return;
         BtnSave.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
         e.Handled = true;
     }
@@ -1558,7 +1581,19 @@ public partial class ProjectModeView : UserControl
         return result;
     }
 
-    private async void DeleteObject_Click(object sender, RoutedEventArgs e)
+    private async void DeleteSelection_Click(object sender, RoutedEventArgs e)
+    {
+        if (_deletingSelection || sender is not Button { IsVisible: true, IsEnabled: true }) return;
+        _deletingSelection = true;
+        try
+        {
+            if (ReferenceEquals(sender, BtnConfigDelete)) await DeleteConfigurationValueAsync();
+            else await DeleteObjectAsync();
+        }
+        finally { _deletingSelection = false; }
+    }
+
+    private async Task DeleteObjectAsync()
     {
         if (!UserAuthorizationService.Require(Permission.DeleteData)) return;
         if (_selectedClass?.PrimaryStorage == null || ObjectList.SelectedItems.Count == 0) return;
@@ -1568,11 +1603,30 @@ public partial class ProjectModeView : UserControl
         var rows = selected.Where(item => item.RowIndex >= 0 && item.RowIndex < _objects.Rows.Count)
             .Select(item => SnapshotRow(_objects.Rows[item.RowIndex])).ToArray();
         if (rows.Length != selected.Count) return;
+        if (rows.Length == 1 && tableName.Equals(ProgramManagementRepository.ProgramTable, StringComparison.OrdinalIgnoreCase))
+        {
+            await DeleteProgramFromListAsync(rows[0], mutationGeneration);
+            return;
+        }
         var names = selected.Select(x => x.Name).ToList();
         var message = selected.Count == 1
             ? $"Удалить объект «{names[0]}»?"
             : $"Удалить выбранные объекты ({selected.Count} шт.)?";
         if (Configurator.Infrastructure.ModernDialog.Show(message, "Удаление объекта", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        void RecordDeletedObjects(List<(Dictionary<string, object> Values, Dictionary<string, object> Identity)> deletedRows,
+            List<ChangeJournalRowChange> dependents)
+        {
+            var changes = new List<ChangeJournalRowChange>(dependents);
+            foreach (var row in deletedRows.SkipLast(1))
+                changes.Add(new ChangeJournalRowChange { TableName = tableName, Kind = ChangeJournalOperationKind.Delete,
+                    Before = JournalValues(row.Values), IdentityBefore = JournalValues(row.Identity) });
+            var last = deletedRows[^1];
+            var description = $"Удалено объектов: {deletedRows.Count}" +
+                (dependents.Count == 0 ? "" : $" · заменено ссылок в строках: {dependents.Count}");
+            RecordMode3Mutation(tableName, ChangeJournalOperationKind.Delete, description, last.Values, null,
+                last.Identity, null, mutationGeneration, relatedChanges: changes,
+                journalOperationKind: dependents.Count == 0 ? ChangeJournalOperationKind.Delete : ChangeJournalOperationKind.Composite);
+        }
         try
         {
             if (mutationGeneration != _workspaceGeneration) return;
@@ -1691,20 +1745,7 @@ public partial class ProjectModeView : UserControl
                         throw new InvalidOperationException("Состав выбранных строк изменился. Удаление отменено.");
                 });
                 int deleted = keyValues.Count;
-                if (replacements.Count > 0)
-                {
-                    var snapshot = deletedSnapshots.Single();
-                    RecordMode3Mutation(tableName, ChangeJournalOperationKind.Delete,
-                        $"Удалён объект; заменено зависимых значений: {replacements.Count}", snapshot.Values, null,
-                        snapshot.Identity, null, mutationGeneration, relatedChanges: relatedChanges,
-                        journalOperationKind: ChangeJournalOperationKind.Composite);
-                }
-                else
-                {
-                    foreach (var snapshot in deletedSnapshots)
-                        RecordMode3Mutation(tableName, ChangeJournalOperationKind.Delete, "Удалён объект",
-                            snapshot.Values, null, snapshot.Identity, null, mutationGeneration);
-                }
+                RecordDeletedObjects(deletedSnapshots, relatedChanges);
                 await LoadObjectsAsync();
                 SessionTestLog.Trace("РЕЖИМ3-УДАЛЕНИЕ", $"Offline delete complete; selected={selected.Count}, deleted={deleted}, table='{tableName}', rowsAfter={_objects.Rows.Count}, totalMs={deleteTimer.ElapsedMilliseconds}");
                 TxtStatus.Text = $"Объекты удалены из локального проекта: {deleted}";
@@ -1773,19 +1814,11 @@ public partial class ProjectModeView : UserControl
             }
 
             if (deletions.Count == 0 || mutationGeneration != _workspaceGeneration) return;
+            var dependentChanges = await MainWindow.CaptureReplacementChangesAsync(connectionString,
+                deletions.SelectMany(x => x.Item.Replacements).ToList());
             await protection.ExecuteBatchAsync(deletions.Select(x => x.Item).ToArray(),
                 (_, _, _) => Task.FromResult(true));
-            foreach (var (item, beforeSnapshot, identity) in deletions)
-            {
-                bool replacedDependencies = item.Plan.RequiresReplacement;
-                RecordMode3Mutation(tableName, ChangeJournalOperationKind.Delete,
-                    replacedDependencies ? $"Удалён объект; заменено зависимых значений: {item.Replacements.Count}" : "Удалён объект",
-                    beforeSnapshot, null, identity, null, mutationGeneration,
-                    restoreIncludesAllChanges: !replacedDependencies,
-                    details: replacedDependencies
-                        ? $"Зависимости изменены вместе с удалением. Отмена отключена, потому что журнал не хранит полное состояние заменённых строк. Ключ: {string.Join(", ", identity.Select(x => $"{x.Key}={x.Value}"))}."
-                        : null);
-            }
+            RecordDeletedObjects(deletions.Select(x => (x.Before, x.Identity)).ToList(), dependentChanges);
             await LoadObjectsAsync();
             TxtStatus.Text = $"Удалено объектов: {deletions.Count}";
             ShowActionFeedback(TxtStatus.Text);
@@ -1837,7 +1870,7 @@ public partial class ProjectModeView : UserControl
                 dialog.ShowDialog();
                 if (!dialog.Confirmed || dialog.Values == null || dialog.Values.Count == 0) return;
                 RequireExplicitOfflineDefaults(columns, dialog.Values.Keys);
-                await RequireCrudSource().CreateRecordAsync(_configurationTableName, dialog.Values);
+                await CreateConfigurationAndJournalAsync(_configurationTableName, dialog.Values);
                 string insertedKey = dialog.Values
                     .Where(pair => pair.Key.Equals(_configurationKeyColumn, StringComparison.OrdinalIgnoreCase))
                     .Select(pair => pair.Value == null || pair.Value == DBNull.Value ? null : Convert.ToString(pair.Value))
@@ -1886,7 +1919,7 @@ public partial class ProjectModeView : UserControl
             { Owner = Window.GetWindow(this) };
             dialog.ShowDialog();
             if (!dialog.Confirmed || dialog.Values == null || dialog.Values.Count == 0) return;
-            await RequireCrudSource().CreateRecordAsync(_configurationTableName, dialog.Values);
+            await CreateConfigurationAndJournalAsync(_configurationTableName, dialog.Values);
             string insertedKey = dialog.Values
                 .Where(pair => pair.Key.Equals(_configurationKeyColumn, StringComparison.OrdinalIgnoreCase))
                 .Select(pair => pair.Value == null || pair.Value == DBNull.Value ? null : Convert.ToString(pair.Value))
@@ -1902,20 +1935,23 @@ public partial class ProjectModeView : UserControl
         }
     }
 
-    private async void DeleteConfigurationValue_Click(object sender, RoutedEventArgs e)
+    private async Task DeleteConfigurationValueAsync()
     {
-        if (_configurationKind == ConfigurationKind.Class || _selectedRow == null) return;
+        if (_configurationKind is not (ConfigurationKind.Plc or ConfigurationKind.Area) || _selectedRow == null) return;
         if (!UserAuthorizationService.Require(Permission.ManageObjects)) return;
         var mutationGeneration = _workspaceGeneration;
-        var beforeSnapshot = SnapshotRow(_selectedRow);
+        var selectedRow = _selectedRow;
+        var beforeSnapshot = SnapshotRow(selectedRow);
         var valueLabel = GetConfigurationKeyValue();
+        var kind = _configurationKind;
+        var table = _configurationTableName;
+        var keyColumn = _configurationKeyColumn;
+        if (Configurator.Infrastructure.ModernDialog.Show(Window.GetWindow(this),
+                $"Удалить значение {kind} «{valueLabel}»?", "Удаление значения справочника",
+                MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        if (mutationGeneration != _workspaceGeneration || !ReferenceEquals(selectedRow, _selectedRow)) return;
         if (_offlineProject != null)
         {
-            if (Configurator.Infrastructure.ModernDialog.Show("Удалить выбранное значение из локального справочника?", "Offline · удаление", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
-            {
-                SessionTestLog.Trace("CRUD", $"operation=DeleteConfigurationValue; result=cancelled; source=offline; table='{_configurationTableName}'; projectId='{_offlineProject?.Manifest.ProjectId}'");
-                return;
-            }
             var deleteTimer = System.Diagnostics.Stopwatch.StartNew();
             SessionTestLog.Trace("CRUD", $"operation=DeleteConfigurationValue; phase=start; source=offline; table='{_configurationTableName}'; projectId='{_offlineProject?.Manifest.ProjectId}'");
             try
@@ -1944,18 +1980,17 @@ public partial class ProjectModeView : UserControl
             var connectionString = _connection.ToConnectionString(_selectedDatabase);
             var analyzer = new DatabaseArchitectureAnalyzer(connectionString);
             var schema = await analyzer.AnalyzeAsync();
-            var table = _configurationTableName;
             var identity = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
             var primary = await new DatabaseService(connectionString).GetPrimaryKeyColumnsAsync(table);
-            var keyColumns = primary.Count > 0 ? primary : new List<string> { _configurationKeyColumn };
+            var keyColumns = primary.Count > 0 ? primary : new List<string> { keyColumn };
             foreach (var key in keyColumns)
-                if (_selectedRow.Table.Columns.Contains(key)) identity[key] = _selectedRow[key];
+                if (beforeSnapshot.TryGetValue(key, out var value)) identity[key] = value;
 
             // Include logical target keys (for example Areas.AreaName) used by dependent relations.
             foreach (var relation in schema.Relations.Where(r => r.TargetTable.Equals(table, StringComparison.OrdinalIgnoreCase)))
                 foreach (var column in relation.TargetColumns)
-                    if (_selectedRow.Table.Columns.Contains(column) && !identity.ContainsKey(column))
-                        identity[column] = _selectedRow[column];
+                    if (beforeSnapshot.TryGetValue(column, out var value))
+                        identity.TryAdd(column, value);
 
             if (identity.Count == 0) throw new InvalidOperationException("Не удалось определить ключ выбранного значения.");
             var protection = new DeletionProtectionService(connectionString, schema);
@@ -1980,15 +2015,14 @@ public partial class ProjectModeView : UserControl
                 if (dialog.ShowDialog() != true) return;
                 replacements = dialog.Replacements;
             }
+            var related = await MainWindow.CaptureReplacementChangesAsync(connectionString, replacements);
+            if (mutationGeneration != _workspaceGeneration) return;
             await protection.ExecuteAsync(plan, replacements, (_, _, _) => Task.FromResult(true));
-            var description = $"Удалено значение {_configurationKind}: «{valueLabel}»"
+            var description = $"Удалено значение {kind}: «{valueLabel}»"
                 + (plan.RequiresReplacement ? $"; заменено зависимых значений: {replacements.Count}" : "");
             RecordMode3Mutation(table, ChangeJournalOperationKind.Delete, description, beforeSnapshot, null,
                 identity, null, mutationGeneration,
-                restoreIncludesAllChanges: !plan.RequiresReplacement,
-                details: plan.RequiresReplacement
-                    ? "Зависимости заменены вместе с удалением. Отмена отключена, потому что журнал не содержит исходные значения всех изменённых строк."
-                    : null);
+                relatedChanges: related, journalOperationKind: related.Count == 0 ? ChangeJournalOperationKind.Delete : ChangeJournalOperationKind.Composite);
             await RefreshConfigurationLookupsAsync();
             TxtStatus.Text = description;
             ShowActionFeedback(description);
@@ -2021,43 +2055,56 @@ public partial class ProjectModeView : UserControl
             var columns = await ReadObjectColumnsAsync(tableName, db);
             var recordColumn = columns.FirstOrDefault(c => !c.IsIdentity && !c.IsReadOnly && c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase))?.Name ?? "";
             var plcColumn = columns.FirstOrDefault(c => c.Name.Equals("PLC", StringComparison.OrdinalIgnoreCase))?.Name;
-            var classNumberColumn = columns.FirstOrDefault(c => new[] { "PLCClassNumber", "PLC_Class_Number", "PLCClasssNumber" }.Contains(c.Name, StringComparer.OrdinalIgnoreCase))?.Name;
+            var keys = offlineSource != null ? offlineSource.GetSchema(tableName)?.KeyColumns ?? new List<string>()
+                : await db.GetPrimaryKeyColumnsAsync(tableName);
+            var recordScopeClass = ProjectClassCatalog.FindRecordClassColumn(keys);
+            var classNumberColumn = recordScopeClass ?? columns.FirstOrDefault(c => new[] { "PLCClassNumber", "PLC_Class_Number", "PLCClasssNumber" }.Contains(c.Name, StringComparer.OrdinalIgnoreCase))?.Name;
             var lookupOptions = await LoadObjectLookupOptionsAsync(selectedClass, columns, db);
             var nameColumn = columns.FirstOrDefault(c => c.Name.Equals("Name", StringComparison.OrdinalIgnoreCase))
                 ?? columns.FirstOrDefault(c => c.Name.Equals("Tag", StringComparison.OrdinalIgnoreCase));
             var initialValues = nameColumn == null ? null : new Dictionary<string, object> { [nameColumn.Name] = selectedClass.Name };
 
-            IEnumerable<int> LocalRecordNumbers(string plc)
+            IEnumerable<string> LocalRecordNumbers(string plc)
             {
                 return offlineSource.GetRecords(tableName)
-                    .Where(row => plcColumn == null || string.Equals(row.Values[plcColumn]?.ToString(), plc, StringComparison.OrdinalIgnoreCase))
-                    .Select(row => row.Values[recordColumn])
-                    .Where(value => value != null)
-                    .Select(value => int.Parse(value.ToString(), System.Globalization.CultureInfo.InvariantCulture));
+                    .Where(row => (plcColumn == null || Mode3DuplicateValues.SameScopeValue(row.Values[plcColumn]?.ToString(), plc)) &&
+                        (recordScopeClass == null || Mode3DuplicateValues.SameScopeValue(row.Values[recordScopeClass]?.ToString(), selectedClass.ClassNumber)))
+                    .Select(row => row.Values[recordColumn]?.ToString())
+                    .OfType<string>();
+            }
+
+            int SuggestOfflineRecord(string plc)
+            {
+                var suggestion = new ScopedRecordSuggestion();
+                foreach (var record in LocalRecordNumbers(plc))
+                    suggestion.Add(record);
+                return suggestion.GetValue();
             }
 
             int nextRecord = 0;
             if (recordColumn.Length != 0 && plcColumn == null)
             {
                 if (offlineSource != null)
-                    nextRecord = checked(LocalRecordNumbers(null).DefaultIfEmpty(0).Max() + 1);
+                    nextRecord = SuggestOfflineRecord(null);
                 else
-                    nextRecord = checked(await db.GetMaxRecordValueAsync(tableName, recordColumn) + 1);
+                    nextRecord = await db.GetFreeScopedRecordValueAsync(tableName, recordColumn, null, null, default, recordScopeClass, selectedClass.ClassNumber);
             }
 
             var dialog = new AddRowWindow(tableName, columns, nextRecord, recordColumn, connectionString,
                 plcColumn, classNumberColumn == null ? null : selectedClass.ClassNumber, classNumberColumn, lookupOptions,
                 initialValues: initialValues,
-                scopedRecordProvider: offlineSource == null ? null : (plc, ct) =>
+                scopedRecordProvider: offlineSource == null ? null : (plc, _, ct) =>
                 {
                     ct.ThrowIfCancellationRequested();
-                    return Task.FromResult(checked(LocalRecordNumbers(plc).DefaultIfEmpty(0).Max() + 1));
+                    return Task.FromResult(SuggestOfflineRecord(plc));
                 },
-                recordExistsProvider: offlineSource == null ? null : (plc, record, ct) =>
+                recordExistsProvider: offlineSource == null ? null : (plc, _, record, ct) =>
                 {
                     ct.ThrowIfCancellationRequested();
-                    return Task.FromResult(int.TryParse(record, out var number) && LocalRecordNumbers(plc).Contains(number));
-                })
+                    return Task.FromResult(LocalRecordNumbers(plc).Any(value => Mode3DuplicateValues.SameScopeValue(value, record)));
+                },
+                preferFreeScopedRecord: plcColumn != null && recordColumn.Length != 0,
+                recordScopeClassColumn: recordScopeClass)
             { Owner = Window.GetWindow(this) };
 
             if (mutationGeneration != _workspaceGeneration || !ReferenceEquals(selectedClass, _selectedClass)) return;
@@ -2065,9 +2112,9 @@ public partial class ProjectModeView : UserControl
             if (!dialog.Confirmed || dialog.Values == null || dialog.Values.Count == 0) return;
 
             if (offlineSource != null) RequireExplicitOfflineDefaults(columns, dialog.Values.Keys);
-            var previousKeys = CaptureOfflineRecordKeys(tableName);
-            await crud.CreateRecordAsync(tableName, dialog.Values);
-            RecordCreatedMode3Object(tableName, dialog.Values, previousKeys, "Создан объект", mutationGeneration);
+            var snapshot = (await ((IProjectBatchCrudDataSource)crud).CreateRecordsAsync(tableName, new[] { dialog.Values })).Single();
+            var identity = keys.Count > 0 ? SelectIdentity(snapshot, keys) : snapshot;
+            RecordMode3Mutation(tableName, ChangeJournalOperationKind.Insert, "Создан объект", null, snapshot, null, identity, mutationGeneration);
             if (mutationGeneration != _workspaceGeneration) return;
             await LoadObjectsAsync();
             ShowActionFeedback("Объект добавлен");
@@ -2077,139 +2124,6 @@ public partial class ProjectModeView : UserControl
             var error = Configurator.Infrastructure.UserErrorMessage.Format(ex);
             ShowActionFeedback($"Ошибка: {error}", isError: true);
             Configurator.Infrastructure.ModernDialog.Show(error, "Новый объект", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private bool SupportsBatchObjects => _selectedClass?.Name is string name &&
-        !name.Equals("Program", StringComparison.OrdinalIgnoreCase) && !name.Equals("Step", StringComparison.OrdinalIgnoreCase);
-
-    private async void NewObjectsBatch_Click(object sender, RoutedEventArgs e)
-    {
-        if (!SupportsBatchObjects || !UserAuthorizationService.Require(Permission.AddData)) return;
-        if (_selectedClass?.PrimaryStorage == null) return;
-
-        var selectedClass = _selectedClass;
-        var mutationGeneration = _workspaceGeneration;
-        var tableName = selectedClass.PrimaryStorage.TableName;
-        var offlineSource = _offlineSource;
-        try
-        {
-            var crud = _crudSession ??
-                throw new InvalidOperationException("Рабочий источник пакетного добавления недоступен.");
-            var db = offlineSource == null ? new DatabaseService(_connection.ToConnectionString(_selectedDatabase)) : null;
-            var columns = await ReadObjectColumnsAsync(tableName, db);
-            var writable = columns.Where(c => !c.IsReadOnly && !c.IsIdentity).ToList();
-            var nameColumn = writable.FirstOrDefault(c => c.Name.Equals("Name", StringComparison.OrdinalIgnoreCase))
-                ?? writable.FirstOrDefault(c => c.Name.Equals("Tag", StringComparison.OrdinalIgnoreCase));
-            if (nameColumn == null && selectedClass.Name.Equals("Program", StringComparison.OrdinalIgnoreCase))
-                nameColumn = writable.FirstOrDefault(c => new[] { "Name_L1", "NameL1" }.Contains(c.Name, StringComparer.OrdinalIgnoreCase));
-            if (nameColumn == null) throw new InvalidOperationException("Для массового создания не найдено поле имени.");
-
-            string recordColumn = writable.FirstOrDefault(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase))?.Name;
-            string plcColumn = writable.FirstOrDefault(c => c.Name.Equals("PLC", StringComparison.OrdinalIgnoreCase))?.Name;
-            string classNumberColumn = writable.FirstOrDefault(c => new[] { "PLCClassNumber", "PLC_Class_Number", "PLCClass_Number", "PLCClasssNumber" }.Contains(c.Name, StringComparer.OrdinalIgnoreCase))?.Name;
-            var assigned = new[] { nameColumn.Name, recordColumn, plcColumn, classNumberColumn };
-            var required = writable.Where(c => !c.IsNullable && !c.HasDefault
-                && !assigned.Contains(c.Name, StringComparer.OrdinalIgnoreCase)).ToList();
-            if (required.Count > 0)
-                throw new InvalidOperationException("Невозможно корректно заполнить обязательные поля автоматически: " + string.Join(", ", required.Select(c => c.Name)));
-            if (offlineSource != null) RequireExplicitOfflineDefaults(columns, assigned);
-
-            var plcOptions = new List<(string Key, string Title)>();
-            if (plcColumn != null)
-            {
-                var field = selectedClass.Fields.FirstOrDefault(f => f.Name.Equals(plcColumn, StringComparison.OrdinalIgnoreCase))
-                    ?? new FieldDefinition { Name = plcColumn };
-                plcOptions = (await ReadObjectLookupAsync(selectedClass, field, db == null ? null : new LookupOptionsService(db)))
-                    .Select(option => (Key: option.Key, Title: option.Display)).ToList();
-            }
-
-            DataTable uniquenessRows;
-            if (offlineSource != null)
-            {
-                // Validate against the complete local package, not the UI's paged 5,000-row view.
-                uniquenessRows = new DataTable();
-                var localTable = offlineSource.GetRecords(tableName);
-                var localColumns = columns.Select(c => c.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-                foreach (var column in localColumns) uniquenessRows.Columns.Add(column, typeof(string));
-                foreach (var record in localTable)
-                {
-                    var row = uniquenessRows.NewRow();
-                    foreach (var kv in record.Values)
-                        if (uniquenessRows.Columns.Contains(kv.Key)) row[kv.Key] = kv.Value is null ? DBNull.Value : kv.Value.ToString();
-                    uniquenessRows.Rows.Add(row);
-                }
-            }
-            else
-            {
-                // Online uniqueness checks use all rows in the live table rather than the paged UI cache.
-                uniquenessRows = await db.GetAllTableRowsAsync(tableName);
-            }
-
-            var existingNames = uniquenessRows.Columns.Contains(nameColumn.Name)
-                ? uniquenessRows.Rows.Cast<DataRow>().Select(r => Convert.ToString(r[nameColumn.Name])).Where(n => !string.IsNullOrWhiteSpace(n)).ToList()
-                : new List<string>();
-            var existingRecordKeys = new List<string>();
-            if (!string.IsNullOrWhiteSpace(recordColumn) && uniquenessRows.Columns.Contains(recordColumn))
-            {
-                foreach (DataRow existing in uniquenessRows.Rows)
-                {
-                    var rec = Convert.ToString(existing[recordColumn]);
-                    var plc = !string.IsNullOrWhiteSpace(plcColumn) && uniquenessRows.Columns.Contains(plcColumn) ? Convert.ToString(existing[plcColumn]) : "";
-                    if (!string.IsNullOrWhiteSpace(rec)) existingRecordKeys.Add($"{plc}|{rec}");
-                }
-            }
-
-            if (mutationGeneration != _workspaceGeneration || !ReferenceEquals(selectedClass, _selectedClass)) return;
-            var dialog = new MultiObjectEditorWindow(selectedClass.Name, plcOptions, existingNames,
-                existingRecordKeys, !string.IsNullOrWhiteSpace(recordColumn), !string.IsNullOrWhiteSpace(plcColumn),
-                async rows =>
-                {
-                    var batch = new List<IReadOnlyDictionary<string, object?>>(rows.Count);
-                    foreach (var item in rows)
-                    {
-                        var values = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
-                        {
-                            [nameColumn.Name] = item.Name
-                        };
-                        if (!string.IsNullOrWhiteSpace(plcColumn))
-                            values[plcColumn] = item.PlcKey;
-                        if (!string.IsNullOrWhiteSpace(recordColumn))
-                        {
-                            if (!int.TryParse(item.Record, out var recordValue))
-                                return $"Record «{item.Record}» должен быть целым числом.";
-                            values[recordColumn] = recordValue;
-                        }
-                        if (!string.IsNullOrWhiteSpace(classNumberColumn))
-                            values[classNumberColumn] = selectedClass.ClassNumber;
-                        batch.Add(values);
-                    }
-
-                    try
-                    {
-                        await crud.CreateRecordsAsync(tableName, batch);
-                    }
-                    catch (Exception ex)
-                    {
-                        var error = Configurator.Infrastructure.UserErrorMessage.Format(ex);
-                        ShowActionFeedback($"Ошибка: {error}", isError: true);
-                        return error;
-                    }
-
-                    if (mutationGeneration != _workspaceGeneration) return null;
-                    await LoadObjectsAsync();
-                    TxtStatus.Text = $"Создано объектов: {batch.Count}";
-                    ShowActionFeedback(TxtStatus.Text);
-                    return null;
-                })
-            { Owner = Window.GetWindow(this) };
-
-            dialog.ShowDialog();
-        }
-        catch (Exception ex)
-        {
-            ShowActionFeedback($"Ошибка: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", isError: true);
-            Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Массовое добавление объектов", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -2307,7 +2221,6 @@ public partial class ProjectModeView : UserControl
         ImgObjectTypePreview.Source = null;
         ImgObjectTypePreview.Visibility = Visibility.Collapsed;
         BtnDelete.IsEnabled = false;
-        BtnDuplicate.IsEnabled = false;
         BtnSave.IsEnabled = false;
     }
 
@@ -2351,7 +2264,7 @@ public partial class ProjectModeView : UserControl
         var area = new ComboBox { Height = 34, Padding = new Thickness(6, 2, 6, 2), ItemsSource = CmbAreaFilter.ItemsSource, DisplayMemberPath = nameof(FilterOption.Title), SelectedValuePath = nameof(FilterOption.Key), SelectedValue = GetSelectedFilterKey(CmbAreaFilter), Margin = new Thickness(0, 0, 0, 16) }; panel.Children.Add(area);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
         var reset = new Button { Content = "Сбросить", MinWidth = 96, Height = 32, Padding = new Thickness(12, 0, 12, 0), Margin = new Thickness(0, 0, 10, 0) };
-        var apply = new Button { Content = "Применить", MinWidth = 108, Height = 32, Padding = new Thickness(12, 0, 12, 0) };
+        var apply = new Button { Content = "Применить", IsDefault = true, MinWidth = 108, Height = 32, Padding = new Thickness(12, 0, 12, 0) };
         reset.Click += (_, _) => { CmbPlcFilter.SelectedIndex = 0; CmbAreaFilter.SelectedIndex = 0; ApplyObjectFilters(); plc.SelectedIndex = 0; area.SelectedIndex = 0; };
         apply.Click += (_, _) => { CmbPlcFilter.SelectedItem = plc.SelectedItem; CmbAreaFilter.SelectedItem = area.SelectedItem; ApplyObjectFilters(); };
         buttons.Children.Add(reset); buttons.Children.Add(apply); panel.Children.Add(buttons);

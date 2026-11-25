@@ -11,7 +11,7 @@
         <TextBox x:Name="NamesText" Grid.Row="3" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" TextWrapping="NoWrap" FontSize="13" Padding="8"/>
         <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
             <Button Content="Отмена" Width="100" Height="32" Style="{StaticResource BtnSecondary}" Click="Cancel_Click"/>
-            <Button Content="Создать" Width="120" Height="32" Margin="8,0,0,0" Style="{StaticResource BtnPrimary}" Click="Ok_Click"/>
+            <Button IsDefault="True" Content="Создать" Width="120" Height="32" Margin="8,0,0,0" Style="{StaticResource BtnPrimary}" Click="Ok_Click"/>
         </StackPanel>
     </Grid>
 </Window>

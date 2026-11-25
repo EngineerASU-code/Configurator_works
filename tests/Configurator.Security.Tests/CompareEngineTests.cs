@@ -31,6 +31,69 @@ public sealed class CompareEngineTests
         Assert.Equal(7, pressure.Pair!.RecordA!.Values["Record"]!.GetValue<int>());
     }
 
+    [Theory]
+    [InlineData("Pump B", CompareStatus.KeyConflict)]
+    [InlineData("Pump A", CompareStatus.Changed)]
+    [InlineData("pump a", CompareStatus.Changed)]
+    [InlineData("", CompareStatus.Changed)]
+    public async Task SharedRecordKeyConflictsOnlyForDifferentNonemptyObjectNames(string name, CompareStatus expected)
+    {
+        const string table = "dbo.Reglers";
+        var definition = Class("pid", "PID", table);
+        definition.IsSystem = true;
+        var schema = Schema(table);
+        schema.KeyColumns.AddRange(["PLC", "PLC_Class_Number"]);
+        schema.Columns.AddRange([
+            new ProjectColumnSchema { Name = "PLC", DataType = "int" },
+            new ProjectColumnSchema { Name = "PLC_Class_Number", DataType = "int" },
+            new ProjectColumnSchema { Name = "Name", DataType = "nvarchar", MaxLength = 100 }
+        ]);
+        ProjectRecord Pid(string objectName, string pressure) => new()
+        {
+            TableName = table,
+            Key = "pid-7",
+            Values = new JsonObject
+            {
+                ["Record"] = 7, ["PLC"] = 1, ["PLC_Class_Number"] = 3,
+                ["Name"] = objectName, ["Pressure"] = JsonNode.Parse(pressure)
+            }
+        };
+        var sourceA = Source(definition, schema, Pid("Pump A", "1.25")) with { CanWrite = true };
+        var sourceB = Source(definition, schema, Pid(name, "1.50")) with { CanWrite = true };
+
+        var item = Assert.Single((await CompareEngine.CompareAsync(sourceA, sourceB)).Objects);
+        Assert.Equal(expected, item.Status);
+        if (expected == CompareStatus.KeyConflict)
+        {
+            Assert.Equal("Pump A", item.A);
+            Assert.Equal("Pump B", item.B);
+            Assert.Null(item.Children);
+            Assert.NotNull(item.Pair?.RecordA);
+            Assert.NotNull(item.Pair?.RecordB);
+            Assert.False(CompareTransferPreview.Evaluate(sourceA, sourceB, item, aToB: true).IsAllowed);
+            Assert.False(CompareTransferPreview.Evaluate(sourceA, sourceB, item, aToB: false).IsAllowed);
+        }
+        else
+        {
+            Assert.Equal(CompareStatus.Changed, Assert.Single(item.Children!, row => row.Column == "Pressure").Status);
+        }
+    }
+
+    [Fact]
+    public async Task TagIdentifiesObjectsWhenTheTableHasNoNameColumn()
+    {
+        var definition = Class("equipment", "Equipment", "dbo.Valves");
+        var sourceA = Source(definition, Schema("dbo.Valves"), Record(7, "Pump A", "1.25"));
+        var sourceB = Source(definition, Schema("dbo.Valves"), Record(7, "Pump B", "1.25"));
+
+        var item = Assert.Single((await CompareEngine.CompareAsync(sourceA, sourceB)).Objects);
+
+        Assert.Equal(CompareStatus.KeyConflict, item.Status);
+        Assert.Equal("Pump A", item.A);
+        Assert.Equal("Pump B", item.B);
+        Assert.Null(item.Children);
+    }
+
     [Fact]
     public async Task MissingObjectsProduceOneDifferencePerObjectWithoutPropertyRows()
     {

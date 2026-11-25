@@ -58,7 +58,7 @@ public static class CompareEngine
         return new CompareResult(architecture, objects, started, DateTimeOffset.UtcNow);
     }
 
-    private static async Task<IReadOnlyList<CompareDifference>> CompareProjectSettingsAsync(
+    internal static async Task<IReadOnlyList<CompareDifference>> CompareProjectSettingsAsync(
         CompareSource a, CompareSource b, CancellationToken cancellationToken)
     {
         ProjectCompareSettings? settingsA;
@@ -1328,12 +1328,62 @@ public static class CompareEngine
         return new RecordIndex(result, invalid);
     }
 
+    internal static async Task<CompareDifference?> RefreshObjectAsync(
+        CompareRecordPair pair, CompareSource target, CompareTransferPreview preview, bool aToB)
+    {
+        var targetTable = aToB ? pair.B! : pair.A!;
+        var schema = targetTable.Schema;
+        var page = await target.Workspace.ReadPageAsync(new ProjectReadQuery
+        {
+            TableName = schema.TableName, Filters = preview.KeyValues, PageSize = 2
+        }).ConfigureAwait(false);
+        var expectedKey = ProjectKeyCodec.Encode(schema, schema.KeyColumns, name => ProjectKeyCodec.ToNode(preview.KeyValues[name]));
+        if (preview.DeletesRecord ? page.TotalCount != 0 :
+            page.TotalCount != 1 || page.Items.Count != 1 ||
+            ProjectKeyCodec.Encode(schema, schema.KeyColumns, name => page.Items[0].Values[name]) != expectedKey)
+            throw new InvalidDataException("Запись изменилась после переноса.");
+
+        var current = page.Items.SingleOrDefault();
+        if (!target.Workspace.IsOffline && current is not null &&
+            preview.RecordedEntry?.Changes.SingleOrDefault()?.After is { } committed &&
+            (committed.Count != current.Values.Count || schema.Columns.Any(column =>
+                !committed.TryGetValue(column.Name, out var saved) ||
+                !current.Values.TryGetPropertyValue(column.Name, out var value) ||
+                !JsonNode.DeepEquals(ProjectKeyCodec.ToNode(saved.ToObject()), value) &&
+                CompareValues.Compare(ProjectKeyCodec.ToNode(saved.ToObject()), value, column.DataType, column.DataType) != CompareStatus.Equal)))
+            throw new InvalidDataException("Запись изменилась после переноса.");
+
+        var recordA = aToB ? pair.RecordA : current;
+        var recordB = aToB ? current : pair.RecordB;
+        if (recordA is null && recordB is null) return null;
+        if (recordA is not null && recordB is not null)
+            return CompareRecord(pair.A!, pair.B!, recordA, recordB);
+        return ObjectDifference(pair.A, pair.B, recordA, recordB,
+            recordA is null ? CompareStatus.OnlyB : CompareStatus.OnlyA, null);
+    }
+
     private static CompareDifference CompareRecord(
         CompareTable tableA,
         CompareTable tableB,
         ProjectRecord recordA,
         ProjectRecord recordB)
     {
+        var key = DisplayKey(tableA.Schema, recordA);
+        var title = $"{tableA.Class?.Name ?? TableName(tableA)} · {TableName(tableA)} · {key}";
+        var pair = new CompareRecordPair(tableA, tableB, recordA, recordB);
+        var identityColumn = ColumnType(tableA.Schema, "Name") is null && ColumnType(tableB.Schema, "Name") is null
+            ? "Tag" : "Name";
+        if (tableA.Schema.KeyColumns.Contains("Record", StringComparer.OrdinalIgnoreCase) &&
+            TryGetValue(recordA.Values, identityColumn, out var valueNameA) && valueNameA is JsonValue textA &&
+            TryGetValue(recordB.Values, identityColumn, out var valueNameB) && valueNameB is JsonValue textB &&
+            textA.TryGetValue<string>(out var nameA) && !string.IsNullOrWhiteSpace(nameA) &&
+            textB.TryGetValue<string>(out var nameB) && !string.IsNullOrWhiteSpace(nameB) &&
+            !string.Equals(nameA.Trim(), nameB.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return new CompareDifference($"{title} · Конфликт ключа", nameA, nameB, CompareStatus.KeyConflict,
+                Pair: pair, Issue: "Один ключ Record занят объектами с разными именами.");
+        }
+
         var names = recordA.Values.Select(x => x.Key).Union(recordB.Values.Select(x => x.Key), StringComparer.OrdinalIgnoreCase)
             .OrderBy(x => x, StringComparer.OrdinalIgnoreCase);
         var children = new List<CompareDifference>();
@@ -1344,7 +1394,7 @@ public static class CompareEngine
             if (!hasA || !hasB)
             {
                 children.Add(new CompareDifference($"Ячейка · {name}", hasA ? ValueText(valueA) : null, hasB ? ValueText(valueB) : null,
-                    hasA ? CompareStatus.OnlyA : CompareStatus.OnlyB, Pair: new CompareRecordPair(tableA, tableB, recordA, recordB), Column: name));
+                    hasA ? CompareStatus.OnlyA : CompareStatus.OnlyB, Pair: pair, Column: name));
                 continue;
             }
 
@@ -1352,16 +1402,14 @@ public static class CompareEngine
             var typeB = ColumnType(tableB.Schema, name);
             var status = CompareValues.Compare(valueA, valueB, typeA, typeB);
             children.Add(new CompareDifference($"Ячейка · {name}", ValueText(valueA), ValueText(valueB), status,
-                Pair: new CompareRecordPair(tableA, tableB, recordA, recordB), Column: name));
+                Pair: pair, Column: name));
         }
 
-        var key = DisplayKey(tableA.Schema, recordA);
-        var title = $"{tableA.Class?.Name ?? TableName(tableA)} · {TableName(tableA)} · {key}";
         var issue = tableA.HasUnresolvedDependencies || tableB.HasUnresolvedDependencies
             ? "Не все логические зависимости удалось определить."
             : null;
         return new CompareDifference(title, tableA.Schema.TableName, tableB.Schema.TableName,
-            Aggregate(children), children, new CompareRecordPair(tableA, tableB, recordA, recordB), Issue: issue);
+            Aggregate(children), children, pair, Issue: issue);
     }
 
     private static async Task<IReadOnlyList<CompareDifference>> ReadUnpairedObjectsAsync(

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -30,24 +31,38 @@ namespace Configurator
 
         public string ToConnectionString(string databaseName)
         {
+            var localServer = LocalServerName(Server);
             var builder = new SqlConnectionStringBuilder
             {
-                DataSource = Server,
+                DataSource = localServer == null ? Server : "lpc:" + localServer,
                 InitialCatalog = databaseName,
                 IntegratedSecurity = string.IsNullOrWhiteSpace(User),
                 Encrypt = true,
-                TrustServerCertificate = IsExplicitLocalSharedMemory(Server),
+                TrustServerCertificate = localServer != null,
                 ConnectTimeout = 15
             };
             if (!builder.IntegratedSecurity) { builder.UserID = User; builder.Password = Password; }
             return builder.ConnectionString;
         }
 
-        internal static bool IsExplicitLocalSharedMemory(string server) =>
-            string.Equals(server?.Trim(), "lpc:" + Environment.MachineName, StringComparison.OrdinalIgnoreCase);
+        private static string LocalServerName(string server)
+        {
+            var name = server?.Trim() ?? "";
+            if (name.StartsWith("lpc:", StringComparison.OrdinalIgnoreCase))
+                name = name[4..];
+
+            var machine = Environment.MachineName;
+            if (name.Equals(machine, StringComparison.OrdinalIgnoreCase)) return machine;
+            if (!name.StartsWith(machine + "\\", StringComparison.OrdinalIgnoreCase)) return null;
+
+            var instance = name[(machine.Length + 1)..];
+            return instance.Length is > 0 and <= 16 &&
+                instance.All(c => char.IsLetterOrDigit(c) || c == '_')
+                ? machine + "\\" + instance : null;
+        }
 
         internal static string ProjectServerName(string server) =>
-            IsExplicitLocalSharedMemory(server) ? Environment.MachineName : (server?.Trim() ?? "");
+            LocalServerName(server) ?? (server?.Trim() ?? "");
 
         // === P1-11: Async-версия TestConnection ===
         public async Task<bool> TestConnectionAsync(string databaseName, System.Threading.CancellationToken cancellationToken = default)

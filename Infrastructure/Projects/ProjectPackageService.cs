@@ -23,7 +23,13 @@ public sealed class ProjectPackageService
         public SimulatedProcessCrashException(string checkpoint) : base($"Simulated process termination at {checkpoint}.") { }
     }
 
-    public async Task SaveAsync(string path, ConfiguratorProject project, CancellationToken cancellationToken = default, bool requireExisting = false, FileStream? reservedFile = null)
+    public Task SaveAsync(string path, ConfiguratorProject project, CancellationToken cancellationToken = default, bool requireExisting = false, FileStream? reservedFile = null) =>
+        SaveCoreAsync(path, project, cancellationToken, requireExisting, reservedFile);
+
+    internal async Task<string> SaveForCompareAsync(string path, ConfiguratorProject project, FileStream reservedFile, CancellationToken cancellationToken) =>
+        (await SaveCoreAsync(path, project, cancellationToken, requireExisting: true, reservedFile).ConfigureAwait(false))!;
+
+    private async Task<string?> SaveCoreAsync(string path, ConfiguratorProject project, CancellationToken cancellationToken, bool requireExisting, FileStream? reservedFile)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentNullException.ThrowIfNull(project);
@@ -81,6 +87,7 @@ public sealed class ProjectPackageService
                 var rollbackPath = GetRecoveryBackupPath(fullPath);
                 var markerPath = GetRecoveryMarkerPath(fullPath);
                 bool preserveRecovery = false;
+                string candidateHash;
                 try
                 {
                     if (!File.Exists(fullPath))
@@ -100,7 +107,7 @@ public sealed class ProjectPackageService
                     SaveCheckpoint?.Invoke("after-backup");
 
                     string backupHash = ComputeSha256(rollbackPath);
-                    string candidateHash = ComputeSha256(tempPath);
+                    candidateHash = ComputeSha256(tempPath);
                     using (var marker = new FileStream(markerPath, FileMode.Create, FileAccess.Write, FileShare.None))
                     using (var writer = new StreamWriter(marker, new System.Text.UTF8Encoding(false), 1024, leaveOpen: true))
                     {
@@ -168,7 +175,7 @@ public sealed class ProjectPackageService
                     if (!preserveRecovery && !File.Exists(markerPath))
                         TryDelete(rollbackPath);
                 }
-                return;
+                return candidateHash;
             }
 
             if (File.Exists(fullPath))
@@ -191,6 +198,7 @@ public sealed class ProjectPackageService
                     throw new FileNotFoundException("Файл проекта был удалён во время сохранения. Новый файл не создан.", fullPath);
                 File.Move(tempPath, fullPath);
             }
+            return null;
         }
         finally
         {
@@ -238,13 +246,18 @@ public sealed class ProjectPackageService
     internal static async Task<(ConfiguratorProject Project, string Fingerprint)> ReadForCompareAsync(
         FileStream file, CancellationToken cancellationToken)
     {
+        var fingerprint = await ReadFingerprintForCompareAsync(file, cancellationToken);
+        file.Position = 0;
+        return (await ReadPackageAsync(file, cancellationToken), fingerprint);
+    }
+
+    internal static async Task<string> ReadFingerprintForCompareAsync(FileStream file, CancellationToken cancellationToken)
+    {
         if (File.Exists(GetRecoveryMarkerPath(file.Name)))
             throw new InvalidDataException("Снимок содержит незавершённое сохранение. Для восстановления откройте его в Offline-режиме.");
 
         file.Position = 0;
-        var fingerprint = Convert.ToHexString(await SHA256.HashDataAsync(file, cancellationToken));
-        file.Position = 0;
-        return (await ReadPackageAsync(file, cancellationToken), fingerprint);
+        return Convert.ToHexString(await SHA256.HashDataAsync(file, cancellationToken));
     }
 
     private static async Task<ConfiguratorProject> ReadPackageAsync(Stream file, CancellationToken cancellationToken)

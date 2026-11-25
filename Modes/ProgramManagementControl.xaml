@@ -94,7 +94,7 @@
                         <GroupBox Header="Параметры программы" Margin="0,5,0,0">
                             <DockPanel>
 
-                                <WrapPanel DockPanel.Dock="Bottom"><Button Width="190" Height="36" Padding="4,0" Style="{StaticResource BtnPrimary}" Content="＋ Параметр" Tag="programParams" Margin="4" Click="AddParameter_Click"/><Button Width="190" Height="36" Padding="4,0" Content="Удалить параметр" Tag="programParams" Margin="4" Click="DeleteParameter_Click"/></WrapPanel>
+                                <WrapPanel DockPanel.Dock="Bottom"><Button Width="190" Height="36" Padding="4,0" Style="{StaticResource BtnPrimary}" Content="＋ Параметр" Tag="programParams" Margin="4" Click="AddParameter_Click"/><Button Width="190" Height="36" Padding="4,0" x:Name="DeleteProgramParameterButton" Content="Удалить параметр" Tag="programParams" Margin="4" Click="DeleteParameter_Click"/></WrapPanel>
 <Button Width="190" Height="36" Padding="4,0" x:Name="SaveProgramParamsButton" Visibility="Collapsed" Style="{StaticResource BtnSaveObject}" DockPanel.Dock="Bottom" Content="Сохранить параметр"
                                         Tag="programParams" HorizontalAlignment="Right" Margin="4" Click="SaveEntityButton_Click" />
                                 <DataGrid x:Name="ProgramParamsGrid" Tag="programParams" AutoGenerateColumns="True"
@@ -111,7 +111,7 @@
                         <GroupBox Header="Шаг для просмотра параметров">
                             <DockPanel>
 
-                                <WrapPanel DockPanel.Dock="Bottom"><Button Width="190" Height="36" Padding="4,0" Style="{StaticResource BtnPrimary}" Content="＋ Параметр" Tag="stepParams" Margin="4" Click="AddParameter_Click"/><Button Width="190" Height="36" Padding="4,0" Content="Удалить параметр" Tag="stepParams" Margin="4" Click="DeleteParameter_Click"/></WrapPanel>
+                                <WrapPanel DockPanel.Dock="Bottom"><Button Width="190" Height="36" Padding="4,0" Style="{StaticResource BtnPrimary}" Content="＋ Параметр" Tag="stepParams" Margin="4" Click="AddParameter_Click"/><Button Width="190" Height="36" Padding="4,0" x:Name="DeleteStepParameterButton" Content="Удалить параметр" Tag="stepParams" Margin="4" Click="DeleteParameter_Click"/></WrapPanel>
 <Button Width="190" Height="36" Padding="4,0" x:Name="SaveStepParamsButton" Visibility="Collapsed" Style="{StaticResource BtnSaveObject}" DockPanel.Dock="Bottom" Content="Сохранить параметр"
                                         Tag="stepParams" HorizontalAlignment="Right" Margin="4" Click="SaveEntityButton_Click" />
                                 <ComboBox DockPanel.Dock="Top" Margin="4" AutomationProperties.Name="Вхождение шага" ItemsSource="{Binding ItemsSource, ElementName=TransitionsGrid}" SelectedItem="{Binding SelectedItem, ElementName=TransitionsGrid, Mode=TwoWay}" ><ComboBox.ItemTemplate><DataTemplate><TextBlock><Run Text="{Binding [SeqStep_Number], Mode=OneWay}"/><Run Text=" · "/><Run Text="{Binding [Name_L1], Mode=OneWay}"/></TextBlock></DataTemplate></ComboBox.ItemTemplate></ComboBox><DataGrid x:Name="StepParamsGrid" Tag="stepParams" AutoGenerateColumns="True"

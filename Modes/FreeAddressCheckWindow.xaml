@@ -74,7 +74,7 @@
                        Foreground="{DynamicResource BrushTextSecondary}" TextTrimming="CharacterEllipsis"/>
             <Button x:Name="BtnExport" Content="Экспорт Excel" Width="125" Margin="8,0,0,0" Click="Export_Click" IsEnabled="False"/>
             <Button Content="Проверить" Style="{StaticResource BtnPrimary}" Width="120" Margin="8,0,0,0" Click="Check_Click"/>
-            <Button Content="Закрыть" Width="100" Margin="8,0,0,0" Click="Close_Click"/>
+            <Button IsDefault="True" Content="Закрыть" Width="100" Margin="8,0,0,0" Click="Close_Click"/>
         </StackPanel>
     </Grid>
 </Window>

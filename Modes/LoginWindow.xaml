@@ -19,11 +19,11 @@
         <TextBlock Grid.Row="2" Text="Пользователь" Foreground="{DynamicResource BrushText}" Margin="0,0,0,6"/>
         <ComboBox x:Name="UserBox" Grid.Row="3" Height="46" MinHeight="46" VerticalContentAlignment="Center" Padding="10,0" FontSize="13" DisplayMemberPath="DisplayName" SelectedValuePath="UserName"/>
         <Grid Grid.Row="4" Margin="0,16,0,10">
-            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="50"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
             <TextBlock x:Name="PasswordLabel" Text="Пароль администратора" Foreground="{DynamicResource BrushText}" Margin="0,0,0,6"/>
             <PasswordBox x:Name="PasswordBox" Grid.Row="1" Height="46" MinHeight="46" VerticalContentAlignment="Center" Padding="10,0" FontSize="13" KeyDown="PasswordBox_KeyDown"/>
             <TextBlock x:Name="ErrorText" Grid.Row="2" Margin="0,8,0,0" Foreground="{DynamicResource BrushAccent}" TextWrapping="Wrap"/>
         </Grid>
-        <Button x:Name="LoginButton" Grid.Row="5" Content="Войти" Width="120" Height="44" MinHeight="44" HorizontalAlignment="Right" Style="{StaticResource BtnPrimary}" Click="Login_Click"/>
+        <Button x:Name="LoginButton" IsDefault="True" Grid.Row="5" Content="Войти" Width="120" Height="44" MinHeight="44" HorizontalAlignment="Right" Style="{StaticResource BtnPrimary}" Click="Login_Click"/>
     </Grid>
 </Window>

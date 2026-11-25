@@ -42,7 +42,7 @@ public partial class DatabaseService
         return rows;
     }
 
-    internal async Task ApplyTablePasteAsync(string table, IReadOnlyList<string> primaryKey,
+    internal async Task<List<ChangeJournalRowChange>> ApplyTablePasteAsync(string table, IReadOnlyList<string> primaryKey,
         IReadOnlyList<(Dictionary<string, object> Key, Dictionary<string, object> Values,
             Dictionary<string, object> Expected)> rows)
     {
@@ -51,6 +51,7 @@ public partial class DatabaseService
         await SqlProviderGuard.OpenConnectionAsync(connection);
         using var transaction = (SqlTransaction)await connection.BeginTransactionAsync();
         var target = QuoteTableName(table);
+        var changes = new List<ChangeJournalRowChange>();
         foreach (var row in rows)
         {
             var current = await ReadTablePasteRowsAsync(connection, transaction, table, row.Key);
@@ -83,7 +84,24 @@ public partial class DatabaseService
                 command.CommandText = $"INSERT INTO {target} ({string.Join(", ", names)}) VALUES ({string.Join(", ", parameters)})";
             }
             await command.ExecuteNonQueryAsync();
+            var after = (await ReadTablePasteRowsAsync(connection, transaction, table, row.Key)).Single();
+            var identity = primaryKey.Count == 0 ? row.Key :
+                primaryKey.ToDictionary(name => name, name => after[name], StringComparer.OrdinalIgnoreCase);
+            var change = new ChangeJournalRowChange
+            {
+                TableName = table,
+                Kind = replace ? ChangeJournalOperationKind.Update : ChangeJournalOperationKind.Insert,
+                Before = ToJournalSnapshot(row.Expected),
+                After = ToJournalSnapshot(after),
+                IdentityBefore = ToJournalSnapshot(replace ? identity : null),
+                IdentityAfter = ToJournalSnapshot(identity)
+            };
+            if (!replace || change.ChangedAfter.Count > 0) changes.Add(change);
         }
         await transaction.CommitAsync();
+        return changes;
     }
+
+    private static Dictionary<string, ChangeJournalValue> ToJournalSnapshot(IReadOnlyDictionary<string, object> values)
+        => values?.ToDictionary(x => x.Key, x => ChangeJournalValue.FromObject(x.Value), StringComparer.OrdinalIgnoreCase) ?? new();
 }

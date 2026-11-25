@@ -8,7 +8,7 @@ using Configurator.Infrastructure;
 namespace Configurator;
 
 internal sealed record AddressMapSource(string Name, Func<CancellationToken, Task<ProjectWorkspace>> Open,
-    bool CanEdit = false, string? Path = null)
+    bool CanEdit = false, string? Path = null, string? Server = null, string? Database = null)
 {
     public override string ToString() => Name;
 }
@@ -18,6 +18,7 @@ public partial class PlcAddressWindow : Window
     private readonly CancellationTokenSource _lifetime = new();
     private ProjectWorkspace? _workspace;
     private readonly Func<string, CancellationToken, Task<ProjectWorkspace>> _openFile;
+    private readonly Action<ChangeJournalEntry>? _changeJournalRequested;
     private SortedDictionary<string, PlcAddressMap>? _maps;
     private List<AddressByteRow> _rows = [];
     private sealed record Cell(string Caption, string State, string Detail, char Area, IReadOnlyList<string> Owners) : System.ComponentModel.INotifyPropertyChanged
@@ -31,10 +32,13 @@ public partial class PlcAddressWindow : Window
         }
     }
 
-    internal PlcAddressWindow(IEnumerable<AddressMapSource> sources, Func<string, CancellationToken, Task<ProjectWorkspace>> openFile)
+    internal PlcAddressWindow(IEnumerable<AddressMapSource> sources, Func<string, CancellationToken, Task<ProjectWorkspace>> openFile,
+        Action<ChangeJournalEntry>? changeJournalRequested = null)
     {
         InitializeComponent();
+        KeyDown += Configurator.Infrastructure.ModernDialog.CloseToolOnEnter;
         _openFile = openFile;
+        _changeJournalRequested = changeJournalRequested;
         foreach (var source in sources) Project.Items.Add(source);
     }
 
@@ -136,13 +140,17 @@ public partial class PlcAddressWindow : Window
         OwnerList.Tag = null;
         OwnerList.ItemsSource = null;
         DetailTitle.Text = "Назначения";
-        var visible = _rows.Where(r => Filter.SelectedIndex switch { 1 => r.HasFree, 2 => r.HasConflict, _ => true }).ToList();
-        var ranges = _rows.GroupBy(r => r.Area).Select(g => $"{g.Key}{g.First().First}–{g.Key}{g.Last().Last}");
+        var map = _maps![(string)Plc.SelectedItem];
+        var type = (SignalType.SelectedItem as ComboBoxItem)?.Content as string;
+        var matching = SignalType.SelectedIndex > 0 && type != null
+            ? _rows.Where(row => map.ContainsSignal(row, type)).ToList() : _rows;
+        var visible = matching.Where(r => Filter.SelectedIndex switch { 1 => r.HasFree, 2 => r.HasConflict, _ => true }).ToList();
+        var ranges = matching.GroupBy(r => r.Area).Select(g => $"{g.Key}{g.First().First}–{g.Key}{g.Last().Last}");
         AddressRanges.Text = string.Join("     ·     ", ranges);
         Status.Text = _rows.Count == 0 ? "Распознанных адресов у этого PLC нет." : string.Empty;
         if (_rows.Count > 0 && visible.Count == 0) Status.Text = "По этому фильтру байтов нет.";
         if (Issues.Items.Count > 0) Status.Text += "   Карта неполная. Проверьте нераспознанные адреса.";
-        var groups = _maps![(string)Plc.SelectedItem].SpanGroups();
+        var groups = map.SpanGroups();
         int plainRun = 0;
         bool previousGrouped = true;
         var rows = visible.Select(row =>
@@ -252,6 +260,7 @@ public partial class PlcAddressWindow : Window
         if (MessageBox.Show(this, $"Изменить адрес назначения «{selectedOwner.Display}» с «{origin}» на «{destination}»?",
             "Подтверждение изменения", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
         var timer = System.Diagnostics.Stopwatch.StartNew();
+        var selectedSource = Project.SelectedItem as AddressMapSource;
         var context = $"{_workspace!.DisplayName} · PLC {plc} · {selectedOwner.Display} · {origin} → {destination}";
         bool committed = false;
         try
@@ -262,8 +271,28 @@ public partial class PlcAddressWindow : Window
             if (!UserAuthorizationService.Has(Permission.CheckTools) || !UserAuthorizationService.Has(Permission.Mode1Edit))
                 throw new UnauthorizedAccessException("Нет права изменять адреса проекта.");
             var token = _lifetime.Token;
-            await Task.Run(() => _workspace!.ReassignPlcAddressAsync(selectedOwner, destination.Value, token), token);
+            var change = await Task.Run(() => _workspace!.ReassignPlcAddressAsync(selectedOwner, destination.Value, token), token);
             committed = true;
+            if (selectedSource is { Database: not null } && _changeJournalRequested != null)
+            {
+                var identity = change.IdentityAfter.Select(pair => $"{pair.Key}={pair.Value?.ToObject() ?? "NULL"}");
+                _changeJournalRequested(new ChangeJournalEntry
+                {
+                    Server = selectedSource.Server ?? "",
+                    Database = selectedSource.Database,
+                    ProjectName = selectedSource.Database,
+                    Mode = 1,
+                    ProjectType = "Online",
+                    Category = "Переназначение адреса",
+                    Source = change.TableName,
+                    Description = $"Адрес PLC {selectedOwner.Display}: {origin} → {destination.Value}",
+                    Details = $"Поле: {selectedOwner.Field} · PLC: {selectedOwner.Plc}",
+                    EntityType = "Назначение PLC",
+                    EntityIdentity = string.Join(", ", identity),
+                    OperationKind = ChangeJournalOperationKind.Update,
+                    Changes = new List<ChangeJournalRowChange> { change }
+                });
+            }
             SessionTestLog.Trace("КАРТА PLC", $"SQL COMMIT: {context}, {timer.ElapsedMilliseconds} мс");
             Status.Text = "Сохранено. Перечитываем карту…";
             await ReloadAsync(plc);

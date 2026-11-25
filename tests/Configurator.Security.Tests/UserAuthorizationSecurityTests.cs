@@ -35,12 +35,12 @@ public sealed class UserAuthorizationSecurityTests
     }
 
     [Fact]
-    public void AdministratorPolicyAcceptsTwelveCharactersAndLegacyPasswordsStillVerify()
+    public void BuiltInAdministratorRejectsPasswordReplacement()
     {
         UserAuthorizationService.ValidateAdministratorPassword("123456789012");
         var legacy = new UserAccount { UserName = "admin" };
-        UserAuthorizationService.SetPassword(legacy, "abcde");
-        Assert.True(UserAuthorizationService.VerifyPassword(legacy, "abcde"));
+        Assert.Throws<InvalidOperationException>(() => UserAuthorizationService.SetPassword(legacy, "abcde"));
+        Assert.False(UserAuthorizationService.VerifyPassword(legacy, "abcde"));
     }
 
     [Fact]
@@ -104,17 +104,33 @@ public sealed class UserAuthorizationSecurityTests
             Assert.False(needsSetup);
             var admin = fresh.Users.Single(u => u.UserName == "admin");
             string hash = admin.PasswordHash, salt = admin.PasswordSalt;
+            Assert.Throws<InvalidOperationException>(() => UserAuthorizationService.SetPassword(admin, "123456"));
+            Assert.Throws<InvalidOperationException>(() => UserAuthorizationService.CompleteInitialSetup("", "another-password"));
+            var legacy = new UserAccount();
+            UserAuthorizationService.SetPassword(legacy, "123456");
+            admin.PasswordSalt = legacy.PasswordSalt;
+            admin.PasswordHash = legacy.PasswordHash;
             fresh.Users.Add(new UserAccount { UserName = "Инженер-1", RoleName = "Проектировщик" });
             File.WriteAllText(path, Newtonsoft.Json.JsonConvert.SerializeObject(fresh));
             var store = UserAuthorizationService.LoadStore(path, out needsSetup);
             Assert.Equal(new[] { "Инженер", "admin" }, LoginWindow.GetLoginChoices(store.Users).Select(u => u.UserName));
+            Assert.False(needsSetup);
+            Assert.False(UserAuthorizationService.VerifyPassword(store.Users.Single(u => u.UserName == "admin"), "123456"));
+            string encrypted = File.ReadAllText(path);
+            Assert.StartsWith("DPAPI:", encrypted);
+            Assert.DoesNotContain(hash, encrypted);
+            UserAuthorizationService.LoadStore(path, out _);
+            Assert.Equal(encrypted, File.ReadAllText(path));
             Assert.Equal(hash, store.Users.Single(u => u.UserName == "admin").PasswordHash);
             Assert.Equal(salt, store.Users.Single(u => u.UserName == "admin").PasswordSalt);
             var engineer = store.Users.Single(u => u.UserName == "Инженер");
             var freshEngineer = fresh.Users.Single(u => u.UserName == "Инженер");
             Assert.Equal(freshEngineer.PasswordHash, engineer.PasswordHash);
             Assert.Equal(freshEngineer.PasswordSalt, engineer.PasswordSalt);
-            Assert.Equal(32, Convert.FromBase64String(engineer.PasswordHash).Length);
+            Assert.Empty(engineer.PasswordHash);
+            Assert.Empty(engineer.PasswordSalt);
+            Assert.False(UserAuthorizationService.RequiresPassword(engineer));
+            Assert.True(UserAuthorizationService.RequiresPassword(store.Users.Single(u => u.UserName == "admin")));
             var role = store.Roles.Single(r => r.Name == engineer.RoleName);
             foreach (int mode in new[] { 1, 3, 4 }) Assert.True(PermissionPolicy.CanEnterMode(engineer, role, mode));
             Assert.False(PermissionPolicy.CanEnterMode(engineer, role, 2));

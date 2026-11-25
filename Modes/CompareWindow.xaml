@@ -10,42 +10,28 @@
         <Style x:Key="CompareResultRowStyle" TargetType="DataGridRow">
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="Foreground" Value="{DynamicResource BrushText}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BrushBorder}"/>
+            <Setter Property="BorderThickness" Value="0,0,0,1"/>
             <Style.Triggers>
-                <DataTrigger Binding="{Binding StatusText}" Value="ТОЛЬКО A">
-                    <Setter Property="Background" Value="#142D8ED4"/>
-                </DataTrigger>
-                <DataTrigger Binding="{Binding StatusText}" Value="ТОЛЬКО B">
-                    <Setter Property="Background" Value="#142F9E63"/>
-                </DataTrigger>
-                <DataTrigger Binding="{Binding StatusText}" Value="ИЗМЕНЕНО">
-                    <Setter Property="Background" Value="#14E8A33D"/>
-                </DataTrigger>
-                <DataTrigger Binding="{Binding StatusText}" Value="НЕОДНОЗНАЧНО">
-                    <Setter Property="Background" Value="#14D97706"/>
-                </DataTrigger>
-                <DataTrigger Binding="{Binding StatusText}" Value="НЕ СОПОСТАВИМО">
-                    <Setter Property="Background" Value="#148B5CF6"/>
-                </DataTrigger>
-                <DataTrigger Binding="{Binding StatusText}" Value="ОШИБКА">
-                    <Setter Property="Background" Value="#14DC2626"/>
-                </DataTrigger>
                 <DataTrigger Binding="{Binding IsObjectHeader}" Value="True">
                     <Setter Property="FontWeight" Value="SemiBold"/>
-                    <Setter Property="BorderBrush" Value="{DynamicResource BrushBorder}"/>
-                    <Setter Property="BorderThickness" Value="0,1,0,0"/>
                 </DataTrigger>
                 <Trigger Property="IsSelected" Value="True">
-                    <Setter Property="Background" Value="{DynamicResource BrushSelected}"/>
+                    <Setter Property="BorderBrush" Value="{DynamicResource BrushText}"/>
+                    <Setter Property="BorderThickness" Value="1"/>
                 </Trigger>
             </Style.Triggers>
         </Style>
-        <BooleanToVisibilityConverter x:Key="VisibleWhenTrue"/>
         <Style x:Key="CompareCellText" TargetType="TextBlock" BasedOn="{x:Static DataGridTextColumn.DefaultElementStyle}">
+            <Setter Property="Margin" Value="10,0"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
             <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}"/>
         </Style>
         <Style x:Key="SideGrid" TargetType="DataGrid" BasedOn="{StaticResource {x:Type DataGrid}}">
             <Setter Property="AutoGenerateColumns" Value="False"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="GridLinesVisibility" Value="None"/>
             <Setter Property="IsReadOnly" Value="True"/>
             <Setter Property="CanUserAddRows" Value="False"/>
             <Setter Property="CanUserDeleteRows" Value="False"/>
@@ -53,7 +39,9 @@
             <Setter Property="CanUserResizeColumns" Value="False"/>
             <Setter Property="CanUserReorderColumns" Value="False"/>
             <Setter Property="CanUserSortColumns" Value="False"/>
-            <Setter Property="SelectionMode" Value="Single"/>
+            <Setter Property="IsSynchronizedWithCurrentItem" Value="False"/>
+            <EventSetter Event="SelectionChanged" Handler="SideSelectionChanged"/>
+            <Setter Property="SelectionMode" Value="Extended"/>
             <Setter Property="HeadersVisibility" Value="Column"/>
             <Setter Property="RowHeight" Value="32"/>
             <Setter Property="ColumnHeaderHeight" Value="32"/>
@@ -64,10 +52,25 @@
             <EventSetter Event="ScrollViewer.ScrollChanged" Handler="SideGrid_ScrollChanged"/>
         </Style>
         <GroupStyle x:Key="ObjectGroup">
+            <GroupStyle.ContainerStyle>
+                <Style TargetType="GroupItem">
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="GroupItem">
+                                <StackPanel>
+                                    <ContentPresenter/>
+                                    <ItemsPresenter/>
+                                </StackPanel>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Style>
+            </GroupStyle.ContainerStyle>
             <GroupStyle.HeaderTemplate>
                 <DataTemplate>
-                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" Padding="8,0" Height="28"
-                               Background="{DynamicResource BrushPanel}"/>
+                    <Border Height="28" Padding="10,0" Background="{DynamicResource BrushPanel}">
+                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                    </Border>
                 </DataTemplate>
             </GroupStyle.HeaderTemplate>
         </GroupStyle>
@@ -77,43 +80,27 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <DockPanel Margin="0,0,0,6">
             <Button x:Name="CompareButton" DockPanel.Dock="Right" Content="Сравнить" Click="CompareButton_Click"
                     Style="{StaticResource BtnPrimary}" MinWidth="106" Margin="8,0,0,0"/>
-            <CheckBox x:Name="ShowOptions" DockPanel.Dock="Right" Content="Источники и фильтр"
-                      IsChecked="True" VerticalAlignment="Center" Margin="8,0,4,0"
-                      ToolTip="Показать или скрыть выбор источников, фильтр и подробности строки"/>
-            <ComboBox x:Name="SectionBox" DockPanel.Dock="Left" Width="190" Margin="0,0,12,0"
+            <ComboBox x:Name="SectionBox" DockPanel.Dock="Left" Width="180"
                       AutomationProperties.Name="Раздел сравнения" SelectionChanged="SectionBox_SelectionChanged"/>
+            <Border DockPanel.Dock="Left" Width="1" Height="24" Margin="12,0" Background="{DynamicResource BrushBorder}"/>
+            <TextBlock DockPanel.Dock="Left" Text="Сценарий" VerticalAlignment="Center" Margin="0,0,8,0"/>
+            <ComboBox x:Name="ScenarioBox" DockPanel.Dock="Left" Width="175" SelectionChanged="ScenarioBox_SelectionChanged"/>
+            <Button x:Name="FlipButton" DockPanel.Dock="Left" Content="⇄  Поменять стороны" Margin="8,0,0,0"
+                    Click="FlipButton_Click" Style="{StaticResource BtnSecondary}"/>
+            <Border DockPanel.Dock="Left" Width="1" Height="24" Margin="12,0" Background="{DynamicResource BrushBorder}"/>
             <ProgressBar x:Name="ProgressBar" DockPanel.Dock="Right" Width="60" Height="4"
                          IsIndeterminate="True" Visibility="Collapsed"/>
             <TextBlock x:Name="ProgressText" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
                        ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
         </DockPanel>
 
-        <Grid Grid.Row="1" Margin="0,0,0,8" Visibility="{Binding IsChecked, ElementName=ShowOptions, Converter={StaticResource VisibleWhenTrue}}">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="230"/>
-                <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="Auto"/>
-            </Grid.ColumnDefinitions>
-            <TextBlock Text="Сценарий" VerticalAlignment="Center" Margin="0,0,10,0"/>
-            <ComboBox x:Name="ScenarioBox" Grid.Column="1" SelectionChanged="ScenarioBox_SelectionChanged"/>
-            <Button x:Name="FlipButton" Grid.Column="2" Content="⇄  Поменять стороны"
-                    Click="FlipButton_Click" Style="{StaticResource BtnSecondary}"
-                    Margin="12,0,0,0"/>
-            <ComboBox x:Name="FilterBox" Grid.Column="4" Width="185" AutomationProperties.Name="Фильтр различий"
-                      SelectionChanged="FilterBox_SelectionChanged"/>
-        </Grid>
-
-        <Grid Grid.Row="2" Margin="0,0,0,8" Visibility="{Binding IsChecked, ElementName=ShowOptions, Converter={StaticResource VisibleWhenTrue}}">
+        <Grid Grid.Row="1" Margin="0,0,0,8">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="12"/>
@@ -171,7 +158,7 @@
             </Border>
         </Grid>
 
-        <Grid Grid.Row="3">
+        <Grid Grid.Row="2">
             <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
             <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="64"/><ColumnDefinition/></Grid.ColumnDefinitions>
             <TextBlock x:Name="HeaderA" Text="A · Проект" FontSize="16" FontWeight="SemiBold" Margin="4,4,4,8"
@@ -179,83 +166,79 @@
             <TextBlock x:Name="HeaderB" Grid.Column="2" Text="B · Проект" FontSize="16" FontWeight="SemiBold" Margin="4,4,4,8"
                        TextTrimming="CharacterEllipsis"/>
             <DataGrid x:Name="LeftGrid" Grid.Row="1" Style="{StaticResource SideGrid}"
-                      SelectionChanged="DifferenceGrid_SelectionChanged" AutomationProperties.Name="Таблица проекта A">
+                      AutomationProperties.Name="Таблица проекта A">
+                <DataGrid.RowStyle>
+                    <Style TargetType="DataGridRow" BasedOn="{StaticResource CompareResultRowStyle}">
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding HasRecordA}" Value="True">
+                                <Setter Property="Background" Value="#382F9E63"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding HasRecordA}" Value="False">
+                                <Setter Property="Background" Value="#38DA4949"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding Difference.Status}" Value="OnlyA"><Setter Property="Background" Value="#382F9E63"/></DataTrigger>
+                                    <DataTrigger Binding="{Binding Difference.Status}" Value="OnlyB"><Setter Property="Background" Value="#38DA4949"/></DataTrigger>
+                                    <DataTrigger Binding="{Binding Difference.Status}" Value="Ambiguous"><Setter Property="Background" Value="#80E98224"/></DataTrigger>
+                                    <DataTrigger Binding="{Binding Difference.Status}" Value="NotComparable"><Setter Property="Background" Value="#80E98224"/></DataTrigger>
+                                    <DataTrigger Binding="{Binding Difference.Status}" Value="Error"><Setter Property="Background" Value="#60DA4949"/></DataTrigger>
+                                    <DataTrigger Binding="{Binding Difference.Status}" Value="Changed">
+                                <Setter Property="Background" Value="#55E5AD21"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding Difference.Status}" Value="KeyConflict">
+                                <Setter Property="Background" Value="#80E98224"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </DataGrid.RowStyle>
                 <DataGrid.GroupStyle><StaticResource ResourceKey="ObjectGroup"/></DataGrid.GroupStyle>
                 <DataGrid.Columns>
-                    <DataGridTextColumn Header="Элемент" Binding="{Binding Title}" Width="*" ElementStyle="{StaticResource CompareCellText}"/>
-                    <DataGridTextColumn Header="Значение A" Binding="{Binding A}" Width="*" ElementStyle="{StaticResource CompareCellText}"/>
+                    <DataGridTextColumn Header="Элемент" Binding="{Binding Title}" Width="7*" ElementStyle="{StaticResource CompareCellText}"/>
+                    <DataGridTextColumn Header="Значение A" Binding="{Binding A}" Width="3*" ElementStyle="{StaticResource CompareCellText}"/>
                 </DataGrid.Columns>
             </DataGrid>
-            <StackPanel Grid.Row="1" Grid.Column="1" VerticalAlignment="Center" Margin="6,0"
-                        DataContext="{Binding SelectedItem, ElementName=LeftGrid}">
-                <Button Content="→" Click="TransferAtoB_Click" FontSize="20" Margin="0,0,0,8"
+            <StackPanel Grid.Row="1" Grid.Column="1" VerticalAlignment="Center" Margin="6,0">
+                <Button x:Name="CopyToB" Content="→" Click="TransferAtoB_Click" FontSize="20" Margin="0,0,0,8"
                         AutomationProperties.Name="Перенести из A в B"
-                        IsEnabled="{Binding CanTransferAtoB, FallbackValue=False}" ToolTipService.ShowOnDisabled="True"
-                        ToolTip="{Binding TransferAtoBReason, FallbackValue='Выберите различие'}"/>
-                <Button Content="←" Click="TransferBtoA_Click" FontSize="20"
+                        IsEnabled="False" ToolTipService.ShowOnDisabled="True"
+                        ToolTip="Выберите различие"/>
+                <Button x:Name="CopyToA" Content="←" Click="TransferBtoA_Click" FontSize="20"
                         AutomationProperties.Name="Перенести из B в A"
-                        IsEnabled="{Binding CanTransferBtoA, FallbackValue=False}" ToolTipService.ShowOnDisabled="True"
-                        ToolTip="{Binding TransferBtoAReason, FallbackValue='Выберите различие'}"/>
+                        IsEnabled="False" ToolTipService.ShowOnDisabled="True"
+                        ToolTip="Выберите различие"/>
             </StackPanel>
             <DataGrid x:Name="RightGrid" Grid.Row="1" Grid.Column="2" Style="{StaticResource SideGrid}"
                       ItemsSource="{Binding ItemsSource, ElementName=LeftGrid}"
-                      SelectedItem="{Binding SelectedItem, ElementName=LeftGrid, Mode=TwoWay}"
                       AutomationProperties.Name="Таблица проекта B">
+                <DataGrid.RowStyle>
+                    <Style TargetType="DataGridRow" BasedOn="{StaticResource CompareResultRowStyle}">
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding HasRecordB}" Value="True">
+                                <Setter Property="Background" Value="#382F9E63"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding HasRecordB}" Value="False">
+                                <Setter Property="Background" Value="#38DA4949"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding Difference.Status}" Value="OnlyA"><Setter Property="Background" Value="#38DA4949"/></DataTrigger>
+                                    <DataTrigger Binding="{Binding Difference.Status}" Value="OnlyB"><Setter Property="Background" Value="#382F9E63"/></DataTrigger>
+                                    <DataTrigger Binding="{Binding Difference.Status}" Value="Ambiguous"><Setter Property="Background" Value="#80E98224"/></DataTrigger>
+                                    <DataTrigger Binding="{Binding Difference.Status}" Value="NotComparable"><Setter Property="Background" Value="#80E98224"/></DataTrigger>
+                                    <DataTrigger Binding="{Binding Difference.Status}" Value="Error"><Setter Property="Background" Value="#60DA4949"/></DataTrigger>
+                                    <DataTrigger Binding="{Binding Difference.Status}" Value="Changed">
+                                <Setter Property="Background" Value="#55E5AD21"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding Difference.Status}" Value="KeyConflict">
+                                <Setter Property="Background" Value="#80E98224"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </DataGrid.RowStyle>
                 <DataGrid.GroupStyle><StaticResource ResourceKey="ObjectGroup"/></DataGrid.GroupStyle>
                 <DataGrid.Columns>
-                    <DataGridTextColumn Header="Элемент" Binding="{Binding Title}" Width="*" ElementStyle="{StaticResource CompareCellText}"/>
-                    <DataGridTextColumn Header="Значение B" Binding="{Binding B}" Width="*" ElementStyle="{StaticResource CompareCellText}"/>
-                    <DataGridTextColumn Header="Статус" Binding="{Binding StatusText}" Width="0.5*" ElementStyle="{StaticResource CompareCellText}"/>
+                    <DataGridTextColumn Header="Элемент" Binding="{Binding Title}" Width="7*" ElementStyle="{StaticResource CompareCellText}"/>
+                    <DataGridTextColumn Header="Значение B" Binding="{Binding B}" Width="3*" ElementStyle="{StaticResource CompareCellText}"/>
                 </DataGrid.Columns>
             </DataGrid>
         </Grid>
-
-        <Border Grid.Row="4" Visibility="{Binding IsChecked, ElementName=ShowOptions, Converter={StaticResource VisibleWhenTrue}}" Margin="0,8,0,0" Padding="10" CornerRadius="7"
-                Height="146"
-                Background="{DynamicResource BrushPanel}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1">
-            <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
-                    <RowDefinition Height="Auto"/>
-                </Grid.RowDefinitions>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="*"/>
-                </Grid.ColumnDefinitions>
-                <DockPanel Grid.ColumnSpan="2" Margin="0,0,0,8">
-                    <TextBlock x:Name="DetailStatus" DockPanel.Dock="Right" Margin="12,0,0,0"
-                               Foreground="{DynamicResource BrushTextSecondary}" VerticalAlignment="Center"/>
-                    <TextBlock x:Name="DetailTitle" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"
-                               VerticalAlignment="Center" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
-                </DockPanel>
-                <Border Grid.Row="1" Grid.Column="0" Margin="0,0,6,0" Padding="8,5"
-                        CornerRadius="5" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1">
-                    <Grid>
-                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                        <TextBlock Text="Проект A" FontWeight="SemiBold" FontSize="11"
-                                   Foreground="{DynamicResource BrushTextSecondary}"/>
-                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                            <TextBlock x:Name="DetailA" Margin="0,3,0,0" TextWrapping="Wrap"/>
-                        </ScrollViewer>
-                    </Grid>
-                </Border>
-                <Border Grid.Row="1" Grid.Column="1" Margin="6,0,0,0" Padding="8,5"
-                        CornerRadius="5" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1">
-                    <Grid>
-                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                        <TextBlock Text="Проект B" FontWeight="SemiBold" FontSize="11"
-                                   Foreground="{DynamicResource BrushTextSecondary}"/>
-                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                            <TextBlock x:Name="DetailB" Margin="0,3,0,0" TextWrapping="Wrap"/>
-                        </ScrollViewer>
-                    </Grid>
-                </Border>
-                <TextBlock x:Name="DetailTransfer" Grid.Row="2" Grid.ColumnSpan="2" Margin="0,8,0,0"
-                           TextWrapping="Wrap" Foreground="{DynamicResource BrushTextSecondary}"
-                           Visibility="Collapsed"/>
-            </Grid>
-        </Border>
 
     </Grid>
 </Window>

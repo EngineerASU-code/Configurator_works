@@ -16,7 +16,7 @@ namespace Configurator
 
         private void Window_KeyDown(object sender, KeyEventArgs e)
         {
-            if (e.Key == Key.Escape)
+            if (e.Key is Key.Escape or Key.Enter)
             {
                 Close();
                 e.Handled = true;

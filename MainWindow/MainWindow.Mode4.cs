@@ -13,8 +13,9 @@ public partial class MainWindow
             FunctionalBlockEditorControl.ConfigureOnline(_connection?.Server ?? string.Empty, availableProject);
     }
 
-    private void FunctionalBlockEditorControl_ProjectDataChanged(object sender, EventArgs e)
+    private void FunctionalBlockEditorControl_ProjectDataChanged(string description)
     {
+        ShowLastAction(description);
         if (_isOfflineWorkspace) _offlineProjectDirty = true;
     }
 }

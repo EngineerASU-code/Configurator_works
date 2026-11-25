@@ -18,11 +18,62 @@ public partial class MainWindow
 
     private async void DataTableGrid_ClipboardKeyDown(object sender, KeyEventArgs e)
     {
+        if (_currentMode == 1 && e.Key == Key.Delete && Keyboard.Modifiers == ModifierKeys.None &&
+            sender is DataGrid tableGrid && e.OriginalSource is DependencyObject source &&
+            ItemsControl.ContainerFromElement(tableGrid, source) is DataGridRow)
+        {
+            e.Handled = true;
+            if (!e.IsRepeat) await DeleteSelectedTableRowsAsync();
+            return;
+        }
+
+        if (_currentMode == 1 && Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.D &&
+            sender is DataGrid duplicateGrid && e.OriginalSource is DependencyObject duplicateSource &&
+            ItemsControl.ContainerFromElement(duplicateGrid, duplicateSource) is DataGridRow)
+        {
+            e.Handled = true;
+            if (!e.IsRepeat && !_tablePasteInProgress && !_tableDeleteInProgress &&
+                duplicateGrid.SelectedItems.Count == 1 && _rightPanel.BtnDuplicate.IsEnabled)
+                BtnDuplicate_Click(sender, e);
+            return;
+        }
+
         if (_currentMode != 1 || Keyboard.Modifiers != ModifierKeys.Control || e.Key is not (Key.C or Key.V))
             return;
         e.Handled = true;
+        await UseTableClipboardAsync((DataGrid)sender, e.Key);
+    }
+
+    private void OpenTableRowMenu(object sender, MouseButtonEventArgs e)
+    {
+        var grid = (DataGrid)sender;
+        if (_currentMode != 1 || e.OriginalSource is not DependencyObject source ||
+            FindVisualParent<DataGridCell>(source) is not { } cell ||
+            ItemsControl.ContainerFromElement(grid, source) is not DataGridRow row) return;
+        e.Handled = true;
+        if (!row.IsSelected) grid.SelectedItem = row.Item;
+        grid.CurrentCell = new DataGridCellInfo(row.Item, cell.Column);
+        var menu = new ContextMenu { PlacementTarget = cell, Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint };
+        bool ready = !_tableDeleteInProgress && !_tablePasteInProgress;
+        void Add(string title, bool enabled, RoutedEventHandler action)
+        {
+            var item = new MenuItem { Header = title, IsEnabled = ready && enabled };
+            item.Click += action;
+            menu.Items.Add(item);
+        }
+        Add("Добавить", _rightPanel.BtnAdd.IsEnabled, BtnAdd_Click);
+        Add("Дублировать", grid.SelectedItems.Count == 1 && _rightPanel.BtnDuplicate.IsEnabled, BtnDuplicate_Click);
+        Add("Копировать", grid.SelectedItems.Count > 0, async (_, _) => await UseTableClipboardAsync(grid, Key.C));
+        Add("Вставить", _rightPanel.BtnAdd.IsEnabled || _rightPanel.BtnUpdate.IsEnabled, async (_, _) => await UseTableClipboardAsync(grid, Key.V));
+        Add("Удалить", _rightPanel.BtnDelete.IsEnabled, BtnDelete_Click);
+        menu.IsOpen = true;
+    }
+
+    private async Task UseTableClipboardAsync(DataGrid grid, Key key)
+    {
         if (!UserAuthorizationService.Has(Permission.Mode1View) || _tablePasteInProgress ||
-            sender is not DataGrid grid || grid.ItemsSource is not DataView view)
+            (key == Key.V && _tableDeleteInProgress) ||
+            grid.ItemsSource is not DataView view)
             return;
 
         var visible = grid.Columns.Where(c => c.Visibility == Visibility.Visible)
@@ -30,7 +81,7 @@ public partial class MainWindow
         var names = visible.Select(c => c.SortMemberPath).ToArray();
         try
         {
-            if (e.Key == Key.C)
+            if (key == Key.C)
             {
                 var selected = grid.SelectedItems.OfType<DataRowView>().ToHashSet();
                 if (selected.Count > 0)
@@ -58,7 +109,7 @@ public partial class MainWindow
         }
         finally
         {
-            if (e.Key == Key.V) _tablePasteInProgress = false;
+            if (key == Key.V) _tablePasteInProgress = false;
         }
     }
 
@@ -93,6 +144,34 @@ public partial class MainWindow
         var plan = new List<(Dictionary<string, object> Key, Dictionary<string, object> Values, Dictionary<string, object> Expected)>();
         var offlineTargets = new List<DataRow>();
 
+        var conflicts = new List<PasteConflict>();
+        var reserved = new List<Dictionary<string, object>>();
+        var plannedOrder = new List<int>();
+
+        bool Reserved(Dictionary<string, object> candidate) =>
+            reserved.Any(key => candidate.All(field => PasteKeyEquals(key[field.Key], field.Value)));
+
+        async Task<(int Count, DataRow Local, Dictionary<string, object> Online)> Find(Dictionary<string, object> key)
+        {
+            if (offline)
+            {
+                var rows = data.AsEnumerable().Where(row => key.All(field => PasteKeyEquals(row[field.Key], field.Value))).Take(2).ToList();
+                return (rows.Count, rows.FirstOrDefault(), null);
+            }
+            var matches = await database.FindTablePasteRowsAsync(table, key);
+            return (matches.Count, null, matches.FirstOrDefault());
+        }
+
+        void ValidateInsert(Dictionary<string, object> values, int number)
+        {
+            if (!canAdd || record.IsIdentity || record.IsReadOnly)
+                throw new InvalidOperationException($"Строка {number}. Добавление с указанным Record недоступно.");
+            var missing = columns.FirstOrDefault(c => !c.IsIdentity && !c.IsReadOnly && !c.IsNullable && !c.HasDefault &&
+                (!values.TryGetValue(c.Name, out var value) || value == null));
+            if (missing != null)
+                throw new FormatException($"Строка {number}. Заполните обязательное поле «{missing.Name}».");
+        }
+
         for (int rowIndex = 0; rowIndex < cells.Count; rowIndex++)
         {
             var values = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
@@ -115,42 +194,80 @@ public partial class MainWindow
             if (scope.Any(c => !key.TryGetValue(c.Name, out var value) || value == null || string.IsNullOrWhiteSpace(Convert.ToString(value))))
                 throw new FormatException($"Строка {rowIndex + 1}. Заполните поля ключа: {string.Join(", ", scope.Select(c => c.Name))}.");
 
-            while (true)
+            var found = await Find(key);
+            bool duplicate = Reserved(key);
+            reserved.Add(key);
+            if (found.Count == 0 && !duplicate)
             {
-                DataRow[] localMatches = offline
-                    ? data.AsEnumerable().Where(row => key.All(field => PasteKeyEquals(row[field.Key], field.Value))).Take(2).ToArray()
-                    : Array.Empty<DataRow>();
-                var onlineMatches = offline ? null : await database.FindTablePasteRowsAsync(table, key);
-                int matches = offline ? localMatches.Length : onlineMatches.Count;
-                bool alreadyPlanned = plan.Any(row => key.All(field => PasteKeyEquals(row.Key[field.Key], field.Value)));
-                if (matches == 0 && !alreadyPlanned)
-                {
-                    if (!canAdd || record.IsIdentity || record.IsReadOnly)
-                        throw new InvalidOperationException($"Строка {rowIndex + 1}. Добавление с указанным Record недоступно.");
-                    var missing = columns.FirstOrDefault(c => !c.IsIdentity && !c.IsReadOnly && !c.IsNullable && !c.HasDefault &&
-                        (!values.TryGetValue(c.Name, out var value) || value == null));
-                    if (missing != null)
-                        throw new FormatException($"Строка {rowIndex + 1}. Заполните обязательное поле «{missing.Name}».");
-                    plan.Add((key, values, null));
-                    offlineTargets.Add(null);
-                    break;
-                }
-
-                bool canReplace = canEdit && matches == 1 && !alreadyPlanned;
-                var conflict = ResolveTablePasteConflict(rowIndex + 1, key, record,
-                    canAdd && !record.IsIdentity && !record.IsReadOnly, canReplace, alreadyPlanned);
-                if (conflict.Cancelled) return;
-                if (conflict.Replace)
-                {
-                    foreach (var name in primaryKey.Concat(key.Keys))
-                        values.Remove(name);
-                    plan.Add((key, values, offline ? null : onlineMatches[0]));
-                    offlineTargets.Add(offline ? localMatches[0] : null);
-                    break;
-                }
-
-                key[record.Name] = values[record.Name] = conflict.Record;
+                ValidateInsert(values, rowIndex + 1);
+                plan.Add((key, values, null));
+                offlineTargets.Add(null);
+                plannedOrder.Add(rowIndex + 1);
+                continue;
             }
+            conflicts.Add(new PasteConflict
+            {
+                Number = rowIndex + 1, Key = key, Values = values, Local = found.Local, Online = found.Online,
+                UniqueTarget = found.Count == 1, CanReplace = canEdit && found.Count == 1 && !duplicate,
+                Reason = duplicate ? "Повтор в буфере" : found.Count > 1 ? "Несколько совпадений" :
+                    canEdit ? "Запись существует" : "Нет права замены"
+            });
+        }
+
+        async Task Resolve(List<PasteConflict> selected, bool replace)
+        {
+            var changed = new List<Dictionary<string, object>>();
+            if (!replace)
+            {
+                foreach (var item in selected)
+                {
+                    var value = ParseTablePasteValue(item.NewRecord.Trim(), record, item.Number);
+                    var key = new Dictionary<string, object>(item.Key, StringComparer.OrdinalIgnoreCase) { [record.Name] = value };
+                    if (value == null || string.IsNullOrWhiteSpace(item.NewRecord) || Reserved(key) ||
+                        changed.Any(other => key.All(field => PasteKeyEquals(other[field.Key], field.Value))) ||
+                        (await Find(key)).Count != 0)
+                        throw new FormatException($"Строка {item.Number}. Введите свободный Record.");
+                    var values = new Dictionary<string, object>(item.Values, StringComparer.OrdinalIgnoreCase) { [record.Name] = value };
+                    ValidateInsert(values, item.Number);
+                    changed.Add(key);
+                }
+            }
+            for (int i = 0; i < selected.Count; i++)
+            {
+                var item = selected[i];
+                if (replace)
+                {
+                    foreach (var name in primaryKey.Concat(item.Key.Keys)) item.Values.Remove(name);
+                }
+                else
+                {
+                    reserved.Remove(item.Key);
+                    reserved.Add(changed[i]);
+                    item.Key = changed[i];
+                    item.Values[record.Name] = item.Key[record.Name];
+                }
+                plan.Add((item.Key, item.Values, replace ? item.Online : null));
+                offlineTargets.Add(replace ? item.Local : null);
+                plannedOrder.Add(item.Number);
+            }
+            foreach (var pending in conflicts.Where(row => !row.Selected && row.UniqueTarget && !row.CanReplace && canEdit))
+            {
+                bool SameKey(Dictionary<string, object> key) => pending.Key.All(field => PasteKeyEquals(key[field.Key], field.Value));
+                if (!plan.Any(row => SameKey(row.Key)) && !conflicts.Any(row => !row.Selected && row.Number < pending.Number && SameKey(row.Key)))
+                {
+                    pending.CanReplace = true;
+                    pending.Reason = "Запись существует";
+                }
+            }
+        }
+
+        if (conflicts.Count > 0)
+        {
+            var dialog = new PasteConflictsWindow(conflicts, canAdd && !record.IsIdentity && !record.IsReadOnly, Resolve) { Owner = this };
+            if (dialog.ShowDialog() != true) return;
+            var order = Enumerable.Range(0, plan.Count).OrderBy(i => plannedOrder[i]).ToArray();
+            plan = order.Select(i => plan[i]).ToList();
+            offlineTargets = order.Select(i => offlineTargets[i]).ToList();
         }
 
         int inserted = plan.Where((row, index) => offline ? offlineTargets[index] == null : row.Expected == null).Count();
@@ -183,7 +300,13 @@ public partial class MainWindow
         }
         else
         {
-            await database.ApplyTablePasteAsync(table, primaryKey, plan);
+            var changes = await database.ApplyTablePasteAsync(table, primaryKey, plan);
+            if (changes.Count > 0)
+            {
+                var added = changes.Count(change => change.Kind == ChangeJournalOperationKind.Insert);
+                LogAction($"Вставка из буфера · {table} · добавлено: {added}, заменено: {changes.Count - added}",
+                    category: "Вставка из буфера", source: table, journalChanges: changes, databaseName: dbName);
+            }
             if (_currentMode == 1 && _activeVm == vm && _activeDbName == dbName && vm.CurrentTable == table && !_isOfflineWorkspace)
             {
                 await vm.RefreshTotalCountAsync();
@@ -216,58 +339,5 @@ public partial class MainWindow
         {
             throw new FormatException($"Строка {rowNumber}. Недопустимое значение в столбце «{column.Name}».");
         }
-    }
-
-    private (bool Cancelled, bool Replace, object Record) ResolveTablePasteConflict(int rowNumber,
-        Dictionary<string, object> key, ColumnInfo record, bool canChange, bool canReplace, bool alreadyPlanned)
-    {
-        var dialog = new Window
-        {
-            Owner = this, Title = "Конфликт Record", SizeToContent = SizeToContent.Height,
-            Width = 510, ResizeMode = ResizeMode.NoResize, WindowStartupLocation = WindowStartupLocation.CenterOwner
-        };
-        var panel = new StackPanel { Margin = new Thickness(20) };
-        dialog.Content = panel;
-        var description = alreadyPlanned ? "Этот ключ уже встречается в блоке вставки." :
-            canReplace ? "Запись с таким ключом уже существует. Можно ввести новый Record или заменить значения вставляемых полей, сохранив ключ строки." :
-            "Запись с таким ключом уже существует. Замена недоступна.";
-        panel.Children.Add(new TextBlock
-        {
-            Text = $"Строка {rowNumber} · {string.Join(", ", key.Select(field => $"{field.Key}={field.Value}"))}\n{description}",
-            TextWrapping = TextWrapping.Wrap
-        });
-        var input = new TextBox { Text = Convert.ToString(key[record.Name]), IsEnabled = canChange, Margin = new Thickness(0, 12, 0, 8) };
-        panel.Children.Add(input);
-        var error = new TextBlock { TextWrapping = TextWrapping.Wrap };
-        panel.Children.Add(error);
-        var buttons = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right };
-        panel.Children.Add(buttons);
-        var change = new Button { Content = "Изменить Record", IsEnabled = canChange, IsDefault = canChange };
-        var replace = new Button { Content = "Заменить запись", IsEnabled = canReplace, Margin = new Thickness(8, 0, 8, 0) };
-        var cancel = new Button { Content = "Отменить вставку", IsCancel = true };
-        buttons.Children.Add(change);
-        buttons.Children.Add(replace);
-        buttons.Children.Add(cancel);
-        object changedRecord = null;
-        bool replaceExisting = false;
-        change.Click += (_, _) =>
-        {
-            try
-            {
-                var value = ParseTablePasteValue(input.Text.Trim(), record, rowNumber);
-                if (value == null || input.Text.Trim().Length == 0 || PasteKeyEquals(key[record.Name], value))
-                    throw new FormatException("Введите другое значение Record.");
-                changedRecord = value;
-                dialog.DialogResult = true;
-            }
-            catch (FormatException ex) { error.Text = ex.Message; }
-        };
-        replace.Click += (_, _) =>
-        {
-            replaceExisting = true;
-            dialog.DialogResult = true;
-        };
-        dialog.Loaded += (_, _) => { if (canChange) { input.Focus(); input.SelectAll(); } };
-        return (dialog.ShowDialog() != true, replaceExisting, changedRecord);
     }
 }

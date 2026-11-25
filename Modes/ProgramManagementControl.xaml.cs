@@ -76,6 +76,11 @@ public partial class ProgramManagementControl : UserControl
     public ProgramManagementControl()
     {
         InitializeComponent();
+        ProgramsGrid.PreviewKeyDown += (_, e) => Mode3DeleteShortcut.Handle(e, DeleteProgramButton);
+        SequencesGrid.PreviewKeyDown += (_, e) => Mode3DeleteShortcut.Handle(e, DeleteSequenceButton);
+        TransitionsGrid.PreviewKeyDown += (_, e) => Mode3DeleteShortcut.Handle(e, DeleteStepButton);
+        ProgramParamsGrid.PreviewKeyDown += (_, e) => Mode3DeleteShortcut.Handle(e, DeleteProgramParameterButton);
+        StepParamsGrid.PreviewKeyDown += (_, e) => Mode3DeleteShortcut.Handle(e, DeleteStepParameterButton);
         RecipesEditor.SetSections("recipes");
         SoftKeysEditor.SetSections("softkey");
         MessagesEditor.SetSections("messages");
@@ -1050,13 +1055,12 @@ public partial class ProgramManagementControl : UserControl
                 new[] { "PLC", "PLC_Class_Number", "Record" }, "Новая программа");
             if (values == null) return;
             if (!await CanChangeContextAsync()) return;
-            int record = await _repository.AddProgramAsync(plc, classNumber, values);
-            var inserted = new Dictionary<string, object>(values, StringComparer.OrdinalIgnoreCase)
-            {
-                ["PLC"] = plc, ["PLC_Class_Number"] = classNumber, ["Record"] = record
-            };
+            var inserted = await _repository.AddProgramWithSnapshotAsync(plc, classNumber, values);
+            int record = inserted.GeneratedValue;
             string journalWarning = RaiseJournal(ProgramManagementRepository.ProgramTable, ChangeJournalOperationKind.Insert, null,
-                inserted, IdentityFor(ProgramManagementRepository.ProgramTable, inserted), $"Создана программа Record={record}");
+                inserted.Values, IdentityFor(ProgramManagementRepository.ProgramTable, inserted.Values), $"Создана программа Record={record}",
+                new[] { CreateInsertJournalChange(ProgramManagementRepository.ProgramTable, inserted) },
+                restoreIncludesAllChanges: inserted.RestoreIncludesAllChanges, restoreWarning: inserted.RestoreUnavailableReason);
             bool refreshed = await LoadProgramsAsync(record, afterCommittedChange: true, postCommitWarning: journalWarning);
             if (refreshed) SetStatus($"Программа Record={record} создана." + FormatJournalWarning(journalWarning));
         }
@@ -1083,16 +1087,12 @@ public partial class ProgramManagementControl : UserControl
                 new[] { "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Record" }, "Новая последовательность");
             if (values == null) return;
             if (!await CanChangeContextAsync()) return;
-            int record = await _repository.AddSequenceAsync(targetContext, values);
-            var inserted = new Dictionary<string, object>(values, StringComparer.OrdinalIgnoreCase)
-            {
-                ["PLC"] = targetContext.PlcValue,
-                ["PLC_Class_Prog_Number"] = targetContext.ClassNumberValue,
-                ["Prog_Record"] = targetContext.RecordValue,
-                ["Record"] = record
-            };
+            var inserted = await _repository.AddSequenceWithSnapshotAsync(targetContext, values);
+            int record = inserted.GeneratedValue;
             string journalWarning = RaiseJournal(ProgramManagementRepository.SequenceTable, ChangeJournalOperationKind.Insert, null,
-                inserted, IdentityFor(ProgramManagementRepository.SequenceTable, inserted), $"Создана последовательность Record={record}");
+                inserted.Values, IdentityFor(ProgramManagementRepository.SequenceTable, inserted.Values), $"Создана последовательность Record={record}",
+                new[] { CreateInsertJournalChange(ProgramManagementRepository.SequenceTable, inserted) },
+                restoreIncludesAllChanges: inserted.RestoreIncludesAllChanges, restoreWarning: inserted.RestoreUnavailableReason);
             bool refreshed = await LoadSequencesAsync(record, contextChangeApproved: true, afterCommittedChange: true, postCommitWarning: journalWarning);
             if (refreshed) SetStatus($"Последовательность Record={record} создана." + FormatJournalWarning(journalWarning));
         }
@@ -1122,21 +1122,14 @@ public partial class ProgramManagementControl : UserControl
                 new[] { "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Seq_Record", "SeqStep_Number", "PLC_Class_Step_Number", "Step_Record" },
                 "Параметры перехода нового шага", defaults);
             if (extraFields == null) return;
-            int number = await _repository.AddStepToSequenceAsync(targetContext,
+            var inserted = await _repository.AddStepToSequenceWithSnapshotAsync(targetContext,
                 selectedStep["PLC_Class_Number"], selectedStep["Record"], extraFields);
-            var snapshot = new Dictionary<string, object>(extraFields, StringComparer.OrdinalIgnoreCase)
-            {
-                ["PLC"] = targetContext.PlcValue,
-                ["PLC_Class_Prog_Number"] = targetContext.ClassNumberValue,
-                ["Prog_Record"] = targetContext.RecordValue,
-                ["Seq_Record"] = targetContext.SeqRecordValue,
-                ["SeqStep_Number"] = number,
-                ["PLC_Class_Step_Number"] = selectedStep["PLC_Class_Number"],
-                ["Step_Record"] = selectedStep["Record"]
-            };
+            int number = inserted.GeneratedValue;
             string journalWarning = RaiseJournal(ProgramManagementRepository.TransitionTable, ChangeJournalOperationKind.Insert, null,
-                snapshot, IdentityFor(ProgramManagementRepository.TransitionTable, snapshot),
-                $"Добавлен шаг последовательности SeqStep_Number={number}");
+                inserted.Values, IdentityFor(ProgramManagementRepository.TransitionTable, inserted.Values),
+                $"Добавлен шаг последовательности SeqStep_Number={number}",
+                new[] { CreateInsertJournalChange(ProgramManagementRepository.TransitionTable, inserted) },
+                restoreIncludesAllChanges: inserted.RestoreIncludesAllChanges, restoreWarning: inserted.RestoreUnavailableReason);
             bool refreshed = await LoadSequenceChildrenAsync(afterCommittedChange: true, postCommitWarning: journalWarning);
             if (refreshed) SetStatus($"Шаг добавлен в последовательность под номером {number}." + FormatJournalWarning(journalWarning));
         }
@@ -1163,10 +1156,12 @@ public partial class ProgramManagementControl : UserControl
         int? movedTo = null;
         try
         {
-            movedTo = await _repository.MoveStepAsync(context, original, direction);
+            var move = await _repository.MoveStepWithJournalAsync(context, original, direction);
+            movedTo = move.NewStepNumber;
             string warning = RaiseJournal(ProgramManagementRepository.TransitionTable, ChangeJournalOperationKind.Update,
                 original, null, IdentityFor(ProgramManagementRepository.TransitionTable, original),
-                $"Перемещено вхождение шага на номер {movedTo}; изменены связанные ссылки");
+                $"Перемещено вхождение шага на номер {movedTo}; изменены связанные ссылки",
+                move.Changes, ChangeJournalRestoreKind.ProgramStepMove, move.RestorePayloadJson);
             bool loaded = await LoadSequenceChildrenAsync(afterCommittedChange: true, postCommitWarning: warning);
             if (loaded)
             {
@@ -1250,8 +1245,7 @@ public partial class ProgramManagementControl : UserControl
         var deletedProgram = ProgramsGrid.SelectedItem as DataRowView;
         var deletedProgramValues = deletedProgram == null ? null : ToValues(deletedProgram.Row, DataRowVersion.Current);
         if (deletedProgramValues == null) { SetStatus("Не удалось определить исходную строку программы."); return; }
-        if (MessageBox.Show("Программа будет удалена только если у неё нет последовательностей, параметров и других зависимых данных. Продолжить?",
-                "Удаление программы", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+
         bool ownsChangeLock = false;
         bool?[] enabledBeforeOperation = null;
         try
@@ -1259,11 +1253,15 @@ public partial class ProgramManagementControl : UserControl
             _contextChangePending = true;
             ownsChangeLock = true;
             enabledBeforeOperation = SetContextGridsEnabled(false);
-            await _repository.DeleteProgramAsync(targetContext, expected: deletedProgramValues);
-            string journalWarning = null;
-            if (deletedProgramValues != null)
-                journalWarning = RaiseJournal(ProgramManagementRepository.ProgramTable, ChangeJournalOperationKind.Delete, deletedProgramValues,
-                    null, IdentityFor(ProgramManagementRepository.ProgramTable, deletedProgramValues), "Удалена программа");
+            var repository = _repository;
+            var preview = await repository.PrepareContextReplacementAsync(targetContext, null, deletedProgramValues);
+            if (!IsVisible || !ProgramContextDeletionDialog.Confirm(Window.GetWindow(this), preview, out var replacement) ||
+                !IsVisible || !ReferenceEquals(repository, _repository) || !UserAuthorizationService.Require(Permission.DeleteData)) return;
+            var changes = await repository.ReplaceAndDeleteContextAsync(preview, replacement);
+            string journalWarning = RaiseJournal(ProgramManagementRepository.ProgramTable,
+                changes.Count > 1 ? ChangeJournalOperationKind.Composite : ChangeJournalOperationKind.Delete,
+                deletedProgramValues, null, IdentityFor(ProgramManagementRepository.ProgramTable, deletedProgramValues),
+                "Удалена программа", changes);
             bool refreshed = await LoadProgramsAsync(afterCommittedChange: true, postCommitWarning: journalWarning);
             if (refreshed) SetStatus("Программа удалена." + FormatJournalWarning(journalWarning));
         }
@@ -1296,13 +1294,15 @@ public partial class ProgramManagementControl : UserControl
             _contextChangePending = true;
             ownsChangeLock = true;
             enabledBeforeOperation = SetContextGridsEnabled(false);
-            var preview = await _repository.PrepareSequenceDeletionAsync(targetContext, sequenceRecord);
-            var counts = string.Join("\n", preview.Counts.Select(pair => $"{pair.Key}: {pair.Value}"));
-            if (Configurator.Infrastructure.ModernDialog.Show(Window.GetWindow(this), $"Удалить последовательность № {sequenceRecord} и связанные записи?\n\n{counts}",
-                    "Удаление последовательности", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-            var deletedRows = await _repository.DeleteSequenceAsync(targetContext, sequenceRecord, deleteDependents: true, expected: deletedSequenceValues, preview: preview);
-            string journalWarning = RaiseJournal(ProgramManagementRepository.SequenceTable, ChangeJournalOperationKind.Delete, deletedSequenceValues,
-                null, IdentityFor(ProgramManagementRepository.SequenceTable, deletedSequenceValues), "Удалена последовательность со связанными данными", deletedRows);
+            var repository = _repository;
+            var preview = await repository.PrepareContextReplacementAsync(targetContext, sequenceRecord, deletedSequenceValues);
+            if (!IsVisible || !ProgramContextDeletionDialog.Confirm(Window.GetWindow(this), preview, out var replacement) ||
+                !IsVisible || !ReferenceEquals(repository, _repository) || !UserAuthorizationService.Require(Permission.DeleteData)) return;
+            var changes = await repository.ReplaceAndDeleteContextAsync(preview, replacement);
+            string journalWarning = RaiseJournal(ProgramManagementRepository.SequenceTable,
+                changes.Count > 1 ? ChangeJournalOperationKind.Composite : ChangeJournalOperationKind.Delete,
+                deletedSequenceValues, null, IdentityFor(ProgramManagementRepository.SequenceTable, deletedSequenceValues),
+                "Удалена последовательность", changes);
             bool refreshed = await LoadSequencesAsync(contextChangeApproved: true, afterCommittedChange: true, postCommitWarning: journalWarning);
             if (refreshed) SetStatus($"Последовательность Record={sequenceRecord} удалена." + FormatJournalWarning(journalWarning));
         }
@@ -1313,6 +1313,7 @@ public partial class ProgramManagementControl : UserControl
             {
                 RestoreContextGridsEnabled(enabledBeforeOperation);
                 _contextChangePending = false;
+                UpdateCommandState();
             }
         }
     }
@@ -1328,15 +1329,37 @@ public partial class ProgramManagementControl : UserControl
         object stepNumber = GetValue(row.Row, "SeqStep_Number");
         if (stepNumber == null) { SetStatus("В переходе нет SeqStep_Number."); return; }
         var deletedStepValues = ToValues(row.Row, DataRowVersion.Current);
-        if (MessageBox.Show("Шаг будет удалён из последовательности только если на него не ссылаются переходы и нет зависимых параметров, рецептов или выборов очереди. Продолжить?",
-                "Удаление шага", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         _contextChangePending = true;
         bool?[] enabledBeforeOperation = SetContextGridsEnabled(false);
         try
         {
-            await _repository.DeleteStepFromSequenceAsync(targetContext, stepNumber, expected: deletedStepValues);
+            int number = Convert.ToInt32(stepNumber, CultureInfo.InvariantCulture);
+            var preview = await _repository.PrepareStepDeletionAsync(targetContext, number);
+            IReadOnlyList<ChangeJournalRowChange> changes = null;
+            string description = "Удалён шаг из последовательности";
+            if (preview.NeedsReplacement)
+            {
+                if (!UserAuthorizationService.Require(Permission.EditData)) return;
+                if (preview.Candidates.Count == 0)
+                {
+                    SetStatus("Шаг не удалён: в последовательности нет другого вхождения для переноса зависимостей.");
+                    return;
+                }
+                int? replacement = ChooseStepDeletionReplacement(preview);
+                if (!replacement.HasValue || !UserAuthorizationService.Require(Permission.DeleteData) ||
+                    !UserAuthorizationService.Require(Permission.EditData)) return;
+                changes = await _repository.ReplaceStepReferencesAndDeleteAsync(targetContext, preview, replacement.Value, deletedStepValues);
+                description = $"Удалён шаг {number} из последовательности, зависимости перенесены на шаг {replacement.Value}";
+            }
+            else
+            {
+                if (MessageBox.Show(Window.GetWindow(this), $"Удалить шаг {number} из последовательности?",
+                        "Удаление шага", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes ||
+                    !UserAuthorizationService.Require(Permission.DeleteData)) return;
+                await _repository.DeleteStepFromSequenceAsync(targetContext, stepNumber, expected: deletedStepValues);
+            }
             string journalWarning = RaiseJournal(ProgramManagementRepository.TransitionTable, ChangeJournalOperationKind.Delete, deletedStepValues,
-                null, IdentityFor(ProgramManagementRepository.TransitionTable, deletedStepValues), "Удалён шаг из последовательности");
+                null, IdentityFor(ProgramManagementRepository.TransitionTable, deletedStepValues), description, changes);
             bool refreshed = await LoadSequenceChildrenAsync(afterCommittedChange: true, postCommitWarning: journalWarning);
             if (refreshed) SetStatus($"Шаг {stepNumber} удалён из последовательности." + FormatJournalWarning(journalWarning));
         }
@@ -1507,9 +1530,23 @@ public partial class ProgramManagementControl : UserControl
         return keys.Where(values.ContainsKey).ToDictionary(key => key, key => values[key], StringComparer.OrdinalIgnoreCase);
     }
 
+    private static ChangeJournalRowChange CreateInsertJournalChange(string tableName, ProgramInsertSnapshot snapshot)
+    {
+        var identity = IdentityFor(tableName, snapshot.Values);
+        return new ChangeJournalRowChange
+        {
+            TableName = tableName,
+            Kind = ChangeJournalOperationKind.Insert,
+            After = JournalValues(snapshot.Values),
+            IdentityAfter = JournalValues(identity),
+            AfterIsCompleteOfflineRecord = snapshot.IsCompleteOfflineRecord
+        };
+    }
+
     private string RaiseJournal(string tableName, ChangeJournalOperationKind kind,
         IReadOnlyDictionary<string, object> before, IReadOnlyDictionary<string, object> after,
-        IReadOnlyDictionary<string, object> identity, string description, IReadOnlyList<ChangeJournalRowChange> completeChanges = null)
+        IReadOnlyDictionary<string, object> identity, string description, IReadOnlyList<ChangeJournalRowChange> completeChanges = null,
+        string restoreKind = "", string restorePayloadJson = "", bool restoreIncludesAllChanges = true, string restoreWarning = "")
     {
         try
         {
@@ -1533,13 +1570,13 @@ public partial class ProgramManagementControl : UserControl
         {
             Category = "Программа",
             Source = tableName,
-            Description = description,
-            Details = identityText,
+            Description = string.IsNullOrWhiteSpace(restoreWarning) ? description : description + " (отмена недоступна: " + restoreWarning + ")",
+            Details = string.IsNullOrWhiteSpace(restoreWarning) ? identityText : identityText + Environment.NewLine + "Отмена недоступна: " + restoreWarning,
             OperationKind = kind,
-            RestoreIncludesAllChanges = completeChanges != null ||
+            RestoreIncludesAllChanges = restoreIncludesAllChanges && (completeChanges != null ||
                 tableName == ProgramManagementRepository.ProgramTable ||
                 (kind == ChangeJournalOperationKind.Update && tableName != ProgramManagementRepository.TransitionTable) ||
-                (kind == ChangeJournalOperationKind.Delete && tableName == ProgramManagementRepository.ParameterTable),
+                (kind == ChangeJournalOperationKind.Delete && tableName == ProgramManagementRepository.ParameterTable)),
             ProjectType = offline ? "Offline" : "Online",
             ProjectId = offline ? _offlineSource.Project.Manifest?.ProjectId ?? "" : "online:" + builder.DataSource.Trim().ToLowerInvariant() + "/" + builder.InitialCatalog.Trim().ToLowerInvariant(),
             ProjectName = offline ? _offlineSource.Project.Manifest?.Name ?? "" : builder.InitialCatalog,
@@ -1550,7 +1587,9 @@ public partial class ProgramManagementControl : UserControl
             EntityType = tableName,
             EntityIdentity = identityText,
             Result = "Успешно",
-            Changes = completeChanges?.ToList() ?? new List<ChangeJournalRowChange> { change }
+            Changes = completeChanges?.ToList() ?? new List<ChangeJournalRowChange> { change },
+            RestoreKind = restoreKind ?? "",
+            RestorePayloadJson = restorePayloadJson ?? ""
         });
         return null;
         }
@@ -1734,6 +1773,8 @@ public partial class ProgramManagementControl : UserControl
         if (!insert && selected == null) { SetStatus("Выберите параметр."); return; }
         var context = CopyContext(CurrentContext);
         _contextChangePending = true;
+        var enabledBeforeOperation = SetContextGridsEnabled(false);
+        string journalWarning = null;
         try
         {
             if (insert)
@@ -1741,27 +1782,41 @@ public partial class ProgramManagementControl : UserControl
                 var values = await PromptInsertValuesAsync(ProgramManagementRepository.ParameterTable,
                     new[] { "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Seq_Record", "Step_Number", "Record" }, "Новый параметр");
                 if (values == null) return;
-                int record = await _repository.AddParameterAsync(context, step.Value, values);
-                values["PLC"] = context.PlcValue;
-                values["PLC_Class_Prog_Number"] = context.ClassNumberValue;
-                values["Prog_Record"] = context.RecordValue;
-                values["Seq_Record"] = context.SeqRecordValue;
-                values["Step_Number"] = step.Value;
-                values["Record"] = record;
-                RaiseJournal(ProgramManagementRepository.ParameterTable, ChangeJournalOperationKind.Insert, null, values,
-                    IdentityFor(ProgramManagementRepository.ParameterTable, values), "Создан параметр");
+                var inserted = await _repository.AddParameterWithSnapshotAsync(context, step.Value, values);
+                int record = inserted.GeneratedValue;
+                RaiseJournal(ProgramManagementRepository.ParameterTable, ChangeJournalOperationKind.Insert, null, inserted.Values,
+                    IdentityFor(ProgramManagementRepository.ParameterTable, inserted.Values), "Создан параметр",
+                    new[] { CreateInsertJournalChange(ProgramManagementRepository.ParameterTable, inserted) },
+                    restoreIncludesAllChanges: inserted.RestoreIncludesAllChanges, restoreWarning: inserted.RestoreUnavailableReason);
             }
             else
             {
                 var before = ToValues(selected.Row, DataRowVersion.Current);
-                if (MessageBox.Show(Window.GetWindow(this), "Удалить выбранный параметр?", "Параметр",
-                    MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-                await _repository.DeleteParameterAsync(context, step.Value, GetValue(selected.Row, "Type"), GetValue(selected.Row, "Record"), expected: before);
-                RaiseJournal(ProgramManagementRepository.ParameterTable, ChangeJournalOperationKind.Delete, before, null,
-                    IdentityFor(ProgramManagementRepository.ParameterTable, before), "Удалён параметр");
+                var type = GetValue(selected.Row, "Type");
+                var record = GetValue(selected.Row, "Record");
+                var preview = await _repository.PrepareParameterDeletionAsync(context, step.Value, type, record);
+                IReadOnlyList<ChangeJournalRowChange> changes = null;
+                if (preview.Options.Count == 0)
+                {
+                    if (Configurator.Infrastructure.ModernDialog.Show(Window.GetWindow(this), "Удалить выбранный параметр?",
+                        "Параметр", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+                    await _repository.DeleteParameterAsync(context, step.Value, type, record, expected: before);
+                }
+                else
+                {
+                    var dialog = new DependencyReplacementWindow(preview.Options, requireExistingCandidates: true)
+                    {
+                        Owner = Window.GetWindow(this)
+                    };
+                    if (dialog.ShowDialog() != true) return;
+                    changes = await _repository.DeleteParameterWithReplacementsAsync(preview, before, dialog.Replacements);
+                }
+                journalWarning = RaiseJournal(ProgramManagementRepository.ParameterTable,
+                    changes == null ? ChangeJournalOperationKind.Delete : ChangeJournalOperationKind.Composite, before, null,
+                    IdentityFor(ProgramManagementRepository.ParameterTable, before), "Удалён параметр", changes);
             }
             await BindTableAsync(FindGrid(tag), await _repository.GetParametersAsync(context, step.Value));
-            SetStatus(insert ? "Параметр создан." : "Параметр удалён.");
+            SetStatus((insert ? "Параметр создан." : "Параметр удалён.") + FormatJournalWarning(journalWarning));
         }
         catch (Exception ex)
         {
@@ -1769,6 +1824,7 @@ public partial class ProgramManagementControl : UserControl
         }
         finally
         {
+            RestoreContextGridsEnabled(enabledBeforeOperation);
             _contextChangePending = false;
             UpdateCommandState();
         }
@@ -1941,8 +1997,17 @@ public partial class ProgramManagementControl : UserControl
 
             if (tableName == ProgramManagementRepository.TransitionTable) ShowTransitionConditions(selected);
             RefreshTreeLabels();
+            var savedChange = new ChangeJournalRowChange
+            {
+                TableName = tableName,
+                Kind = ChangeJournalOperationKind.Update,
+                Before = JournalValues(original),
+                After = JournalValues(updated),
+                IdentityBefore = JournalValues(IdentityFor(tableName, original)),
+                IdentityAfter = JournalValues(IdentityFor(tableName, updated))
+            };
             string journalWarning = RaiseJournal(tableName, ChangeJournalOperationKind.Update, original, updated,
-                IdentityFor(tableName, updated), "Изменена запись Program/Step");
+                IdentityFor(tableName, updated), "Изменена запись Program/Step", new[] { savedChange });
             SetStatus("Изменения сохранены. Строка проверена на отсутствие параллельной правки." + FormatJournalWarning(journalWarning));
             if (tableName == ProgramManagementRepository.ProgramTable) ProgramSaved?.Invoke(row);
         }

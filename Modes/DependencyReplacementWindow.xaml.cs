@@ -15,15 +15,44 @@ public partial class DependencyReplacementWindow : Window
     private readonly bool _requireExistingCandidates;
     public IReadOnlyList<ReferenceReplacement> Replacements { get; private set; } = Array.Empty<ReferenceReplacement>();
 
-    public DependencyReplacementWindow(IEnumerable<DependencyOption> options, bool requireExistingCandidates = false)
+    public DependencyReplacementWindow(IEnumerable<DependencyOption> options, bool requireExistingCandidates = false, bool stageDeletion = false)
     {
         _requireExistingCandidates = requireExistingCandidates;
         InitializeComponent();
+        if (stageDeletion)
+        {
+            ApplyButton.Content = "Подготовить удаление";
+        }
         var list = (options ?? Array.Empty<DependencyOption>()).ToList();
         foreach (var option in list)
             AddRow(option);
 
-        BuildGlobalGroups();
+        if (stageDeletion) LinkStagedSelections();
+        else BuildGlobalGroups();
+    }
+
+    private void LinkStagedSelections()
+    {
+        bool updating = false;
+        foreach (var row in _rows)
+        {
+            row.Combo.SelectionChanged += (_, _) =>
+            {
+                if (updating || row.Combo.SelectedItem is not ReplacementCandidate selected) return;
+                updating = true;
+                try
+                {
+                    foreach (var other in _rows.Where(item => item != row))
+                    {
+                        other.Combo.SelectedItem = other.Option.Candidates.FirstOrDefault(candidate =>
+                            candidate.TargetValues.Count == selected.TargetValues.Count &&
+                            candidate.TargetValues.All(pair => selected.TargetValues.TryGetValue(pair.Key, out var current)
+                                && System.Collections.StructuralComparisons.StructuralEqualityComparer.Equals(pair.Value, current)));
+                    }
+                }
+                finally { updating = false; }
+            };
+        }
     }
 
     private void AddRow(DependencyOption option)
@@ -38,21 +67,43 @@ public partial class DependencyReplacementWindow : Window
         var grid = new Grid();
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(270) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(3, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2, GridUnitType.Star), MinWidth = 250 });
 
-        var text = new TextBlock
+        var details = new StackPanel { Margin = new Thickness(2, 0, 16, 0) };
+        var sourceName = option.Hit.SourceName;
+        if (sourceName.Length == 0) sourceName = DependencyRecordLabel.Name(option.Hit.SourceValues);
+        var sourceType = option.Hit.SourceValues.TryGetValue("Type_Class_PLC", out var type) ? Convert.ToString(type) : null;
+        if (string.IsNullOrWhiteSpace(sourceType)) sourceType = ShortTableName(option.Hit.SourceTable);
+        var sourceLabel = string.IsNullOrWhiteSpace(sourceName) ? DependencyRecordLabel.Format("", option.Hit.SourceKey) : sourceName;
+        var targetLabel = string.IsNullOrWhiteSpace(option.Hit.TargetName) ? DependencyRecordLabel.Format("", option.Hit.TargetKey) : option.Hit.TargetName;
+        if (targetLabel.Length == 0) targetLabel = Convert.ToString(option.CurrentValue);
+        details.Children.Add(new TextBlock
         {
-            Foreground = (Brush)FindResource("BrushText"), TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center,
-            Text = BuildDependencyDescription(option)
-        };
-        Grid.SetColumn(text, 0); Grid.SetRow(text, 0); grid.Children.Add(text);
+            Text = $"{sourceType} {sourceLabel} ссылается на:", FontWeight = FontWeights.SemiBold,
+            Foreground = (Brush)FindResource("BrushText"), TextWrapping = TextWrapping.Wrap
+        });
+        details.Children.Add(new TextBlock
+        {
+            Text = $"{ShortTableName(option.Hit.TargetTable)} {targetLabel}",
+            Margin = new Thickness(0, 3, 0, 6), TextWrapping = TextWrapping.Wrap, Foreground = (Brush)FindResource("BrushText")
+        });
+        Grid.SetRowSpan(details, 3);
+        grid.Children.Add(details);
 
-        row.Combo = CreateCombo(option.Candidates);
-        Grid.SetColumn(row.Combo, 1); Grid.SetRow(row.Combo, 0); grid.Children.Add(row.Combo);
+        row.Combo = CreateCombo(option);
+        var label = new Label
+        {
+            Content = "Заменить на", Target = row.Combo,
+            Padding = new Thickness(0, 0, 0, 4), Foreground = (Brush)FindResource("BrushText")
+        };
+        Grid.SetColumn(label, 1);
+        grid.Children.Add(label);
+        Grid.SetColumn(row.Combo, 1); Grid.SetRow(row.Combo, 1); grid.Children.Add(row.Combo);
 
         row.Status = new TextBlock { Margin = new Thickness(8, 4, 0, 0), TextWrapping = TextWrapping.Wrap, Foreground = (Brush)FindResource("BrushTextSecondary"), FontSize = 11 };
-        Grid.SetColumn(row.Status, 1); Grid.SetRow(row.Status, 1); grid.Children.Add(row.Status);
+        Grid.SetColumn(row.Status, 1); Grid.SetRow(row.Status, 2); grid.Children.Add(row.Status);
         row.Combo.SelectionChanged += (_, _) => UpdateCandidateStatus(row);
         if (option.Candidates.Count > 0) row.Combo.SelectedIndex = 0;
 
@@ -60,26 +111,13 @@ public partial class DependencyReplacementWindow : Window
         ItemsHost.Children.Add(border);
     }
 
-    private static string BuildDependencyDescription(DependencyOption option)
+    private ComboBox CreateCombo(DependencyOption option)
     {
-        var relation = option.Hit.Relation;
-        var sourceColumns = relation?.SourceColumns ?? new List<string>();
-        var targetColumns = relation?.TargetColumns ?? new List<string>();
-        string mapping = sourceColumns.Count > 0
-            ? string.Join("\n", sourceColumns.Select((column, index) => $"{column}" + (index < targetColumns.Count ? $" ← {targetColumns[index]}" : "")))
-            : option.Hit.SourceColumnDescription;
-        var objectIdentity = option.Hit.SourceKey != null && option.Hit.SourceKey.Count > 0
-            ? string.Join("; ", option.Hit.SourceKey.Select(pair => $"{pair.Key}={pair.Value}"))
-            : "не определён";
-        return $"Объект: {ShortTableName(option.Hit.SourceTable)}\nИдентификатор объекта: {objectIdentity}\nСвязанные поля объекта:\n{mapping}\nЗначение удаляемой записи: {option.CurrentValue}";
-    }
-
-    private ComboBox CreateCombo(IReadOnlyList<ReplacementCandidate> candidates)
-    {
-        var combo = new ComboBox { ItemsSource = candidates, MinWidth = 250, VerticalAlignment = VerticalAlignment.Center, ToolTip = "Новое значение" };
+        var combo = new ComboBox { ItemsSource = option.Candidates, MinWidth = 250, VerticalAlignment = VerticalAlignment.Center, ToolTip = "Запись для замены" };
+        System.Windows.Automation.AutomationProperties.SetName(combo, "Запись для замены");
         // Never combine DisplayMemberPath with ItemTemplate: the global ComboBox style
         // may already provide an item template and WPF rejects both properties together.
-        combo.ItemTemplate = CreateCandidateItemTemplate();
+        combo.ItemTemplate = CreateCandidateItemTemplate(option.Hit.Relation.TargetColumns);
         return combo;
     }
 
@@ -110,6 +148,7 @@ public partial class DependencyReplacementWindow : Window
             };
 
             var root = new Grid();
+            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(190) });
             root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(190) });
@@ -178,10 +217,10 @@ public partial class DependencyReplacementWindow : Window
             {
                 Content = "Применить группе",
                 Width = 140,
-                Height = 30,
+                Height = 32,
                 Margin = new Thickness(8, 0, 0, 0),
                 Style = (Style)FindResource("BtnSecondary"),
-                VerticalAlignment = VerticalAlignment.Center
+                VerticalAlignment = VerticalAlignment.Bottom
             };
             button.Click += (_, _) => ApplyParameterGroup(rows, columns, choices);
             Grid.SetColumn(button, 3);
@@ -194,22 +233,25 @@ public partial class DependencyReplacementWindow : Window
 
     private ComboBox CreateParameterCombo(IReadOnlyList<Row> rows, int columnIndex)
     {
+        bool isPlc = rows[0].Option.Hit.Relation.SourceColumns[columnIndex].Equals("PLC", StringComparison.OrdinalIgnoreCase);
         var choices = rows
             .SelectMany(row => row.Option.Candidates
                 .Where(x => !x.IsConflict && x.Values.Count > columnIndex)
-                .Select(x => new { Value = x.Values[columnIndex], x.Display }))
+                .Select(x => new { Value = x.Values[columnIndex],
+                    Display = isPlc ? (x.PlcLabels?.GetValueOrDefault(Convert.ToString(x.Values[columnIndex], System.Globalization.CultureInfo.InvariantCulture) ?? "")) : x.Display }))
             .GroupBy(x => x.Value?.ToString() ?? string.Empty, StringComparer.OrdinalIgnoreCase)
             .Select(g =>
             {
                 var first = g.First();
                 var display = g.Select(x => x.Display).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x));
-                return new ParameterChoice(first.Value, display);
+                return new ParameterChoice(first.Value, display, isPlc);
             })
             .ToList();
 
         var combo = new ComboBox
         {
             ItemsSource = choices,
+            Height = 32,
             MinWidth = 165,
             VerticalAlignment = VerticalAlignment.Center,
             ToolTip = "Новое значение"
@@ -280,13 +322,31 @@ public partial class DependencyReplacementWindow : Window
         return template;
     }
 
-    private static DataTemplate CreateCandidateItemTemplate()
+    private static DataTemplate CreateCandidateItemTemplate(IReadOnlyList<string> columns)
     {
         var template = new DataTemplate(typeof(ReplacementCandidate));
         var factory = new FrameworkElementFactory(typeof(TextBlock));
-        factory.SetBinding(TextBlock.TextProperty, new Binding(nameof(ReplacementCandidate.Display)));
+        var label = new Binding(".") { Converter = new CandidateLabelConverter(columns) };
+        factory.SetBinding(TextBlock.TextProperty, label);
+        factory.SetBinding(ToolTipService.ToolTipProperty, label);
+        factory.SetValue(TextBlock.TextWrappingProperty, TextWrapping.Wrap);
         template.VisualTree = factory;
         return template;
+    }
+
+    private sealed class CandidateLabelConverter(IReadOnlyList<string> columns) : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture)
+        {
+            if (value is not ReplacementCandidate candidate) return string.Empty;
+            if (!string.IsNullOrWhiteSpace(candidate.Display)) return candidate.Display;
+            var key = candidate.DisplayKey.Count > 0 ? candidate.DisplayKey : columns.Zip(candidate.Values)
+                .ToDictionary(pair => pair.First, pair => pair.Second);
+            return DependencyRecordLabel.Format(candidate.Display, key);
+        }
+
+        public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>
+            throw new NotSupportedException();
     }
 
     private void Cancel_Click(object sender, RoutedEventArgs e)
@@ -332,7 +392,7 @@ public partial class DependencyReplacementWindow : Window
         if (row.Status == null) return;
         if (row.Combo?.SelectedItem is not ReplacementCandidate selected) { row.Status.Text = string.Empty; return; }
         if (selected.IsConflict) { row.Status.Text = "⚠ " + selected.ConflictDescription; return; }
-        row.Status.Text = selected.AutoAssignments.Count > 0 ? "✓ " + string.Join(", ", selected.AutoAssignments.Select(x => $"{x.Key} → {x.Value}")) : string.Empty;
+        row.Status.Text = string.Empty;
     }
 
     private static string ShortTableName(string table)
@@ -364,11 +424,11 @@ public partial class DependencyReplacementWindow : Window
 
     private sealed class ParameterChoice
     {
-        public ParameterChoice(object value, string display = null)
+        public ParameterChoice(object value, string display, bool isPlc)
         {
             Value = value;
             var raw = value?.ToString() ?? "<NULL>";
-            Display = string.IsNullOrWhiteSpace(display) ? raw : $"{raw}  —  {display}";
+            Display = string.IsNullOrWhiteSpace(display) ? raw : isPlc ? display : $"{raw}  —  {display}";
         }
         public object Value { get; }
         public string Display { get; }

@@ -5,7 +5,7 @@ using Configurator.Themes;
 
 namespace Configurator.Core.Compare;
 
-public enum CompareStatus { Equal, OnlyA, OnlyB, Changed, Ambiguous, NotComparable, Error }
+public enum CompareStatus { Equal, OnlyA, OnlyB, Changed, Ambiguous, NotComparable, Error, KeyConflict }
 
 public enum CompareMetadataKind { ClassDefinition, ManualRelation, ProjectTextList, ThemePreset }
 

@@ -17,6 +17,10 @@ public sealed class SequenceDeletionPreview
     public IReadOnlyDictionary<string, int> Counts => Rows.ToDictionary(pair => pair.Key, pair => pair.Value.Count, StringComparer.OrdinalIgnoreCase);
 }
 
+public sealed record ProgramInsertSnapshot(int GeneratedValue,
+    IReadOnlyDictionary<string, object> Values, bool IsCompleteOfflineRecord,
+    bool RestoreIncludesAllChanges = true, string RestoreUnavailableReason = "");
+
 /// <summary>
 /// Read and compare-and-swap editing for the first Program/Sequence/Step surfaces.
 /// Every edit is matched against the complete original row and committed by
@@ -129,15 +133,23 @@ public sealed partial class ProgramManagementRepository
         return values;
     }
 
-    public Task<int> AddProgramAsync(object plc, object programClass, IReadOnlyDictionary<string, object> values, CancellationToken ct = default)
+    public async Task<int> AddProgramAsync(object plc, object programClass, IReadOnlyDictionary<string, object> values, CancellationToken ct = default)
+        => (await AddProgramWithSnapshotAsync(plc, programClass, values, ct).ConfigureAwait(false)).GeneratedValue;
+
+    public Task<ProgramInsertSnapshot> AddProgramWithSnapshotAsync(object plc, object programClass,
+        IReadOnlyDictionary<string, object> values, CancellationToken ct = default)
     {
         var scope = Context(plc, programClass);
-        if (_offline != null) return InsertOfflineAsync(ProgramTable, "Record", scope, values, ct);
-        return InsertWithGeneratedRecordAsync(ProgramTable, "Record", scope,
+        if (_offline != null) return InsertOfflineWithSnapshotAsync(ProgramTable, "Record", scope, values, ct);
+        return InsertWithGeneratedRecordAndSnapshotAsync(ProgramTable, "Record", scope,
             new[] { "Record", "PLC", "PLC_Class_Number" }, values, ct);
     }
 
-    public Task<int> AddSequenceAsync(ProgramContext context, IReadOnlyDictionary<string, object> values, CancellationToken ct = default)
+    public async Task<int> AddSequenceAsync(ProgramContext context, IReadOnlyDictionary<string, object> values, CancellationToken ct = default)
+        => (await AddSequenceWithSnapshotAsync(context, values, ct).ConfigureAwait(false)).GeneratedValue;
+
+    public Task<ProgramInsertSnapshot> AddSequenceWithSnapshotAsync(ProgramContext context,
+        IReadOnlyDictionary<string, object> values, CancellationToken ct = default)
     {
         EnsureProgram(context);
         var scope = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
@@ -146,25 +158,34 @@ public sealed partial class ProgramManagementRepository
             ["PLC_Class_Prog_Number"] = context.ClassNumberValue,
             ["Prog_Record"] = context.RecordValue
         };
-        if (_offline != null) return InsertOfflineAsync(SequenceTable, "Record", scope, values, ct);
-        return InsertWithGeneratedRecordAsync(SequenceTable, "Record", scope,
+        if (_offline != null) return InsertOfflineWithSnapshotAsync(SequenceTable, "Record", scope, values, ct);
+        return InsertWithGeneratedRecordAndSnapshotAsync(SequenceTable, "Record", scope,
             new[] { "Record", "PLC", "PLC_Class_Prog_Number", "Prog_Record" }, values, ct);
     }
 
-    public Task<int> AddStepToSequenceAsync(ProgramContext context, object stepClass, object stepRecord,
+    public async Task<int> AddStepToSequenceAsync(ProgramContext context, object stepClass, object stepRecord,
         IReadOnlyDictionary<string, object> values, CancellationToken ct = default)
+        => (await AddStepToSequenceWithSnapshotAsync(context, stepClass, stepRecord, values, ct)
+            .ConfigureAwait(false)).GeneratedValue;
+
+    public Task<ProgramInsertSnapshot> AddStepToSequenceWithSnapshotAsync(ProgramContext context, object stepClass,
+        object stepRecord, IReadOnlyDictionary<string, object> values, CancellationToken ct = default)
     {
         var scope = ProgramScope(context, includeSequence: true);
         var valuesWithStepReference = values?.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase)
             ?? new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
         valuesWithStepReference["PLC_Class_Step_Number"] = stepClass;
         valuesWithStepReference["Step_Record"] = stepRecord;
-        if (_offline != null) return InsertOfflineAsync(TransitionTable, "SeqStep_Number", scope, valuesWithStepReference, ct);
-        return InsertWithGeneratedRecordAsync(TransitionTable, "SeqStep_Number", scope,
+        if (_offline != null) return InsertOfflineWithSnapshotAsync(TransitionTable, "SeqStep_Number", scope, valuesWithStepReference, ct);
+        return InsertWithGeneratedRecordAndSnapshotAsync(TransitionTable, "SeqStep_Number", scope,
             new[] { "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Seq_Record", "SeqStep_Number" }, valuesWithStepReference, ct);
     }
 
-    public Task<int> AddParameterAsync(ProgramContext context, int stepNumber,
+    public async Task<int> AddParameterAsync(ProgramContext context, int stepNumber,
+        IReadOnlyDictionary<string, object> values, CancellationToken ct = default)
+        => (await AddParameterWithSnapshotAsync(context, stepNumber, values, ct).ConfigureAwait(false)).GeneratedValue;
+
+    public Task<ProgramInsertSnapshot> AddParameterWithSnapshotAsync(ProgramContext context, int stepNumber,
         IReadOnlyDictionary<string, object> values, CancellationToken ct = default)
     {
         var scope = ProgramScope(context, includeSequence: true);
@@ -174,8 +195,9 @@ public sealed partial class ProgramManagementRepository
         scope["Type"] = type;
         var fields = values.Where(pair => !scope.ContainsKey(pair.Key) && !pair.Key.Equals("Record", StringComparison.OrdinalIgnoreCase))
             .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
-        if (_offline != null) return InsertOfflineAsync(ParameterTable, "Record", scope, fields, ct);
-        return InsertWithGeneratedRecordAsync(ParameterTable, "Record", scope, scope.Keys.Append("Record").ToArray(), fields, ct);
+        if (_offline != null) return InsertOfflineWithSnapshotAsync(ParameterTable, "Record", scope, fields, ct);
+        return InsertWithGeneratedRecordAndSnapshotAsync(ParameterTable, "Record", scope,
+            scope.Keys.Append("Record").ToArray(), fields, ct);
     }
 
     public Task DeleteParameterAsync(ProgramContext context, int stepNumber, object type, object record, CancellationToken ct = default, IReadOnlyDictionary<string, object> expected = null)
@@ -388,12 +410,18 @@ public sealed partial class ProgramManagementRepository
     /// <summary>Moves an occurrence in an offline snapshot, preserving references as one mutation.</summary>
     public async Task<int> MoveOfflineStepAsync(ProgramContext context, IReadOnlyDictionary<string, object> original,
         int direction, CancellationToken ct = default)
+        => (await MoveOfflineStepWithJournalAsync(context, original, direction, ct)).NewStepNumber;
+
+    public async Task<ProgramStepMoveJournalResult> MoveOfflineStepWithJournalAsync(ProgramContext context,
+        IReadOnlyDictionary<string, object> original,
+        int direction, CancellationToken ct = default)
     {
         if (_offline == null) throw new InvalidOperationException("Перемещение Online пока не поддерживается.");
         if (direction != -1 && direction != 1) throw new ArgumentOutOfRangeException(nameof(direction));
         var scope = ProgramScope(context, includeSequence: true);
         var tables = new[] { (Name: TransitionTable, Field: "SeqStep_Number"),
             (Name: ParameterTable, Field: "Step_Number"), (Name: "dbo.Prog_Recipes", Field: "Step_Number") };
+        var schemas = tables.ToDictionary(table => table.Name, table => GetOfflineSchema(table.Name), StringComparer.OrdinalIgnoreCase);
         foreach (var (name, field) in tables)
         {
             var schema = GetOfflineSchema(name);
@@ -462,8 +490,12 @@ public sealed partial class ProgramManagementRepository
                 await Update(schema, row, new Dictionary<string, object?> { [field] = to });
         }
 
+        IReadOnlyList<ChangeJournalRowChange> journalChanges = Array.Empty<ChangeJournalRowChange>();
+        string journalPayload = "";
         await _offline.ExecuteMutationTransactionAsync(async () =>
         {
+            var beforeRows = tables.ToDictionary(table => table.Name,
+                table => SnapshotRows(ReadOfflineTable(table.Name, scope)), StringComparer.OrdinalIgnoreCase);
             foreach (var table in tables)
             {
                 await ReplaceNumber(table.Name, table.Field, first, temporary);
@@ -484,8 +516,12 @@ public sealed partial class ProgramManagementRepository
                 }
                 if (changes.Count > 0) await Update(transitionSchema, row, changes);
             }
+            var afterRows = tables.ToDictionary(table => table.Name,
+                table => SnapshotRows(ReadOfflineTable(table.Name, scope)), StringComparer.OrdinalIgnoreCase);
+            journalChanges = BuildStepMoveJournalChanges(tables, schemas, beforeRows, afterRows, first, second);
+            journalPayload = BuildStepMoveRestorePayload(tables, afterRows);
         }, ct);
-        return second;
+        return new ProgramStepMoveJournalResult(second, journalChanges, journalPayload);
     }
 
     public Task SaveRowAsync(string tableName, IReadOnlyDictionary<string, object> original,
@@ -574,6 +610,18 @@ public sealed partial class ProgramManagementRepository
     private async Task<int> InsertWithGeneratedRecordAsync(string tableName, string generatedColumn,
         IReadOnlyDictionary<string, object> scope, IReadOnlyList<string> uniqueKey,
         IReadOnlyDictionary<string, object> suppliedValues, CancellationToken ct)
+        => (await InsertWithGeneratedRecordCoreAsync(tableName, generatedColumn, scope, uniqueKey, suppliedValues,
+            captureSnapshot: false, ct).ConfigureAwait(false)).GeneratedValue;
+
+    private Task<ProgramInsertSnapshot> InsertWithGeneratedRecordAndSnapshotAsync(string tableName, string generatedColumn,
+        IReadOnlyDictionary<string, object> scope, IReadOnlyList<string> uniqueKey,
+        IReadOnlyDictionary<string, object> suppliedValues, CancellationToken ct) =>
+        InsertWithGeneratedRecordCoreAsync(tableName, generatedColumn, scope, uniqueKey, suppliedValues,
+            captureSnapshot: true, ct);
+
+    private async Task<ProgramInsertSnapshot> InsertWithGeneratedRecordCoreAsync(string tableName, string generatedColumn,
+        IReadOnlyDictionary<string, object> scope, IReadOnlyList<string> uniqueKey,
+        IReadOnlyDictionary<string, object> suppliedValues, bool captureSnapshot, CancellationToken ct)
     {
         var columns = await _database.GetTableColumnsAsync(tableName, ct);
         RequireColumns(columns, uniqueKey.Concat(scope.Keys).Concat(suppliedValues?.Keys ?? Array.Empty<string>()), tableName);
@@ -604,6 +652,18 @@ public sealed partial class ProgramManagementRepository
         try
         {
             await EnsureUniqueIndexAsync(connection, transaction, tableName, uniqueKey, ct);
+            string restoreUnavailableReason = string.Empty;
+            if (captureSnapshot)
+            {
+                try
+                {
+                    restoreUnavailableReason = await FindInsertRestoreLimitationAsync(connection, transaction, tableName, ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    restoreUnavailableReason = "не удалось проверить триггеры и побочные действия таблицы";
+                }
+            }
             var predicates = BuildPredicates(scope, "scope", out var parameters);
             using (var command = new Microsoft.Data.SqlClient.SqlCommand(
                 $"SELECT MAX({QuoteIdentifier(generatedColumn)}) FROM {QuoteTable(tableName)} WITH (UPDLOCK, HOLDLOCK) WHERE {predicates}", connection, transaction))
@@ -629,8 +689,31 @@ public sealed partial class ProgramManagementRepository
             if (await CountRowsAsync(connection, transaction, tableName, generatedKey, ct) != 1)
                 throw new InvalidOperationException("Вставленную строку не удалось подтвердить по уникальному ключу; транзакция отменена.");
 
+            IReadOnlyDictionary<string, object> snapshot = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+            if (captureSnapshot)
+            {
+                try
+                {
+                    var rows = await ReadLockedRowsAsync(connection, transaction, tableName, generatedKey, ct);
+                    if (rows.Count == 1 && rows[0].Count == columns.Count)
+                        snapshot = rows[0];
+                    else
+                        restoreUnavailableReason = JoinRestoreLimitations(restoreUnavailableReason,
+                            "полный снимок созданной строки не подтверждён");
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    restoreUnavailableReason = JoinRestoreLimitations(restoreUnavailableReason,
+                        "не удалось получить полный снимок созданной строки");
+                }
+                if (snapshot.Count == 0)
+                    snapshot = values.ToDictionary(pair => pair.Key, pair => pair.Value ?? DBNull.Value, StringComparer.OrdinalIgnoreCase);
+            }
+
             await transaction.CommitAsync(ct);
-            return Convert.ToInt32(values[generatedColumn], CultureInfo.InvariantCulture);
+            return new ProgramInsertSnapshot(Convert.ToInt32(values[generatedColumn], CultureInfo.InvariantCulture), snapshot,
+                IsCompleteOfflineRecord: false, RestoreIncludesAllChanges: string.IsNullOrEmpty(restoreUnavailableReason),
+                RestoreUnavailableReason: restoreUnavailableReason);
         }
         catch
         {
@@ -827,6 +910,38 @@ ORDER BY i.index_id, ic.key_ordinal;";
             throw new InvalidOperationException($"Изменение {tableName} заблокировано: уникальный индекс не совпал с подтверждённым ключом ({string.Join(", ", expectedColumns)}).");
     }
 
+    private static async Task<string> FindInsertRestoreLimitationAsync(
+        Microsoft.Data.SqlClient.SqlConnection connection, Microsoft.Data.SqlClient.SqlTransaction transaction,
+        string tableName, CancellationToken ct)
+    {
+        const string sql = """
+            SELECT
+                (SELECT COUNT_BIG(*) FROM sys.triggers AS triggerObject
+                 WHERE triggerObject.parent_id = OBJECT_ID(@tableName) AND triggerObject.is_disabled = 0),
+                (SELECT COUNT_BIG(*) FROM sys.tables AS tableObject
+                 WHERE tableObject.object_id = OBJECT_ID(@tableName) AND tableObject.temporal_type <> 0),
+                (SELECT COUNT_BIG(*) FROM sys.default_constraints AS defaultConstraint
+                 WHERE defaultConstraint.parent_object_id = OBJECT_ID(@tableName)
+                   AND UPPER(defaultConstraint.definition) LIKE '%NEXT VALUE FOR%') +
+                (SELECT COUNT_BIG(*) FROM sys.columns AS columnObject
+                 JOIN sys.sql_modules AS module ON module.object_id = columnObject.default_object_id
+                 WHERE columnObject.object_id = OBJECT_ID(@tableName)
+                   AND UPPER(module.definition) LIKE '%NEXT VALUE FOR%');
+            """;
+        using var command = new Microsoft.Data.SqlClient.SqlCommand(sql, connection, transaction);
+        command.Parameters.AddWithValue("@tableName", tableName);
+        using var reader = await command.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct)) return "не удалось подтвердить полный список побочных действий таблицы";
+        var limitations = new List<string>();
+        if (reader.GetInt64(0) > 0) limitations.Add("есть активный триггер");
+        if (reader.GetInt64(1) > 0) limitations.Add("включена temporal history");
+        if (reader.GetInt64(2) > 0) limitations.Add("DEFAULT изменяет последовательность");
+        return string.Join("; ", limitations);
+    }
+
+    private static string JoinRestoreLimitations(string existing, string next)
+        => string.IsNullOrWhiteSpace(existing) ? next : existing + "; " + next;
+
     private static void RequireColumns(IReadOnlyList<ColumnInfo> columns, IEnumerable<string> required, string tableName)
     {
         var missing = required.Where(name => !columns.Any(column => column.Name.Equals(name, StringComparison.OrdinalIgnoreCase))).ToArray();
@@ -916,6 +1031,10 @@ ORDER BY i.index_id, ic.key_ordinal;";
 
     private async Task<int> InsertOfflineAsync(string tableName, string generatedColumn,
         IReadOnlyDictionary<string, object> scope, IReadOnlyDictionary<string, object> values, CancellationToken ct)
+        => (await InsertOfflineWithSnapshotAsync(tableName, generatedColumn, scope, values, ct).ConfigureAwait(false)).GeneratedValue;
+
+    private async Task<ProgramInsertSnapshot> InsertOfflineWithSnapshotAsync(string tableName, string generatedColumn,
+        IReadOnlyDictionary<string, object> scope, IReadOnlyDictionary<string, object> values, CancellationToken ct)
     {
         var schema = GetOfflineSchema(tableName);
         var record = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
@@ -932,8 +1051,20 @@ ORDER BY i.index_id, ic.key_ordinal;";
         }
         ct.ThrowIfCancellationRequested();
         var creator = (IProjectCreateWithKeyDataSource)_offline!;
-        var key = await creator.CreateRecordAndGetKeyAsync(schema.TableName, record, ct);
-        return Convert.ToInt32(key[generatedColumn], CultureInfo.InvariantCulture);
+        IReadOnlyDictionary<string, object?> key = null;
+        IReadOnlyDictionary<string, object> snapshot = null;
+        await _offline.ExecuteMutationTransactionAsync(async () =>
+        {
+            key = await creator.CreateRecordAndGetKeyAsync(schema.TableName, record, ct);
+            var matches = _offline.GetRecords(schema.TableName).Where(row => key.All(pair =>
+                row.Values.TryGetPropertyValue(pair.Key, out var actual) && OfflineEquals(actual, pair.Value))).Take(2).ToArray();
+            if (matches.Length != 1)
+                throw new InvalidOperationException("Полный снимок созданной записи в локальном проекте не подтверждён.");
+            snapshot = matches[0].Values.ToDictionary(pair => pair.Key,
+                pair => pair.Value == null ? (object)DBNull.Value : pair.Value.ToString(), StringComparer.OrdinalIgnoreCase);
+        }, ct).ConfigureAwait(false);
+        return new ProgramInsertSnapshot(Convert.ToInt32(key[generatedColumn], CultureInfo.InvariantCulture), snapshot,
+            IsCompleteOfflineRecord: true);
     }
 
     private async Task UpdateOfflineAsync(string tableName, IReadOnlyDictionary<string, object> original,

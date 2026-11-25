@@ -60,6 +60,16 @@ internal static class ProjectClassCatalog
         }
     }
 
+    internal static string? FindRecordClassColumn(IEnumerable<string> keys)
+    {
+        var columns = keys.ToList();
+        return columns.Contains("Record", StringComparer.OrdinalIgnoreCase)
+            ? columns.FirstOrDefault(name =>
+                new string(name.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant()
+                    is "class" or "classnumber" or "plcclassnumber" or "plcclasssnumber")
+            : null;
+    }
+
     internal static string? Read(ProjectRecord row, string column) =>
         row.Values.FirstOrDefault(v => v.Key.Equals(column, StringComparison.OrdinalIgnoreCase)).Value?.ToString().Trim() is { Length: > 0 } value
             ? value : null;

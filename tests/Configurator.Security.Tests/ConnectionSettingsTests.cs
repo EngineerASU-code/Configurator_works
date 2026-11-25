@@ -36,9 +36,20 @@ public sealed class ConnectionSettingsTests
     [Fact]
     public void OnlyExactLocalSharedMemoryEndpointMayTrustServerCertificate()
     {
-        var settings = new ConnectionSettings { Server = "lpc:" + Environment.MachineName };
-        Assert.True(new SqlConnectionStringBuilder(settings.ToConnectionString("master")).TrustServerCertificate);
-        foreach (var endpoint in new[] { "HOME", "lpc:remote", "lpc:" + Environment.MachineName + "\\instance", "tcp:" + Environment.MachineName, Environment.MachineName, "lpc:localhost" })
+        var local = Environment.MachineName;
+        var settings = new ConnectionSettings();
+        foreach (var name in new[] { local, local + "\\WINCC" })
+        {
+            foreach (var endpoint in new[] { name, "lpc:" + name })
+            {
+                settings.Server = endpoint;
+                var builder = new SqlConnectionStringBuilder(settings.ToConnectionString("master"));
+                Assert.Equal("lpc:" + name, builder.DataSource);
+                Assert.True(builder.TrustServerCertificate);
+                Assert.True((bool)builder.Encrypt);
+            }
+        }
+        foreach (var endpoint in new[] { local + ".example", "lpc:remote", "tcp:" + local, local + "\\WINCC,1433", local + "\\A\\B", "lpc:localhost" })
         {
             settings.Server = endpoint;
             Assert.False(new SqlConnectionStringBuilder(settings.ToConnectionString("master")).TrustServerCertificate);

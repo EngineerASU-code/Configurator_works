@@ -11,6 +11,8 @@ public partial class ActionLogWindow : Window
     private readonly ChangeJournalService _journal;
     private readonly Func<ChangeJournalEntry, Task> _restore;
 
+    internal Func<IEnumerable<ChangeJournalEntry>> ReadEntries { get; set; }
+
     public ActionLogWindow(ChangeJournalService journal, Func<ChangeJournalEntry, Task> restore)
     {
         InitializeComponent();
@@ -23,7 +25,7 @@ public partial class ActionLogWindow : Window
 
     private void Refresh()
     {
-        var entries = _journal.LoadRecent(500).ToList();
+        var entries = (ReadEntries?.Invoke() ?? _journal.LoadRecent(500)).ToList();
         LogList.ItemsSource = entries;
         TxtCount.Text = $"Операций: {entries.Count}";
     }
@@ -32,7 +34,7 @@ public partial class ActionLogWindow : Window
     {
         if ((sender as System.Windows.Controls.Button)?.Tag is not ChangeJournalEntry entry) return;
         var result = Configurator.Infrastructure.ModernDialog.Show(
-            $"Отменить действие?\n\n{entry.Description}\n{entry.Database}\n\nБудут отменены все изменения этой операции одной транзакцией.",
+            $"Отменить действие?\n\n{entry.DisplayDescription}\n{entry.Database}",
             "Отмена действия", MessageBoxButton.YesNo, MessageBoxImage.Question);
         if (result != MessageBoxResult.Yes) return;
         try

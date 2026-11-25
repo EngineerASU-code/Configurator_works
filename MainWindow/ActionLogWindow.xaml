@@ -23,7 +23,7 @@
                                 <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                 <StackPanel Grid.Row="0" Grid.Column="0">
-                                    <TextBlock Text="{Binding TimestampUtc, Mode=OneWay, StringFormat={}{0:dd.MM.yyyy HH:mm:ss}}" Foreground="{DynamicResource BrushTextSecondary}" FontSize="12"/>
+                                    <TextBlock Text="{Binding LocalTime, Mode=OneWay, StringFormat={}{0:dd.MM.yyyy HH:mm:ss}}" Foreground="{DynamicResource BrushTextSecondary}" FontSize="12"/>
                                     <TextBlock Foreground="{DynamicResource BrushTextSecondary}" FontSize="11" TextTrimming="CharacterEllipsis">
                                         <Run Text="{Binding User, Mode=OneWay}"/><Run Text=" · "/><Run Text="{Binding UserRole, Mode=OneWay}"/>
                                     </TextBlock>
@@ -32,7 +32,8 @@
                                     <TextBlock Text="{Binding OperationKindDisplay, Mode=OneWay}" Foreground="{DynamicResource BrushText}" FontSize="11" FontWeight="SemiBold"/>
                                 </Border>
                                 <StackPanel Grid.Column="3" Grid.Row="0">
-                                    <TextBlock Text="{Binding Description, Mode=OneWay}" Foreground="{DynamicResource BrushText}" FontSize="14" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                    <TextBlock Text="{Binding DisplayDescription, Mode=OneWay}" Foreground="{DynamicResource BrushText}" FontSize="14" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                    <TextBlock Text="{Binding RestorationStatus, Mode=OneWay}" Foreground="{DynamicResource BrushAccent}" FontSize="11" FontWeight="SemiBold" Margin="0,3,0,0"/>
                                     <TextBlock Foreground="{DynamicResource BrushTextSecondary}" FontSize="11" Margin="0,3,0,0">
                                         <Run Text="{Binding ProjectType, Mode=OneWay}"/><Run Text=" · режим "/><Run Text="{Binding Mode, Mode=OneWay}"/><Run Text=" · проект: "/><Run Text="{Binding ProjectName, Mode=OneWay}"/>
                                     </TextBlock>
@@ -58,7 +59,7 @@
         </Border>
         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
             <Button Content="Очистить журнал" Style="{StaticResource BtnSecondary}" Margin="0,0,8,0" Click="Clear_Click"/>
-            <Button Content="Закрыть" Style="{StaticResource BtnSecondary}" Width="100" Click="Close_Click"/>
+            <Button IsDefault="True" Content="Закрыть" Style="{StaticResource BtnSecondary}" Width="100" Click="Close_Click"/>
         </StackPanel>
     </Grid>
 </Window>

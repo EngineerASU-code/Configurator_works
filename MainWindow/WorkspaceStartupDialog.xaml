@@ -10,7 +10,7 @@
    <StackPanel VerticalAlignment="Center" Margin="6,0,16,0">
     <TextBlock Text="GASS" FontSize="22" Foreground="#116B73" FontWeight="Bold"/>
     <Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left"><TextBlock Text="Configurator" FontSize="46" Foreground="#1C2130" FontWeight="SemiBold"/></Viewbox>
-    <Button x:Name="Start" Content="Начать работу" Width="158" Height="44" HorizontalAlignment="Left" Margin="0,26,0,0" Click="Start_Click" Background="#34335E" Foreground="#F7F7F2" FontWeight="SemiBold"/>
+    <Button IsDefault="True" x:Name="Start" Content="Начать работу" Width="158" Height="44" HorizontalAlignment="Left" Margin="0,26,0,0" Click="Start_Click" Background="#34335E" Foreground="#F7F7F2" FontWeight="SemiBold"/>
    </StackPanel>
    <Viewbox Grid.Column="1" Margin="4" Stretch="Uniform">
     <Canvas Width="650" Height="310">

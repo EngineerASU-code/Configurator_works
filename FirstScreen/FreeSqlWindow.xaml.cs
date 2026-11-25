@@ -12,18 +12,21 @@ namespace Configurator
 {
     public partial class FreeSqlWindow : Window
     {
+        public event Action<string, IReadOnlyList<ChangeJournalRowChange>> ChangesCommitted;
         private readonly Func<string, string> _connectionString;
-        private SavedSqlQuery _openedQuery;
+        private readonly LocalSqlLibrary _library = new();
+        private LocalQuery _openedQuery;
         private string _openedSql = "";
         private readonly CancellationTokenSource _lifetime = new();
 
         public FreeSqlWindow(Func<string, string> connectionString, IReadOnlyList<string> databases, string preferredDatabase = null)
         {
             InitializeComponent();
+            KeyDown += Configurator.Infrastructure.ModernDialog.CloseToolOnEnter;
             Closed += (_, _) => _lifetime.Cancel();
             _connectionString = connectionString;
 
-            CmbDatabase.ItemsSource = databases.ToList();
+            foreach (var database in databases) CmbDatabase.Items.Add(database);
 
             if (!string.IsNullOrWhiteSpace(preferredDatabase) && CmbDatabase.Items.Contains(preferredDatabase))
                 CmbDatabase.SelectedItem = preferredDatabase;
@@ -31,24 +34,29 @@ namespace Configurator
                 CmbDatabase.SelectedIndex = 0;
 
             UpdateDatabaseContext();
-            Loaded += async (_, _) => await RefreshQueriesAsync();
+            Loaded += (_, _) => RefreshQueries();
+        }
+
+        internal void SetDatabaseAvailable(string database, bool available)
+        {
+            var existing = CmbDatabase.Items.OfType<string>().FirstOrDefault(name =>
+                string.Equals(name, database, StringComparison.OrdinalIgnoreCase));
+            if (available && existing == null) CmbDatabase.Items.Add(database);
+            if (!available && existing != null) CmbDatabase.Items.Remove(existing);
         }
 
         private string SelectedDatabase => CmbDatabase.SelectedItem as string;
 
-        private SavedSqlQueryStore QueryStore() => new(_connectionString(SelectedDatabase), SelectedDatabase);
-
-        private async void CmbDatabase_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        private void CmbDatabase_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            if (!IsLoaded) return;
+            if (ResultGrid == null || BtnExecute == null) return;
             ResultGrid.ItemsSource = null;
-            SetOpenedQuery(null, "");
             UpdateDatabaseContext();
-            await RefreshQueriesAsync();
         }
 
         private void UpdateDatabaseContext()
         {
+            BtnExecute.IsEnabled = SelectedDatabase != null && TxtSql.IsEnabled;
             string database = CmbDatabase.SelectedItem?.ToString();
             TxtStatus.Text = string.IsNullOrWhiteSpace(database)
                 ? "База данных не выбрана"
@@ -83,8 +91,10 @@ namespace Configurator
                 // DatabaseService дополнительно проверяет фактический DB_NAME().
                 var db = new DatabaseService(_connectionString(database));
                 // INSERT/UPDATE/DELETE: show the affected-row count before COMMIT.
-                var result = await db.ExecuteFreeSqlAsync(sql, null, database, _lifetime.Token, ConfirmDmlAsync);
+                var result = await db.ExecuteFreeSqlCoreAsync(sql, null, database, _lifetime.Token, ConfirmDmlAsync,
+                    DatabaseService.FreeSqlConfirmationTimeout, changes => Dispatcher.Invoke(() => ChangesCommitted?.Invoke(database, changes)));
 
+                if (database != SelectedDatabase) return;
                 ResultGrid.ItemsSource = result.Result?.DefaultView;
                 bool truncated = result.Result?.ExtendedProperties["Truncated"] is true;
                 TxtStatus.Text = result.Result != null
@@ -101,7 +111,7 @@ namespace Configurator
             catch (Exception ex)
             {
                 ResultGrid.ItemsSource = null;
-                TxtStatus.Text = "Ошибка выполнения";
+                TxtStatus.Text = UserErrorMessage.Format(ex);
                 Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "SQL ошибка",
                     MessageBoxButton.OK, MessageBoxImage.Error);
             }
@@ -134,7 +144,7 @@ namespace Configurator
             panel.Children.Add(new TextBlock { Text = $"Будет изменено строк: {affected}. Подтвердите в течение 60 секунд.", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 18) });
             var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
             var no = new Button { Content = "Отмена", MinWidth = 90, Margin = new Thickness(0, 0, 8, 0) };
-            var yes = new Button { Content = "Применить", MinWidth = 90 };
+            var yes = new Button { Content = "Применить", IsDefault = true, MinWidth = 90 };
             buttons.Children.Add(no); buttons.Children.Add(yes); panel.Children.Add(buttons); dialog.Content = panel;
             var registration = ct.Register(() =>
             {
@@ -153,108 +163,63 @@ namespace Configurator
         {
             CmbDatabase.IsEnabled = !busy;
             TxtSql.IsEnabled = !busy;
-            BtnExecute.IsEnabled = !busy;
+            BtnExecute.IsEnabled = !busy && SelectedDatabase != null;
             QueryActions.IsEnabled = !busy;
             QueryLibrary.IsEnabled = !busy;
         }
 
-        private async void BtnRefresh_Click(object sender, RoutedEventArgs e) => await RefreshQueriesAsync();
+        private void BtnRefresh_Click(object sender, RoutedEventArgs e) => RefreshQueries();
 
-        private async Task RefreshQueriesAsync()
+        private void RefreshQueries()
         {
-            SavedQueries.ItemsSource = null;
-            if (SelectedDatabase == null)
-            {
-                TxtLibraryState.Text = "Выберите базу проекта.";
-                return;
-            }
-
-            SetBusy(true);
-            TxtLibraryState.Text = "Загрузка…";
-            try
-            {
-                ShowQueries(await QueryStore().ListAsync(), _openedQuery?.Id);
-            }
+            try { ShowQueries(_library.Read(), _openedQuery?.Id); }
             catch (Exception ex)
             {
-                TxtLibraryState.Text = "Не удалось загрузить список.";
-                TxtLibraryState.ToolTip = UserErrorMessage.Format(ex);
+                TxtLibraryState.Text = UserErrorMessage.Format(ex);
             }
-            finally { SetBusy(false); }
         }
 
-        private void ShowQueries(List<SavedSqlQuery> queries, int? selectedId)
+        private void ShowQueries(List<LocalQuery> queries, Guid? selectedId)
         {
             SavedQueries.ItemsSource = queries;
             SavedQueries.SelectedItem = queries.FirstOrDefault(query => query.Id == selectedId);
-            TxtLibraryState.Text = queries.Count == 0 ? "В этой базе пока нет сохранённых запросов." : "";
+            TxtLibraryState.Text = queries.Count == 0 ? "В локальной библиотеке пока нет сохранённых запросов." : "";
             TxtLibraryState.ToolTip = null;
         }
 
         private void SavedQueries_SelectionChanged(object sender, SelectionChangedEventArgs e) =>
-            BtnOpenQuery.IsEnabled = SavedQueries.SelectedItem is SavedSqlQuery;
+            BtnOpenQuery.IsEnabled = SavedQueries.SelectedItem is LocalQuery;
 
-        private async void BtnSaveQuery_Click(object sender, RoutedEventArgs e)
+        private void BtnSaveQuery_Click(object sender, RoutedEventArgs e)
         {
-            if (SelectedDatabase == null || string.IsNullOrWhiteSpace(TxtQueryName.Text) ||
-                string.IsNullOrWhiteSpace(TxtSql.Text))
-            {
-                ModernDialog.Show(this, "Выберите базу, задайте имя запроса и введите SQL.", Title,
-                    MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-
-            bool update = sender == BtnUpdateQuery;
-            SetBusy(true);
             try
             {
-                string sql = TxtSql.Text;
-                var store = QueryStore();
-                var saved = await store.SaveAsync(update ? _openedQuery?.Id : null, TxtQueryName.Text, sql,
-                    update ? _openedQuery?.Name : null, update ? _openedSql : null);
-                SetOpenedQuery(saved, sql);
+                var saved = _library.Save(sender == BtnUpdateQuery ? _openedQuery : null,
+                    TxtQueryName.Text.Trim(), TxtSql.Text);
                 TxtQueryName.Text = saved.Name;
-                TxtStatus.Text = "Запрос сохранён в базе проекта.";
-
-                // Saving has already succeeded even if a separate refresh fails.
-                try { ShowQueries(await store.ListAsync(), saved.Id); }
-                catch (Exception ex)
-                {
-                    TxtLibraryState.Text = "Не удалось обновить список.";
-                    TxtLibraryState.ToolTip = UserErrorMessage.Format(ex);
-                }
+                SetOpenedQuery(saved, saved.Sql);
+                TxtStatus.Text = "Запрос сохранён в локальной библиотеке.";
+                RefreshQueries();
             }
             catch (Exception ex)
             {
                 ModernDialog.Show(this, UserErrorMessage.Format(ex), "Ошибка сохранения запроса",
                     MessageBoxButton.OK, MessageBoxImage.Error);
             }
-            finally { SetBusy(false); }
         }
 
-        private async void BtnOpenQuery_Click(object sender, RoutedEventArgs e)
+        private void BtnOpenQuery_Click(object sender, RoutedEventArgs e)
         {
-            if (SavedQueries.SelectedItem is not SavedSqlQuery query || !ConfirmReplaceDraft()) return;
-            SetBusy(true);
-            try
-            {
-                var (opened, sql) = await QueryStore().ReadAsync(query.Id);
-                TxtSql.Text = sql;
-                TxtQueryName.Text = opened.Name;
-                SetOpenedQuery(opened, sql);
-                ResultGrid.ItemsSource = null;
-                TxtStatus.Text = "Запрос открыт из базы проекта.";
-                TxtSql.Focus();
-            }
-            catch (Exception ex)
-            {
-                ModernDialog.Show(this, UserErrorMessage.Format(ex), "Ошибка открытия запроса",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-            finally { SetBusy(false); }
+            if (SavedQueries.SelectedItem is not LocalQuery query || !ConfirmReplaceDraft()) return;
+            TxtSql.Text = query.Sql;
+            TxtQueryName.Text = query.Name;
+            SetOpenedQuery(query, query.Sql);
+            ResultGrid.ItemsSource = null;
+            TxtStatus.Text = "Запрос открыт из локальной библиотеки.";
+            TxtSql.Focus();
         }
 
-        private void SetOpenedQuery(SavedSqlQuery query, string sql)
+        private void SetOpenedQuery(LocalQuery query, string sql)
         {
             _openedQuery = query;
             _openedSql = sql;

@@ -1,45 +1,209 @@
-<UserControl x:Class="Configurator.EngineeringIntro" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
- <Viewbox Stretch="Uniform" ClipToBounds="True">
-  <Canvas Width="760" Height="480" Background="#F7F7F2" ClipToBounds="True">
-   <Canvas x:Name="World" Width="2200" Height="480">
+<UserControl Background="Transparent" Cursor="Hand" PreviewMouseLeftButtonDown="Skip" x:Class="Configurator.EngineeringIntro"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+ <UserControl.Resources>
+  <LinearGradientBrush x:Key="Steel" StartPoint="0,0" EndPoint="1,0">
+   <GradientStop Color="#A9C3C3" Offset="0"/><GradientStop Color="#F5F7F1" Offset=".38"/>
+   <GradientStop Color="#CADAD6" Offset=".7"/><GradientStop Color="#9EAFB9" Offset="1"/>
+  </LinearGradientBrush>
+  <DrawingBrush x:Key="GridPaper" TileMode="Tile" Viewport="0,0,24,24" ViewportUnits="Absolute">
+   <DrawingBrush.Drawing><GeometryDrawing Geometry="M0,24 V0 H24"><GeometryDrawing.Pen><Pen Brush="#DDE4DF" Thickness=".7"/></GeometryDrawing.Pen></GeometryDrawing></DrawingBrush.Drawing>
+  </DrawingBrush>
+ </UserControl.Resources>
+ <Viewbox><Canvas Width="760" Height="480" ClipToBounds="True" Background="#F7F7F2">
+  <Canvas Width="760" Height="480" Background="{StaticResource GridPaper}">
+   <Path Stroke="#31345B" StrokeThickness="12" Data="M0,336 H760"/>
+   <Path Stroke="#8EC7C0" StrokeThickness="3" Data="M0,336 H760"/>
+   <Canvas>
     <Canvas.RenderTransform><TranslateTransform x:Name="Camera"/></Canvas.RenderTransform>
-    <Canvas.Background><DrawingBrush TileMode="Tile" Viewport="0,0,24,24" ViewportUnits="Absolute"><DrawingBrush.Drawing><GeometryDrawing Geometry="M0,24 L0,0 24,0"><GeometryDrawing.Pen><Pen Brush="#D8DFDC" Thickness="1"/></GeometryDrawing.Pen></GeometryDrawing></DrawingBrush.Drawing></DrawingBrush></Canvas.Background>
-    <TextBlock Canvas.Left="68" Canvas.Top="70" Text="Технологическое проектирование" Foreground="#302C50" Background="#C2E2DE" FontWeight="Bold" FontSize="31"/>
-    <Path Stroke="#49727E" StrokeThickness="1.5" Data="M60,125 H590 V340 H60 Z M72,321 H575 M110,315 V327 M525,315 V327 M480,142 V295 M80,240 H150 V180 H80 Z M92,180 V163 H138 V180 M505,239 L552,216 594,237 548,261 Z M505,239 V285 L548,308 594,284 V237 M548,261 V308"/>
-    <TextBlock Canvas.Left="256" Canvas.Top="328" Text="4 800" Foreground="#425D6B" FontFamily="Consolas"/>
-    <TextBlock Canvas.Left="78" Canvas.Top="245" Text="TK-101" Foreground="#425D6B" FontFamily="Consolas"/>
-    <TextBlock Canvas.Left="425" Canvas.Top="177" Text="DN 80" Foreground="#425D6B" FontFamily="Consolas"/>
-    <Path Stroke="#177E80" StrokeThickness="3" Data="M80,300 L180,300 180,212 320,212 320,275 710,275 M240,212 L240,150 412,150 412,275 M350,263 L374,287 374,263 350,287 Z">
-     <Path.Clip><RectangleGeometry x:Name="Trace" Rect="0,0,0,480"/></Path.Clip>
-    </Path>
-    <Path x:Name="DraftingCursor" Stroke="#4D4677" Data="M-10,0 H10 M0,-10 V10" Canvas.Top="275"><Path.RenderTransform><TranslateTransform x:Name="PenPosition"/></Path.RenderTransform></Path>
-    <Path Stroke="#257E80" StrokeThickness="5" StrokeLineJoin="Round" Data="M615,275 L686,234 V176 L763,132 826,168 V230 L899,273 982,225"/>
-    <Path Stroke="#486D78" Data="M615,286 L687,245 764,201 826,237 899,280 982,232 M686,234 V299 M826,230 V274 M899,273 V307" />
-    <TextBlock Canvas.Left="680" Canvas.Top="66" Text="Модель трассы" Foreground="#302C50" Background="#C2E2DE" FontWeight="Bold" FontSize="25"/>
-    <Rectangle Canvas.Left="1000" Canvas.Top="237" Width="505" Height="76" RadiusX="4" RadiusY="4"><Rectangle.Fill><LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#537381"/><GradientStop Offset=".23" Color="#D4E1DD"/><GradientStop Offset=".55" Color="#849EA7"/><GradientStop Offset="1" Color="#324C59"/></LinearGradientBrush></Rectangle.Fill></Rectangle>
-
-    <TextBlock Canvas.Left="1060" Canvas.Top="115" Text="Опрессовка" Foreground="#302C50" Background="#C2E2DE" FontWeight="Bold" FontSize="27"/>
-    <Rectangle Canvas.Left="1020" Canvas.Top="250" Width="431" Height="49" RadiusX="18" RadiusY="18" Fill="#137D9D"/>
-    <Path Stroke="#A0E5F2" StrokeThickness="2" StrokeDashArray="8 9" x:Name="Flow" Data="M1037,267 Q1060,257 1083,267 T1129,267 T1175,267 T1221,267 T1267,267 T1313,267 T1359,267 T1405,267 M1047,285 H1420"/>
-    <Path Stroke="#A3BEC8" StrokeThickness="7" Data="M1290,237 V210"/>
-    <Ellipse Canvas.Left="1260" Canvas.Top="150" Width="60" Height="60" Fill="#E5EEE9" Stroke="#69838D" StrokeThickness="4"/>
-    <Path Canvas.Left="1290" Canvas.Top="180" Stroke="#BF5738" StrokeThickness="3" Data="M0,0 L-16,-9"><Path.RenderTransform><RotateTransform x:Name="Needle"/></Path.RenderTransform></Path>
-    <TextBlock Canvas.Left="1560" Canvas.Top="48" Text="Монтаж шкафа АСУ ТП" Foreground="#302C50" Background="#C2E2DE" FontWeight="Bold" FontSize="31"/>
-    <Border Canvas.Left="1570" Canvas.Top="109" Width="460" Height="285" Background="#758F97" BorderBrush="#B5C8C8" BorderThickness="5" CornerRadius="5">
-     <Grid Margin="20"><Grid.RowDefinitions><RowDefinition Height="48"/><RowDefinition Height="*"/><RowDefinition Height="64"/></Grid.RowDefinitions>
-      <TextBlock Text="SIEMENS" Foreground="White" FontWeight="Bold" FontSize="22"/>
-      <UniformGrid x:Name="Modules" Grid.Row="1" Rows="1"/>
-      <Canvas Grid.Row="2">
-       <Canvas.Clip><RectangleGeometry x:Name="Wiring" Rect="0,0,405,64"/></Canvas.Clip>
-       <Path Stroke="#E8AC64" StrokeThickness="3" Data="M24,0 V19 Q24,23 29,23 H380 M96,0 V14 Q96,18 100,18 H380"/>
-       <Path Stroke="#E5D997" StrokeThickness="3" Data="M161,0 V10 Q161,13 166,13 H380"/>
-       <Path Stroke="#6CD2EF" StrokeThickness="5" Data="M235,0 V29 Q235,40 246,40 H373 M300,0 V20 Q300,32 312,32 H373"/>
-       <TextBlock Canvas.Left="16" Canvas.Top="41" Text="24 V DC" Foreground="#182D33" FontFamily="Consolas"/>
-       <TextBlock Canvas.Left="242" Canvas.Top="43" Text="AIR  ·  Ø 6" Foreground="#182D33" FontFamily="Consolas"/>
-      </Canvas>
-     </Grid>
-    </Border>
+   <Canvas Canvas.Left="140" Canvas.Top="65">
+    <Path Stroke="#55767C" StrokeThickness="2" Data="M154,271 V244 H203 V230 M153,251 l-9,-6 v12 l18,-12 v12 Z"/>
+    <Canvas Canvas.Top="5">
+     <Canvas.RenderTransform><ScaleTransform ScaleX="1.2" ScaleY="1.2"/></Canvas.RenderTransform>
+     <Path Fill="{StaticResource Steel}" Stroke="#333753" StrokeThickness="2" StrokeLineJoin="Round" Data="M105,96 q0,-16 30,-16 h24 q30,0 30,16 v63 l-28,16 h-28 l-28,-16 Z m0,0 q42,13 84,0 m-73,72 v16 m62,-16 v16 M223,96 q0,-16 30,-16 h24 q30,0 30,16 v63 l-28,16 h-28 l-28,-16 Z m0,0 q42,13 84,0 m-73,72 v16 m62,-16 v16"/>
+     <Path Stroke="#30696F" StrokeThickness="2" StrokeLineJoin="Round" Data="M147,80 V56 H264 V80 M147,176 V192 H328 V152 M312,152 h32 v-24 h-32 Z M319,140 h18 M110,112 h12 v42 h-12 Z"/>
+     <Path Data="M117,110 q30,7 60,0 m-60,34 q30,7 60,0" Fill="Transparent" Stroke="#84999E" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Rectangle Canvas.Left="114" Canvas.Top="115" Width="5" Height="32" Fill="#337D93"/>
+     <Path Data="M128,82 v-7 h35 v7 m-31,-7 v-4 h27 v4" Fill="Transparent" Stroke="#465466" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Path Data="M235,110 q30,7 60,0 m-60,34 q30,7 60,0" Fill="Transparent" Stroke="#84999E" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Rectangle Canvas.Left="232" Canvas.Top="115" Width="5" Height="32" Fill="#337D93"/>
+     <Path Data="M246,82 v-7 h35 v7 m-31,-7 v-4 h27 v4" Fill="Transparent" Stroke="#465466" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Path Data="M319,150 V163 H336 V150 M323,164 V191 M319,180 H330" Fill="Transparent" Stroke="#7C6045" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <TextBlock Canvas.Left="137" Canvas.Top="124" FontFamily="Consolas" FontSize="9" Foreground="#405263" Text="T1"/>
+     <TextBlock Canvas.Left="254" Canvas.Top="124" FontFamily="Consolas" FontSize="9" Foreground="#405263" Text="T2"/>
+    </Canvas>
+   </Canvas>
+   <Canvas Canvas.Left="660" Canvas.Top="65">
+    <Path Stroke="#55767C" StrokeThickness="2" Data="M154,271 V244 H203 V230 M153,251 l-9,-6 v12 l18,-12 v12 Z"/>
+    <Canvas Canvas.Top="5">
+     <Canvas.RenderTransform><ScaleTransform ScaleX="1.2" ScaleY="1.2"/></Canvas.RenderTransform>
+     <Path Fill="{StaticResource Steel}" Stroke="#333753" StrokeThickness="2" StrokeLineJoin="Round" Data="M80,64 H365 V183 H80 Z"/>
+     <Path Stroke="#30696F" StrokeThickness="2" StrokeLineJoin="Round" Data="M101,139 H130 V99 Q148,87 166,99 V133 L148,145 V158 H219 V126 H255 M130,100 Q148,110 166,100 M255,110 H295 V142 H255 Z M259,137 l31,-23 M277,110 V87 H337 M295,127 H340 M104,170 H339 M206,100 l12,10 v-20 l-12,10 -12,-10 v20 Z"/>
+     <Path Data="M89,72 H356 V176 H89 Z" Fill="Transparent" Stroke="#889AA9" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Path Data="M258,120 H239 V82 H312" Fill="Transparent" Stroke="#B1593D" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Path Data="M232,126 h10 l-5,-3 m0,6 5,-3" Fill="Transparent" Stroke="#307E89" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+    <TextBlock Canvas.Left="98" Canvas.Top="73" FontFamily="Consolas" FontSize="10" Foreground="#5A526F" Text="P&amp;ID"/>
+     <TextBlock Canvas.Left="304" Canvas.Top="151" FontFamily="Consolas" FontSize="9" Foreground="#334969" Text="HX-201"/>
+     <Path Data="M301,164 H356 M316,164 V176" Fill="Transparent" Stroke="#7C8492" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+    </Canvas>
+   </Canvas>
+   <Canvas Canvas.Left="1180" Canvas.Top="65">
+    <Path Stroke="#55767C" StrokeThickness="2" Data="M154,271 V244 H203 V230 M153,251 l-9,-6 v12 l18,-12 v12 Z"/>
+    <Canvas Canvas.Top="5">
+     <Canvas.RenderTransform><ScaleTransform ScaleX="1.2" ScaleY="1.2"/></Canvas.RenderTransform>
+     <Path Fill="{StaticResource Steel}" Stroke="#333753" StrokeThickness="2" StrokeLineJoin="Round" Data="M83,76 H263 V170 H83 Z M280,68 H365 V135 H280 Z M314,135 V148 H337 V135"/>
+     <Path Stroke="#30696F" StrokeThickness="2" StrokeLineJoin="Round" Data="M94,89 H128 V154 H94 Z M138,91 v62 m23,-62 v62 m24,-62 v62 m24,-62 v62 m24,-62 v62 M96,105 h25 M98,115 h10 M292,114 l11,-10 9,3 10,-20 9,11 8,-4 14,2 M104,170 v21 h185 v-34"/>
+     <Rectangle Canvas.Left="286" Canvas.Top="76" Width="72" Height="50" Fill="#24354E"/>
+     <Path Data="M291,115 l9,-9 9,4 10,-19 9,8 9,-5 15,1" Fill="Transparent" Stroke="#6FE0C1" StrokeThickness="2" StrokeLineJoin="Round"/>
+     <Rectangle Canvas.Left="141" Canvas.Top="94" Width="13" Height="8" Fill="#405875"/>
+     <Rectangle Canvas.Left="141" Canvas.Top="107" Width="4" Height="4" Fill="#4A9778"/>
+     <Path Data="M141,132 h12 m-12,6 h12 m-12,6 h12" Fill="Transparent" Stroke="#748292" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Rectangle Canvas.Left="164" Canvas.Top="94" Width="13" Height="8" Fill="#405875"/>
+     <Rectangle Canvas.Left="164" Canvas.Top="107" Width="4" Height="4" Fill="#4A9778"/>
+     <Path Data="M164,132 h12 m-12,6 h12 m-12,6 h12" Fill="Transparent" Stroke="#748292" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Rectangle Canvas.Left="188" Canvas.Top="94" Width="13" Height="8" Fill="#405875"/>
+     <Rectangle Canvas.Left="188" Canvas.Top="107" Width="4" Height="4" Fill="#4A9778"/>
+     <Path Data="M188,132 h12 m-12,6 h12 m-12,6 h12" Fill="Transparent" Stroke="#748292" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Rectangle Canvas.Left="211" Canvas.Top="94" Width="13" Height="8" Fill="#405875"/>
+     <Rectangle Canvas.Left="211" Canvas.Top="107" Width="4" Height="4" Fill="#D79745"/>
+     <Path Data="M211,132 h12 m-12,6 h12 m-12,6 h12" Fill="Transparent" Stroke="#748292" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Rectangle Canvas.Left="235" Canvas.Top="94" Width="13" Height="8" Fill="#405875"/>
+     <Rectangle Canvas.Left="235" Canvas.Top="107" Width="4" Height="4" Fill="#4A9778"/>
+     <Path Data="M235,132 h12 m-12,6 h12 m-12,6 h12" Fill="Transparent" Stroke="#748292" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <TextBlock Canvas.Left="95" Canvas.Top="120" FontFamily="Consolas" FontSize="9" Foreground="#314165" Text="CPU"/>
+    </Canvas>
+   </Canvas>
+   <Canvas Canvas.Left="1700" Canvas.Top="65">
+    <Path Stroke="#55767C" StrokeThickness="2" Data="M154,271 V244 H203 V230 M153,251 l-9,-6 v12 l18,-12 v12 Z"/>
+    <Canvas Canvas.Top="5">
+     <Canvas.RenderTransform><ScaleTransform ScaleX="1.2" ScaleY="1.2"/></Canvas.RenderTransform>
+     <Path Fill="{StaticResource Steel}" Stroke="#333753" StrokeThickness="2" StrokeLineJoin="Round" Data="M77,131 H123 V163 H77 Z M125,145 A22,22 0 1 1 169,145 A22,22 0 1 1 125,145 M138,124 V104 H158 V124 M215,91 L290,78 320,93 V156 L245,171 215,155 Z"/>
+     <Path Stroke="#30696F" StrokeThickness="2" StrokeLineJoin="Round" Data="M78,181 H342 V191 H78 Z M88,163 V181 M150,167 V181 M84,138 h31 m-31,7 h31 m-31,7 h31 M149,104 V94 H197 V139 H215 M320,118 H345 V180 M226,96 l27,14 v52 m-17,-67 27,14 v51 m-16,-68 27,14 v51 m-16,-68 27,14 v50 m-16,-68 27,14 v50"/>
+     <Path Data="M218,91 l27,15 73,-14 -28,-13 Z" Fill="#A3A2BE" Stroke="#505879" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Path Data="M215,102 l29,16 v48 l-29,-15 Z" Fill="#9286A6" Stroke="#68577A" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Path Data="M221,107 a3,3 0 1 0 6,0 a3,3 0 1 0 -6,0" Fill="#D9E2DF" Stroke="#373B54" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Path Data="M221,142 a3,3 0 1 0 6,0 a3,3 0 1 0 -6,0" Fill="#D9E2DF" Stroke="#373B54" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Path Data="M312,111 h20 v-32 h18 M312,148 h38" Fill="Transparent" Stroke="#BA6545" StrokeThickness="4" StrokeLineJoin="Round"/>
+     <Path Data="M148,145 q-11,-9 -14,1 q6,12 14,-1 q5,-11 13,-4 q-1,12 -13,4" Fill="Transparent" Stroke="#49878D" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Rectangle Canvas.Left="82" Canvas.Top="185" Width="253" Height="3" Fill="#66758C"/>
+    </Canvas>
+   </Canvas>
+   <Canvas Canvas.Left="2220" Canvas.Top="65">
+    <Path Stroke="#55767C" StrokeThickness="2" Data="M154,271 V244 H203 V230 M153,251 l-9,-6 v12 l18,-12 v12 Z"/>
+    <Canvas Canvas.Top="5">
+     <Canvas.RenderTransform><ScaleTransform ScaleX="1.2" ScaleY="1.2"/></Canvas.RenderTransform>
+     <Path Fill="{StaticResource Steel}" Stroke="#333753" StrokeThickness="2" StrokeLineJoin="Round" Data="M68,94 H249 V158 H68 Z M256,112 H305 L337,139 V161 H256 Z M268,118 H301 L320,137 H268 Z"/>
+     <Path Stroke="#30696F" StrokeThickness="2" StrokeLineJoin="Round" Data="M65,165 H339 M86,162 a16,16 0 1 0 32,0 a16,16 0 1 0 -32,0 M279,162 a16,16 0 1 0 32,0 a16,16 0 1 0 -32,0 M82,103 H234 V148 H82 Z M84,146 L142,104 196,147 232,105 M50,187 H350"/>
+     <Path Data="M257,112 h47 l32,28 v19 h-79 Z" Fill="#667798" Stroke="#374260" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Path Data="M270,117 H300 L318,136 H270 Z" Fill="#A9D8DD" Stroke="#46596C" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Path Data="M69,151 H247 M72,96 V150 M244,96 V150" Fill="Transparent" Stroke="#A27648" StrokeThickness="3" StrokeLineJoin="Round"/>
+     <Rectangle Canvas.Left="324" Canvas.Top="144" Width="10" Height="5" Fill="#FFD084"/>
+     <Path Data="M96,165 a6,6 0 1 0 12,0 a6,6 0 1 0 -12,0" Fill="#B7C4CB" Stroke="#45596B" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Path Data="M289,165 a6,6 0 1 0 12,0 a6,6 0 1 0 -12,0" Fill="#B7C4CB" Stroke="#45596B" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Path Data="M85,144 V111 H125 V144 Z M132,145 V115 H164 V145 Z" Fill="#9DAEBB" Stroke="#4B526A" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Path Data="M90,114 v26 m7,-26 v26 m7,-26 v26 m7,-26 v26 M125,121 H138 V108 H177 V136 H193" Fill="Transparent" Stroke="#3E696D" StrokeThickness="2" StrokeLineJoin="Round"/>
+     <Path Data="M177,140 a11,11 0 1 0 22,0 a11,11 0 1 0 -22,0 M199,134 h25 v13 h-25 Z" Fill="#849FA4" Stroke="#475C68" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Path Data="M76,149 l19,-43 M229,149 l-16,-43" Fill="Transparent" Stroke="#B97546" StrokeThickness="3" StrokeLineJoin="Round"/>
+     <Path Data="M266,139 V155 H282 M270,143 h5 M319,137 v-8 h6 v8 Z M269,158 h15 M326,153 h11" Fill="Transparent" Stroke="#394561" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Ellipse Canvas.Left="88" Canvas.Top="154" Width="28" Height="28" Fill="#374254" Stroke="#30384B"/>
+     <Ellipse Canvas.Left="95" Canvas.Top="161" Width="14" Height="14" Fill="#AEC1C4" Stroke="#647383"/>
+     <Ellipse Canvas.Left="100" Canvas.Top="166" Width="4" Height="4" Fill="#69788A" Stroke="#647383"/>
+     <Ellipse Canvas.Left="123" Canvas.Top="154" Width="28" Height="28" Fill="#374254" Stroke="#30384B"/>
+     <Ellipse Canvas.Left="130" Canvas.Top="161" Width="14" Height="14" Fill="#AEC1C4" Stroke="#647383"/>
+     <Ellipse Canvas.Left="135" Canvas.Top="166" Width="4" Height="4" Fill="#69788A" Stroke="#647383"/>
+     <Ellipse Canvas.Left="281" Canvas.Top="154" Width="28" Height="28" Fill="#374254" Stroke="#30384B"/>
+     <Ellipse Canvas.Left="288" Canvas.Top="161" Width="14" Height="14" Fill="#AEC1C4" Stroke="#647383"/>
+     <Ellipse Canvas.Left="293" Canvas.Top="166" Width="4" Height="4" Fill="#69788A" Stroke="#647383"/>
+    </Canvas>
+   </Canvas>
+   <Canvas Canvas.Left="2740" Canvas.Top="65">
+    <Path Stroke="#55767C" StrokeThickness="2" Data="M154,271 V244 H203 V230 M153,251 l-9,-6 v12 l18,-12 v12 Z"/>
+    <Canvas Canvas.Top="5">
+     <Canvas.RenderTransform><ScaleTransform ScaleX="1.2" ScaleY="1.2"/></Canvas.RenderTransform>
+     <Path Fill="{StaticResource Steel}" Stroke="#333753" StrokeThickness="2" StrokeLineJoin="Round" Data="M76,130 H341 V143 H76 Z M126,75 H158 V100 H126 Z M214,75 H246 V100 H214 Z M298,75 H330 V100 H298 Z"/>
+     <Path Stroke="#30696F" StrokeThickness="2" StrokeLineJoin="Round" Data="M142,100 V135 m-14,-10 28,20 v-20 l-28,20 Z M230,100 V135 m-14,-10 28,20 v-20 l-28,20 Z M314,100 V135 m-14,-10 28,20 v-20 l-28,20 Z M92,143 V183 H325 V143 M178,130 V98 m-13,-13 a13,13 0 1 0 26,0 a13,13 0 1 0 -26,0 M178,85 l6,-6"/>
+     <Rectangle Canvas.Left="128" Canvas.Top="77" Width="28" Height="17" Fill="#70849A"/>
+     <Rectangle Canvas.Left="137" Canvas.Top="66" Width="10" Height="9" Fill="#619E89"/>
+     <Path Data="M133,104 h18 m-18,5 h18 M126,145 v8 h32 v-8" Fill="Transparent" Stroke="#616F83" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Rectangle Canvas.Left="216" Canvas.Top="77" Width="28" Height="17" Fill="#70849A"/>
+     <Rectangle Canvas.Left="225" Canvas.Top="66" Width="10" Height="9" Fill="#D89C50"/>
+     <Path Data="M221,104 h18 m-18,5 h18 M214,145 v8 h32 v-8" Fill="Transparent" Stroke="#616F83" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Rectangle Canvas.Left="300" Canvas.Top="77" Width="28" Height="17" Fill="#70849A"/>
+     <Rectangle Canvas.Left="309" Canvas.Top="66" Width="10" Height="9" Fill="#619E89"/>
+     <Path Data="M305,104 h18 m-18,5 h18 M298,145 v8 h32 v-8" Fill="Transparent" Stroke="#616F83" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Path Data="M168,88 l2,-1 m1,-10 2,2 m6,-5 v3 m7,2 -2,2" Fill="Transparent" Stroke="#5D6172" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Path Data="M178,85 l6,-6" Fill="Transparent" Stroke="#B9654B" StrokeThickness="2" StrokeLineJoin="Round"/>
+     <Path Data="M99,58 H324 V65 M142,58 V66 M230,58 V66 M314,58 V66" Fill="Transparent" Stroke="#708C9C" StrokeThickness="2" StrokeLineJoin="Round"/>
+     <Path Data="M135,113 h14 v9 l9,7 v13 l-9,7 h-14 l-9,-7 v-13 l9,-7 Z" Fill="{StaticResource Steel}" Stroke="#475C6A" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Ellipse Canvas.Left="136" Canvas.Top="130" Width="12" Height="12" Fill="#E0EBE6" Stroke="#538088"/>
+     <Path Data="M122,128 v18 m-4,-18 v18 M162,128 v18 m4,-18 v18 M138,151 v19 h8 v-19 Z" Fill="#BCCBCE" Stroke="#576E7C" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Path Data="M132,81 h20 m-20,5 h20" Fill="Transparent" Stroke="#B7C6CF" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Path Data="M223,113 h14 v9 l9,7 v13 l-9,7 h-14 l-9,-7 v-13 l9,-7 Z" Fill="{StaticResource Steel}" Stroke="#475C6A" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Ellipse Canvas.Left="224" Canvas.Top="130" Width="12" Height="12" Fill="#E0EBE6" Stroke="#538088"/>
+     <Path Data="M210,128 v18 m-4,-18 v18 M250,128 v18 m4,-18 v18 M226,151 v19 h8 v-19 Z" Fill="#BCCBCE" Stroke="#576E7C" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Path Data="M220,81 h20 m-20,5 h20" Fill="Transparent" Stroke="#B7C6CF" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Path Data="M307,113 h14 v9 l9,7 v13 l-9,7 h-14 l-9,-7 v-13 l9,-7 Z" Fill="{StaticResource Steel}" Stroke="#475C6A" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Ellipse Canvas.Left="308" Canvas.Top="130" Width="12" Height="12" Fill="#E0EBE6" Stroke="#538088"/>
+     <Path Data="M294,128 v18 m-4,-18 v18 M334,128 v18 m4,-18 v18 M310,151 v19 h8 v-19 Z" Fill="#BCCBCE" Stroke="#576E7C" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Path Data="M304,81 h20 m-20,5 h20" Fill="Transparent" Stroke="#B7C6CF" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Path Data="M125,170 H328 V177 H125 Z" Fill="#9DB6B8" Stroke="#536C78" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+    </Canvas>
+   </Canvas>
+   <Canvas Canvas.Left="3260" Canvas.Top="65">
+    <Path Stroke="#55767C" StrokeThickness="2" Data="M154,271 V244 H203 V230 M153,251 l-9,-6 v12 l18,-12 v12 Z"/>
+    <Canvas Canvas.Top="5">
+     <Canvas.RenderTransform><ScaleTransform ScaleX="1.2" ScaleY="1.2"/></Canvas.RenderTransform>
+     <Path Fill="{StaticResource Steel}" Stroke="#333753" StrokeThickness="2" StrokeLineJoin="Round" Data="M85,76 H148 Q154,76 154,82 V159 Q154,166 147,166 H85 Q79,166 79,159 V83 Q79,76 85,76 Z M197,69 H347 V162 H197 Z"/>
+     <Path Stroke="#30696F" StrokeThickness="2" StrokeLineJoin="Round" Data="M90,89 H143 V113 H90 Z M94,130 h10 m9,0 h10 m9,0 h8 M94,143 h10 m9,0 h10 M118,166 V191 H365 V125 H347 M210,83 V145 H334 M214,132 L237,132 249,108 265,108 279,94 303,94 316,116 331,116 M243,163 v14 h58 v-14 M229,181 H316"/>
+     <Rectangle Canvas.Left="201" Canvas.Top="74" Width="142" Height="83" Fill="#23384B"/>
+     <Path Data="M210,91 H334 M210,106 H334 M210,121 H334 M210,136 H334 M237,83 V144 M268,83 V144 M299,83 V144" Fill="Transparent" Stroke="#405867" StrokeThickness="1.5" StrokeLineJoin="Round"/>
+     <Path Data="M211,135 H235 L249,110 H265 L278,94 H302 L316,117 H334" Fill="Transparent" Stroke="#80D6CA" StrokeThickness="2.5" StrokeLineJoin="Round"/>
+     <Rectangle Canvas.Left="91" Canvas.Top="90" Width="51" Height="22" Fill="#C2D4A1"/>
+     <TextBlock Canvas.Left="94" Canvas.Top="92" FontFamily="Consolas" FontSize="11" Foreground="#344939" Text="72.4°C"/>
+     <Rectangle Canvas.Left="93" Canvas.Top="126" Width="13" Height="8" Fill="#4F8791"/>
+     <Rectangle Canvas.Left="113" Canvas.Top="126" Width="13" Height="8" Fill="#6B7990"/>
+     <Rectangle Canvas.Left="131" Canvas.Top="126" Width="10" Height="8" Fill="#C38C55"/>
+    </Canvas>
+   </Canvas>
+   </Canvas>
+   <Canvas x:Name="Stations" Canvas.Left="140" Canvas.Top="65">
+   <Canvas Opacity="1">
+    <TextBlock Canvas.Left="98" Canvas.Top="12" Foreground="#38696D" FontFamily="Consolas" FontSize="14" Text="LT-101   /   FIT-102"/>
+    <TextBlock Canvas.Left="70" Canvas.Top="279" Foreground="#302E55" FontSize="43" FontWeight="Bold" Text="Аудит"/>
+    <TextBlock Canvas.Left="72" Canvas.Top="338" Foreground="#394D58" FontSize="19" Text="Приёмка молока"/>
+   </Canvas>
+   <Canvas Opacity="0">
+    <TextBlock Canvas.Left="98" Canvas.Top="12" Foreground="#38696D" FontFamily="Consolas" FontSize="14" Text="P&amp;ID   /   HX-201"/>
+    <TextBlock Canvas.Left="70" Canvas.Top="279" Foreground="#302E55" FontSize="43" FontWeight="Bold" Text="Проектирование"/>
+    <TextBlock Canvas.Left="72" Canvas.Top="338" Foreground="#394D58" FontSize="19" Text="Технологическая схема"/>
+   </Canvas>
+   <Canvas Opacity="0">
+    <TextBlock Canvas.Left="98" Canvas.Top="12" Foreground="#38696D" FontFamily="Consolas" FontSize="14" Text="PLC-301   /   HMI-01"/>
+    <TextBlock Canvas.Left="70" Canvas.Top="279" Foreground="#302E55" FontSize="43" FontWeight="Bold" Text="Автоматизация"/>
+    <TextBlock Canvas.Left="72" Canvas.Top="338" Foreground="#394D58" FontSize="19" Text="ПЛК и панель оператора"/>
+   </Canvas>
+   <Canvas Opacity="0">
+    <TextBlock Canvas.Left="98" Canvas.Top="12" Foreground="#38696D" FontFamily="Consolas" FontSize="14" Text="HX-401   /   P-401"/>
+    <TextBlock Canvas.Left="70" Canvas.Top="279" Foreground="#302E55" FontSize="43" FontWeight="Bold" Text="Производство"/>
+    <TextBlock Canvas.Left="72" Canvas.Top="338" Foreground="#394D58" FontSize="19" Text="Сборка модуля пастеризации"/>
+   </Canvas>
+   <Canvas Opacity="0">
+    <TextBlock Canvas.Left="98" Canvas.Top="12" Foreground="#38696D" FontFamily="Consolas" FontSize="14" Text="SKID-01   /   ТРАНСПОРТ"/>
+    <TextBlock Canvas.Left="70" Canvas.Top="279" Foreground="#302E55" FontSize="43" FontWeight="Bold" Text="Поставка"/>
+    <TextBlock Canvas.Left="72" Canvas.Top="338" Foreground="#394D58" FontSize="19" Text="Перевозка модуля"/>
+   </Canvas>
+   <Canvas Opacity="0">
+    <TextBlock Canvas.Left="98" Canvas.Top="12" Foreground="#38696D" FontFamily="Consolas" FontSize="14" Text="XV-601   /   PT-602"/>
+    <TextBlock Canvas.Left="70" Canvas.Top="279" Foreground="#302E55" FontSize="43" FontWeight="Bold" Text="Монтаж"/>
+    <TextBlock Canvas.Left="72" Canvas.Top="338" Foreground="#394D58" FontSize="19" Text="Клапанный коллектор"/>
+   </Canvas>
+   <Canvas Opacity="0">
+    <TextBlock Canvas.Left="98" Canvas.Top="12" Foreground="#38696D" FontFamily="Consolas" FontSize="14" Text="CIP-701   /   ТРЕНД"/>
+    <TextBlock Canvas.Left="70" Canvas.Top="279" Foreground="#302E55" FontSize="43" FontWeight="Bold" Text="Сервис"/>
+    <TextBlock Canvas.Left="72" Canvas.Top="338" Foreground="#394D58" FontSize="19" Text="Диагностика CIP-мойки"/>
+   </Canvas>
    </Canvas>
   </Canvas>
- </Viewbox>
+  <Border Canvas.Left="26" Canvas.Top="20" Background="#353459" Padding="12,5"><TextBlock Foreground="White" FontSize="16" FontWeight="Bold" Text="ГАСС  /  АСУ ТП"/></Border>
+ </Canvas></Viewbox>
 </UserControl>

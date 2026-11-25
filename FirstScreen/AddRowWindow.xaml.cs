@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -24,10 +24,11 @@ namespace Configurator
         private int _recordGeneration;
         private bool _updatingAutoRecord;
         private readonly int? _forcedClassNumber;
+        private readonly string _recordScopeClassColumn;
         private readonly string _classNumberColumn;
         private readonly Dictionary<string, List<LookupOption>> _lookupOptions;
-        private readonly Func<string, CancellationToken, Task<int>> _scopedRecordProvider;
-        private readonly Func<string, string, CancellationToken, Task<bool>> _recordExistsProvider;
+        private readonly Func<string, string, CancellationToken, Task<int>> _scopedRecordProvider;
+        private readonly Func<string, string, string, CancellationToken, Task<bool>> _recordExistsProvider;
         private readonly bool _editMode;
         private readonly bool _preferFreeScopedRecord;
         private string _suggestedRecordText;
@@ -49,12 +50,14 @@ namespace Configurator
             Dictionary<string, List<LookupOption>> lookupOptions = null,
             Dictionary<string, object> initialValues = null,
             bool editMode = false,
-            Func<string, CancellationToken, Task<int>> scopedRecordProvider = null,
-            Func<string, string, CancellationToken, Task<bool>> recordExistsProvider = null,
-            bool preferFreeScopedRecord = false)
+            Func<string, string, CancellationToken, Task<int>> scopedRecordProvider = null,
+            Func<string, string, string, CancellationToken, Task<bool>> recordExistsProvider = null,
+            bool preferFreeScopedRecord = false,
+            string recordScopeClassColumn = null)
         {
             InitializeComponent();
             _forcedClassNumber = forcedClassNumber;
+            _recordScopeClassColumn = recordScopeClassColumn;
             _classNumberColumn = classNumberColumn ?? "";
             _lookupOptions = lookupOptions ?? new Dictionary<string, List<LookupOption>>(StringComparer.OrdinalIgnoreCase);
             _scopedRecordProvider = scopedRecordProvider;
@@ -173,7 +176,7 @@ namespace Configurator
                         textBox.ToolTip = isClassNumber
                             ? "Номер класса назначается автоматически."
                             : isRecord
-                            ? (_preferFreeScopedRecord ? "Предлагается первый пропуск в диапазоне Record выбранного PLC. Если пропусков нет, предлагается следующий номер. Значение можно изменить вручную."
+                            ? (_preferFreeScopedRecord ? "Предлагается первый пропуск в диапазоне Record выбранного PLC и класса. Если пропусков нет, предлагается следующий номер. Значение можно изменить вручную."
                                 : !string.IsNullOrWhiteSpace(_plcColumn) ? "Предложение: последний Record для выбранного PLC + 1. Значение можно изменить вручную." : "Предложение: последний Record + 1. Значение можно изменить вручную.")
                             : (col.HasDefault ? "Пусто → значение по умолчанию" : col.IsNullable ? "Пусто → NULL" : "Обязательное поле");
 
@@ -182,10 +185,11 @@ namespace Configurator
                     if (textBox != null) _fieldInputs[col.Name] = textBox;
                     if (isRecord && textBox != null) textBox.TextChanged += (_, _) => CheckRecord();
                     if (isLookup && input is ComboBox lookupBox) lookupBox.SelectedIndex = options.FindIndex(x => x.Key == (isClassNumber ? _forcedClassNumber?.ToString(CultureInfo.InvariantCulture) : ""));
-                    if (!string.IsNullOrWhiteSpace(_plcColumn) && col.Name.Equals(_plcColumn, StringComparison.OrdinalIgnoreCase))
+                    if (col.Name.Equals(_plcColumn, StringComparison.OrdinalIgnoreCase) ||
+                        !isClassNumber && col.Name.Equals(_recordScopeClassColumn, StringComparison.OrdinalIgnoreCase))
                     {
-                        if (textBox != null) textBox.TextChanged += PlcTextBox_TextChanged;
-                        if (input is ComboBox plcCombo) plcCombo.SelectionChanged += PlcCombo_SelectionChanged;
+                        if (textBox != null) textBox.TextChanged += (_, _) => RecordScopeChanged();
+                        if (input is ComboBox scopeCombo) scopeCombo.SelectionChanged += (_, _) => RecordScopeChanged();
                     }
                     fieldsGrid.Children.Add(fieldPanel);
                 }
@@ -230,29 +234,29 @@ namespace Configurator
             return "Параметры";
         }
 
-        private void AddRowWindow_Loaded(object sender, RoutedEventArgs e)
+        private void AddRowWindow_Loaded(object sender, RoutedEventArgs e) => RecordScopeChanged();
+
+        private void RecordScopeChanged()
         {
+            if (_updatingAutoRecord || !IsLoaded) return;
             CheckRecord();
-            if (string.IsNullOrWhiteSpace(_plcColumn)) return;
-            if (_fieldInputs.TryGetValue(_plcColumn, out var plcBox))
-                _ = UpdateRecordFromPlcAsync(plcBox.Text, CancellationToken.None);
-            else if (_lookupInputs.TryGetValue(_plcColumn, out var plcCombo) && plcCombo.SelectedValue != null)
-                _ = UpdateRecordFromPlcAsync(Convert.ToString(plcCombo.SelectedValue, CultureInfo.InvariantCulture), CancellationToken.None);
+            _ = UpdateRecordFromPlcAsync(ReadInput(_plcColumn), CancellationToken.None);
         }
 
-        private async void PlcTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        private string ReadInput(string column) =>
+            _fieldInputs.TryGetValue(column, out var text) ? text.Text.Trim()
+                : _lookupInputs.TryGetValue(column, out var combo) ? (combo.SelectedItem as LookupOption)?.Key : null;
+
+        private string ReadRecordScopeClass()
         {
-            CheckRecord();
-            if (_updatingAutoRecord || sender is not TextBox plcBox) return;
-            await UpdateRecordFromPlcAsync(plcBox.Text, CancellationToken.None);
+            if (_recordScopeClassColumn == null) return null;
+            if (_forcedClassNumber.HasValue && _recordScopeClassColumn.Equals(_classNumberColumn, StringComparison.OrdinalIgnoreCase))
+                return _forcedClassNumber.Value.ToString(CultureInfo.InvariantCulture);
+            return ReadInput(_recordScopeClassColumn);
         }
 
-        private async void PlcCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
-            CheckRecord();
-            if (_updatingAutoRecord || sender is not ComboBox plcCombo) return;
-            await UpdateRecordFromPlcAsync((plcCombo.SelectedItem as LookupOption)?.Key, CancellationToken.None);
-        }
+        private object ConvertRecordScopeClass(string value) => _recordScopeClassColumn == null ? null :
+            ConvertValue(value, _columns.First(c => c.Name.Equals(_recordScopeClassColumn, StringComparison.OrdinalIgnoreCase)));
 
         private async void CheckRecord()
         {
@@ -263,19 +267,20 @@ namespace Configurator
             var token = _recordCheckCts.Token;
             recordBox.ClearValue(Control.BorderBrushProperty);
             string record = recordBox.Text.Trim();
-            string plc = _fieldInputs.TryGetValue(_plcColumn, out var text) ? text.Text.Trim()
-                : _lookupInputs.TryGetValue(_plcColumn, out var combo) ? (combo.SelectedItem as LookupOption)?.Key : null;
-            if (string.IsNullOrWhiteSpace(record) || string.IsNullOrWhiteSpace(plc)) return;
+            string plc = ReadInput(_plcColumn);
+            string classValue = ReadRecordScopeClass();
+            if (string.IsNullOrWhiteSpace(record) || string.IsNullOrWhiteSpace(plc) ||
+                _recordScopeClassColumn != null && string.IsNullOrWhiteSpace(classValue)) return;
             try
             {
                 await Task.Delay(250, token);
                 bool exists;
-                if (_recordExistsProvider != null) exists = await _recordExistsProvider(plc, record, token);
+                if (_recordExistsProvider != null) exists = await _recordExistsProvider(plc, classValue, record, token);
                 else if (!string.IsNullOrWhiteSpace(_connectionString))
                 {
                     var recordColumn = _columns.First(c => c.Name.Equals(_recordColumn, StringComparison.OrdinalIgnoreCase));
                     var plcColumn = _columns.First(c => c.Name.Equals(_plcColumn, StringComparison.OrdinalIgnoreCase));
-                    exists = await new DatabaseService(_connectionString).ScopedRecordExistsAsync(_tableName, _recordColumn, _plcColumn, ConvertValue(record, recordColumn), ConvertValue(plc, plcColumn), token);
+                    exists = await new DatabaseService(_connectionString).ScopedRecordExistsAsync(_tableName, _recordColumn, _plcColumn, ConvertValue(record, recordColumn), ConvertValue(plc, plcColumn), token, _recordScopeClassColumn, ConvertRecordScopeClass(classValue));
                 }
                 else return;
                 if (!token.IsCancellationRequested && exists) recordBox.BorderBrush = System.Windows.Media.Brushes.Red;
@@ -308,7 +313,8 @@ namespace Configurator
                 BtnConfirm.IsEnabled = true;
                 if (!string.IsNullOrWhiteSpace(recordBox.Text)) return;
             }
-            if (string.IsNullOrWhiteSpace(plcText))
+            string classValue = ReadRecordScopeClass();
+            if (string.IsNullOrWhiteSpace(plcText) || _recordScopeClassColumn != null && string.IsNullOrWhiteSpace(classValue))
                 return;
 
             if (_preferFreeScopedRecord) BtnConfirm.IsEnabled = false;
@@ -320,14 +326,14 @@ namespace Configurator
                 int nextRecord;
                 if (_scopedRecordProvider != null)
                 {
-                    nextRecord = await _scopedRecordProvider(plcText.Trim(), ct);
+                    nextRecord = await _scopedRecordProvider(plcText.Trim(), classValue, ct);
                 }
                 else
                 {
                     object plcValue = ConvertValue(plcText.Trim(), plcColumn);
                     var db = new DatabaseService(_connectionString);
                     nextRecord = _preferFreeScopedRecord
-                        ? await db.GetFreeScopedRecordValueAsync(_tableName, _recordColumn, _plcColumn, plcValue, ct)
+                        ? await db.GetFreeScopedRecordValueAsync(_tableName, _recordColumn, _plcColumn, plcValue, ct, _recordScopeClassColumn, ConvertRecordScopeClass(classValue))
                         : await db.GetNextScopedRecordValueAsync(_tableName, _recordColumn, _plcColumn, plcValue, ct);
                 }
                 if (generation != _recordGeneration || ct.IsCancellationRequested) return;

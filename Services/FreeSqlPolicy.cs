@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -19,6 +19,9 @@ public static class FreeSqlPolicy
         => Analyze(sql).Table == null;
 
     internal static (string Schema, string Table) Analyze(string sql)
+        => Analyze(sql, out _);
+
+    internal static (string Schema, string Table) Analyze(string sql, out DataModificationSpecification modification)
     {
         if (string.IsNullOrWhiteSpace(sql))
             throw new InvalidOperationException("SQL-запрос пуст.");
@@ -29,7 +32,9 @@ public static class FreeSqlPolicy
         using (var reader = new StringReader(sql))
             fragment = parser.Parse(reader, out errors);
 
-        if (errors.Count > 0 || fragment is not TSqlScript script)
+        if (errors.Count > 0)
+            throw new InvalidOperationException($"Ошибка SQL (строка {errors[0].Line}, позиция {errors[0].Column}): {errors[0].Message}");
+        if (fragment is not TSqlScript script)
             throw new InvalidOperationException("SQL не прошёл разбор. Запрос отклонён без выполнения.");
 
         var statements = script.Batches.SelectMany(batch => batch.Statements).ToList();
@@ -64,7 +69,7 @@ public static class FreeSqlPolicy
         if (visitor.Error != null)
             throw new InvalidOperationException(visitor.Error);
 
-        DataModificationSpecification modification = statements[0] switch
+        modification = statements[0] switch
         {
             InsertStatement insert => insert.InsertSpecification,
             UpdateStatement update => update.UpdateSpecification,

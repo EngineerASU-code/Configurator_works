@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
@@ -170,7 +170,16 @@ public partial class MultiObjectEditorWindow : Window
 
     private void RemoveRow_Click(object sender, RoutedEventArgs e)
     {
-        if ((sender as Button)?.Tag is BatchObjectRow row) _rows.Remove(row);
+        if ((sender as Button)?.Tag is BatchObjectRow row) RemoveRow(row);
+    }
+
+    private void RemoveRow(BatchObjectRow row)
+    {
+        if (_submitting || Configurator.Infrastructure.ModernDialog.Show(this,
+            "Удалить строку из списка добавляемых объектов?", "Массовое добавление",
+            MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+
+        _rows.Remove(row);
         if (_rows.Count == 0) AddRow();
         SetValidation(string.Empty);
     }
@@ -215,12 +224,13 @@ public partial class MultiObjectEditorWindow : Window
             AddRow_Click(BtnAddRow, new RoutedEventArgs());
             e.Handled = true;
         }
-        else if (!editingText && e.Key == Key.Delete && RowsGrid.SelectedItem is BatchObjectRow row)
+        else if (!editingText && e.Key == Key.Delete && Keyboard.Modifiers == ModifierKeys.None &&
+            e.OriginalSource is DependencyObject source &&
+            ItemsControl.ContainerFromElement(RowsGrid, source) is DataGridRow &&
+            RowsGrid.SelectedItem is BatchObjectRow row)
         {
-            _rows.Remove(row);
-            if (_rows.Count == 0) AddRow();
-            SetValidation(string.Empty);
             e.Handled = true;
+            if (!e.IsRepeat) RemoveRow(row);
         }
     }
 

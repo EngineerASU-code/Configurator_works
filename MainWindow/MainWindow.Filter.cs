@@ -39,7 +39,7 @@ public partial class MainWindow
             ToolTip = $"{name} · Фильтр и сортировка" + (filter != null ? " · Фильтр включён" : "") +
                 (rank >= 0 ? $" · Приоритет сортировки {rank + 1}" : "")
         };
-        button.SetResourceReference(StyleProperty, "BtnCompact");
+        button.SetResourceReference(StyleProperty, "ColumnFilterButton");
         AutomationProperties.SetName(button, $"{name} · Фильтр и сортировка");
         var content = new StackPanel { Orientation = Orientation.Horizontal };
         content.Children.Add(new TextBlock { Text = name, VerticalAlignment = VerticalAlignment.Center });

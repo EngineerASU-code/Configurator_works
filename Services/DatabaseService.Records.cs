@@ -13,13 +13,14 @@ namespace Configurator
     public partial class DatabaseService
     {
         internal async Task<int> GetFreeScopedRecordValueAsync(string tableName, string recordColumn, string plcColumn,
-            object plc, CancellationToken ct)
+            object plc, CancellationToken ct, string classColumn = null, object classValue = null)
         {
             var column = QuoteIdentifier(recordColumn);
             await using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
             await using var command = new SqlCommand($"SELECT {column} FROM {QuoteTableName(tableName)} WHERE {column} IS NOT NULL", connection)
             { CommandTimeout = 120 };
-            AddRecordCheckFilter(command, plcColumn, "@plc", plc ?? DBNull.Value);
+            if (plcColumn != null) AddRecordCheckFilter(command, plcColumn, "@plc", plc ?? DBNull.Value);
+            if (classColumn != null) AddRecordCheckFilter(command, classColumn, "@class", classValue ?? DBNull.Value);
             await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection, ct);
             using var reader = await command.ExecuteReaderAsync(ct);
             var suggestion = new ScopedRecordSuggestion();

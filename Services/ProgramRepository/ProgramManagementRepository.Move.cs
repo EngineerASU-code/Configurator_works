@@ -7,12 +7,17 @@ namespace Configurator;
 
 public sealed partial class ProgramManagementRepository
 {
-    public Task<int> MoveStepAsync(ProgramContext context, IReadOnlyDictionary<string, object> original,
-        int direction, CancellationToken ct = default) => _offline != null
-        ? MoveOfflineStepAsync(context, original, direction, ct)
-        : MoveOnlineStepAsync(context, original, direction, ct);
+    public async Task<int> MoveStepAsync(ProgramContext context, IReadOnlyDictionary<string, object> original,
+        int direction, CancellationToken ct = default)
+        => (await MoveStepWithJournalAsync(context, original, direction, ct)).NewStepNumber;
 
-    private async Task<int> MoveOnlineStepAsync(ProgramContext context, IReadOnlyDictionary<string, object> original,
+    public Task<ProgramStepMoveJournalResult> MoveStepWithJournalAsync(ProgramContext context,
+        IReadOnlyDictionary<string, object> original, int direction, CancellationToken ct = default)
+        => _offline != null
+            ? MoveOfflineStepWithJournalAsync(context, original, direction, ct)
+            : MoveOnlineStepWithJournalAsync(context, original, direction, ct);
+
+    private async Task<ProgramStepMoveJournalResult> MoveOnlineStepWithJournalAsync(ProgramContext context, IReadOnlyDictionary<string, object> original,
         int direction, CancellationToken ct)
     {
         if (direction is not (-1 or 1)) throw new ArgumentOutOfRangeException(nameof(direction));
@@ -57,12 +62,14 @@ public sealed partial class ProgramManagementRepository
                 throw new InvalidOperationException($"Перемещение заблокировано: активен UPDATE-триггер {trigger}.");
         }
 
+        var schemas = new Dictionary<string, ProjectTableSchema>(StringComparer.OrdinalIgnoreCase);
         foreach (var (name, field) in tables)
         {
             var schema = await OnlineProjectDataSource.ReadSchemaAsync(connection, transaction, name, ct);
             if (schema == null || !schema.HasStableKey || !schema.KeyColumns.Contains(field, StringComparer.OrdinalIgnoreCase)
                 || scope.Keys.Any(key => !schema.KeyColumns.Contains(key, StringComparer.OrdinalIgnoreCase)))
                 throw new InvalidOperationException($"Перемещение заблокировано: ключ {name} не подтверждён.");
+            schemas[name] = schema;
             var required = name == TransitionTable ? destinations.Append(field) : new[] { field };
             foreach (string columnName in required)
             {
@@ -112,6 +119,9 @@ public sealed partial class ProgramManagementRepository
         if (adjacent < 0 || adjacent >= numbers.Count)
             throw new InvalidOperationException("Вхождение уже находится на границе списка.");
         int second = numbers[adjacent];
+        var beforeRows = new Dictionary<string, IReadOnlyList<IReadOnlyDictionary<string, object>>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, _) in tables)
+            beforeRows[name] = await ReadLockedRowsAsync(connection, transaction, name, scope, ct);
         int maximum = 0;
         foreach (var (name, field) in tables)
         {
@@ -143,7 +153,12 @@ public sealed partial class ProgramManagementRepository
             remap.Parameters.Add("@second", SqlDbType.Int).Value = second;
             await remap.ExecuteNonQueryAsync(ct);
         }
+        var afterRows = new Dictionary<string, IReadOnlyList<IReadOnlyDictionary<string, object>>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, _) in tables)
+            afterRows[name] = await ReadLockedRowsAsync(connection, transaction, name, scope, ct);
+        var changes = BuildStepMoveJournalChanges(tables, schemas, beforeRows, afterRows, first, second);
+        var restorePayload = BuildStepMoveRestorePayload(tables, afterRows);
         await transaction.CommitAsync(ct);
-        return second;
+        return new ProgramStepMoveJournalResult(second, changes, restorePayload);
     }
 }

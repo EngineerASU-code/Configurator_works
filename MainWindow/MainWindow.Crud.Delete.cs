@@ -11,10 +11,30 @@ namespace Configurator;
 
 public partial class MainWindow
 {
-    private async void BtnDelete_Click(object sender, RoutedEventArgs e)
+    private bool _tableDeleteInProgress;
+
+    private async void BtnDelete_Click(object sender, RoutedEventArgs e) => await DeleteSelectedTableRowsAsync();
+
+    private async Task DeleteSelectedTableRowsAsync()
     {
-        if (!RequireMode1Permission(Permission.Mode1Delete)) return;
-        if (_isOfflineWorkspace) { DeleteOfflineRows(); return; }
+        if (_tableDeleteInProgress || _tablePasteInProgress ||
+            _currentMode != 1 || !_rightPanel.BtnDelete.IsEnabled ||
+            !RequireMode1Permission(Permission.Mode1Delete)) return;
+
+        _tableDeleteInProgress = true;
+        try
+        {
+            if (_isOfflineWorkspace) await DeleteOfflineRowsAsync();
+            else await DeleteOnlineRowsAsync();
+        }
+        finally
+        {
+            _tableDeleteInProgress = false;
+        }
+    }
+
+    private async Task DeleteOnlineRowsAsync()
+    {
         if (_activeVm == null || !_activeVm.HasValidKey) return;
 
         int selectedCount = _rightPanel.DataTableGrid.SelectedItems.Count;
@@ -46,12 +66,9 @@ public partial class MainWindow
             var schema = await analyzer.AnalyzeAsync();
             var protection = new DeletionProtectionService(connectionString, schema);
 
-            var plans = new List<(DeletionPlan Plan, Dictionary<string, object> Snapshot, Dictionary<string, object> Identity)>();
-            var allReplacements = new List<(DeletionPlan Plan, IReadOnlyList<ReferenceReplacement> Replacements)>();
-
-            // Сначала строим все планы и просим пользователя выбрать замены.
-            // Пока ни одна строка не удаляется: Cancel в любом диалоге отменяет
-            // всю пакетную операцию, а не оставляет частично удалённые данные.
+            var plans = new List<DeletionPlan>();
+            var options = new List<DependencyReplacementWindow.DependencyOption>();
+            var deletedRows = snapshots.Select(snapshot => (IReadOnlyDictionary<string, object>)snapshot.Values).ToList();
             for (int rowIndex = 0; rowIndex < snapshots.Count; rowIndex++)
             {
                 var snapshot = snapshots[rowIndex];
@@ -68,7 +85,7 @@ public partial class MainWindow
                     ExpectedValues = snapshot.Values
                 });
 
-                plans.Add((plan, snapshot.Values, identity));
+                plans.Add(plan);
 
                 if (plan.ValidationErrors.Count > 0)
                 {
@@ -78,13 +95,11 @@ public partial class MainWindow
                     return;
                 }
 
-                IReadOnlyList<ReferenceReplacement> replacements = Array.Empty<ReferenceReplacement>();
                 if (plan.RequiresReplacement)
                 {
-                    var options = new List<DependencyReplacementWindow.DependencyOption>();
                     foreach (var hit in plan.Dependencies)
                     {
-                        var candidates = await protection.GetReplacementCandidatesAsync(hit, identity);
+                        var candidates = await protection.GetReplacementCandidatesAsync(hit, identity, excludedTargets: deletedRows);
                         if (candidates.Count == 0)
                             throw new InvalidOperationException($"Для зависимости {hit.SourceTable}.{hit.SourceColumnDescription} нет допустимого значения для замены.");
 
@@ -97,45 +112,32 @@ public partial class MainWindow
                         });
                     }
 
-                    var dialog = new DependencyReplacementWindow(options) { Owner = this };
-                    if (dialog.ShowDialog() != true) return;
-                    replacements = dialog.Replacements;
                 }
+            }
 
-                allReplacements.Add((plan, replacements));
+            IReadOnlyList<ReferenceReplacement> selected = Array.Empty<ReferenceReplacement>();
+            if (options.Count > 0)
+            {
+                var dialog = new DependencyReplacementWindow(options, requireExistingCandidates: true) { Owner = this };
+                if (dialog.ShowDialog() != true) return;
+                selected = dialog.Replacements;
+            }
+
+            // The dialog returns one replacement per option, in the same order.
+            var allReplacements = new List<(DeletionPlan Plan, IReadOnlyList<ReferenceReplacement> Replacements)>();
+            var offset = 0;
+            foreach (var plan in plans)
+            {
+                var count = plan.Dependencies.Count;
+                allReplacements.Add((plan, selected.Skip(offset).Take(count).ToList()));
+                offset += count;
             }
 
             // Capture the exact dependent values before the transaction changes them.
             // These snapshots become part of the same journal operation, so a composite
             // delete can later be restored as one unit (dependent updates + deleted row).
-            var journalReplacementChanges = new List<ChangeJournalRowChange>();
-            foreach (var item in allReplacements)
-            {
-                foreach (var replacement in item.Replacements)
-                {
-                    var beforeRow = await LoadRowByIdentityAsync(connectionString, replacement.SourceTable, replacement.KeyColumns, replacement.KeyValues);
-                    if (beforeRow.Count == 0)
-                        throw new InvalidOperationException($"Не удалось сохранить состояние зависимой строки {replacement.SourceTable} перед удалением.");
-
-                    var changedColumns = replacement.SourceColumns.Concat(replacement.AdditionalAssignments.Keys)
-                        .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-                    var before = changedColumns.ToDictionary(c => c, c => beforeRow.TryGetValue(c, out var v) ? v : null, StringComparer.OrdinalIgnoreCase);
-                    var after = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
-                    for (var i = 0; i < replacement.SourceColumns.Count; i++)
-                        after[replacement.SourceColumns[i]] = replacement.NewValues[i];
-                    foreach (var extra in replacement.AdditionalAssignments) after[extra.Key] = extra.Value;
-
-                    var identityBefore = replacement.KeyColumns
-                        .Select((c, i) => new { c, i })
-                        .ToDictionary(x => x.c, x => replacement.KeyValues[x.i], StringComparer.OrdinalIgnoreCase);
-                    var identityAfter = new Dictionary<string, object>(identityBefore, StringComparer.OrdinalIgnoreCase);
-                    foreach (var changed in after)
-                        if (identityAfter.ContainsKey(changed.Key)) identityAfter[changed.Key] = changed.Value;
-
-                    journalReplacementChanges.Add(CreateJournalChange(
-                        replacement.SourceTable, ChangeJournalOperationKind.Update, before, after, identityBefore, identityAfter));
-                }
-            }
+            var journalReplacementChanges = await CaptureReplacementChangesAsync(connectionString,
+                allReplacements.SelectMany(item => item.Replacements).ToList());
 
             // Every selected row and every dependency replacement shares one SQL transaction.
             // If any update/delete fails, no part of the batch is committed.
@@ -145,12 +147,6 @@ public partial class MainWindow
             await protection.ExecuteBatchAsync(executionItems, (_, _, _) => Task.FromResult(true));
             int deleted = executionItems.Count;
 
-            _fieldsBuilder.Clear();
-            _activeVm.ClearCurrentRow();
-            SafeSetButtonEnabled(_rightPanel.BtnUpdate, false);
-            SafeSetButtonEnabled(_rightPanel.BtnDuplicate, false);
-            SafeSetButtonEnabled(_rightPanel.BtnDelete, false);
-
             string deleteDetails = string.Join(" | ", snapshots.Select(x => string.Join(", ", x.Identity.Select(p => $"{p.Key}={FormatLogValue(p.Value)}")))) +
                 (allReplacements.Any(x => x.Replacements.Count > 0) ? $" · замен ссылок: {allReplacements.Sum(x => x.Replacements.Count)}" : "");
             var journalDeleteChanges = snapshots.Select(item =>
@@ -159,22 +155,15 @@ public partial class MainWindow
             var journalKind = allReplacements.Any(x => x.Replacements.Count > 0)
                 ? ChangeJournalOperationKind.Composite
                 : ChangeJournalOperationKind.Delete;
-            LogAction($"Удалено строк: {deleted} · {deleteTable}", async () =>
-            {
-                var undoDb = new DatabaseService(_connection.ToConnectionString(deleteDbName));
-                var meta = await undoDb.GetTableColumnsAsync(deleteTable);
-                foreach (var item in snapshots)
-                {
-                    var values = item.Values.Where(p =>
-                    {
-                        var m = meta.FirstOrDefault(x => x.Name.Equals(p.Key, StringComparison.OrdinalIgnoreCase));
-                        return m == null || !m.IsReadOnly;
-                    }).ToDictionary(x => x.Key, x => x.Value);
-                    if (!await undoDb.RowExistsByValuesAsync(deleteTable, item.Identity))
-                        await undoDb.InsertRowAsync(deleteTable, values);
-                }
-            }, category: "Удаление", source: deleteTable, details: deleteDetails,
+            LogAction($"Удалено строк: {deleted} · {deleteTable}", category: "Удаление", source: deleteTable, details: deleteDetails,
             journalChanges: journalDeleteChanges, operationKind: journalKind, databaseName: deleteDbName);
+
+            if (_activeVm == null || _activeDbName != deleteDbName || _activeVm.CurrentTable != deleteTable) return;
+            _fieldsBuilder.Clear();
+            _activeVm.ClearCurrentRow();
+            SafeSetButtonEnabled(_rightPanel.BtnUpdate, false);
+            SafeSetButtonEnabled(_rightPanel.BtnDuplicate, false);
+            SafeSetButtonEnabled(_rightPanel.BtnDelete, false);
 
             if (_activeVm.CurrentPage > _activeVm.TotalPages)
                 _activeVm.CurrentPage = _activeVm.TotalPages;
@@ -188,7 +177,39 @@ public partial class MainWindow
         }
     }
 
-    private static async Task<Dictionary<string, object>> LoadRowByIdentityAsync(string connectionString, string tableName, IReadOnlyList<string> keyColumns, IReadOnlyList<object> keyValues)
+    internal static async Task<List<ChangeJournalRowChange>> CaptureReplacementChangesAsync(
+        string connectionString, IReadOnlyList<ReferenceReplacement> replacements)
+    {
+        var changes = new List<ChangeJournalRowChange>();
+        foreach (var replacement in replacements ?? Array.Empty<ReferenceReplacement>())
+        {
+            var beforeRow = await LoadRowByIdentityAsync(connectionString, replacement.SourceTable, replacement.KeyColumns, replacement.KeyValues);
+            if (beforeRow.Count == 0)
+                throw new InvalidOperationException($"Не удалось сохранить состояние зависимой строки {replacement.SourceTable} перед изменением.");
+
+            var changedColumns = replacement.SourceColumns.Concat(replacement.AdditionalAssignments.Keys)
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            var before = changedColumns.ToDictionary(column => column,
+                column => beforeRow.TryGetValue(column, out var value) ? value : null, StringComparer.OrdinalIgnoreCase);
+            var after = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < replacement.SourceColumns.Count; i++)
+                after[replacement.SourceColumns[i]] = replacement.NewValues[i];
+            foreach (var extra in replacement.AdditionalAssignments) after[extra.Key] = extra.Value;
+
+            var identityBefore = replacement.KeyColumns
+                .Select((column, index) => new { column, index })
+                .ToDictionary(item => item.column, item => replacement.KeyValues[item.index], StringComparer.OrdinalIgnoreCase);
+            var identityAfter = new Dictionary<string, object>(identityBefore, StringComparer.OrdinalIgnoreCase);
+            foreach (var changed in after)
+                if (identityAfter.ContainsKey(changed.Key)) identityAfter[changed.Key] = changed.Value;
+
+            changes.Add(CreateJournalChange(replacement.SourceTable, ChangeJournalOperationKind.Update,
+                before, after, identityBefore, identityAfter));
+        }
+        return changes;
+    }
+
+    internal static async Task<Dictionary<string, object>> LoadRowByIdentityAsync(string connectionString, string tableName, IReadOnlyList<string> keyColumns, IReadOnlyList<object> keyValues)
     {
         if (keyColumns == null || keyValues == null || keyColumns.Count == 0 || keyColumns.Count != keyValues.Count)
             return new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
@@ -208,11 +229,13 @@ public partial class MainWindow
                 command.Parameters.AddWithValue(p, value);
             }
         }
-        command.CommandText = $"SELECT TOP (1) * FROM {QuoteTableName(tableName)} WHERE {string.Join(" AND ", where)}";
+        command.CommandText = $"SELECT TOP (2) * FROM {QuoteTableName(tableName)} WHERE {string.Join(" AND ", where)}";
         await using var reader = await command.ExecuteReaderAsync();
         if (!await reader.ReadAsync()) return new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
         var result = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
         for (var i = 0; i < reader.FieldCount; i++) result[reader.GetName(i)] = reader.IsDBNull(i) ? null : reader.GetValue(i);
+        if (await reader.ReadAsync())
+            throw new InvalidOperationException($"Ключ не уникален для созданной строки {tableName}; снимок не сохранён.");
         return result;
     }
 

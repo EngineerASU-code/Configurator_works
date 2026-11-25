@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using Configurator.Core.Architecture;
 using Configurator.Core.Projects;
 using Configurator.Infrastructure.Projects;
@@ -15,6 +16,7 @@ public partial class LookupSettingsWindow : Window
 {
     private readonly ConnectionSettings _connection;
     private readonly List<string> _databases;
+    private readonly Action<ChangeJournalEntry> _changeJournalRequested;
     private readonly IReadOnlyList<LookupDefinition> _definitions = SystemLookupCatalog.All;
     private static readonly HashSet<string> HiddenLookupTables = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -30,11 +32,14 @@ public partial class LookupSettingsWindow : Window
     private List<ColumnInfo> _columns = new();
     private List<string> _keys = new();
     private DataTable _data;
+    private bool _deleteInProgress;
 
-    public LookupSettingsWindow(ConnectionSettings connection, IEnumerable<string> databases, string selectedDatabase)
+    public LookupSettingsWindow(ConnectionSettings connection, IEnumerable<string> databases, string selectedDatabase,
+        Action<ChangeJournalEntry> changeJournalRequested = null)
     {
         InitializeComponent();
         _connection = connection;
+        _changeJournalRequested = changeJournalRequested;
         _databases = (databases ?? Array.Empty<string>()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         CmbDatabase.ItemsSource = _databases;
         if (_databases.Count > 0)
@@ -224,7 +229,17 @@ public partial class LookupSettingsWindow : Window
         if (!window.Confirmed || window.Values == null || window.Values.Count == 0) return;
         try
         {
-            await _db.InsertRowAsync(_selectedDefinition.LookupTable, window.Values);
+            var table = _selectedDefinition.LookupTable;
+            var db = _db;
+            var database = CmbDatabase.SelectedItem as string;
+            var keyColumns = await db.GetPrimaryKeyColumnsAsync(table);
+            var after = await db.InsertRowAndGetSnapshotAsync(table, window.Values);
+            var identityAfter = keyColumns.Count > 0 && keyColumns.All(after.ContainsKey)
+                ? keyColumns.ToDictionary(column => column, column => after[column], StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, object>(window.Values, StringComparer.OrdinalIgnoreCase);
+            var change = CreateJournalChange(table, ChangeJournalOperationKind.Insert, null, after, null, identityAfter);
+            RecordJournalEntry(database, table, "Добавлена запись справочника", "Добавление", new[] { change },
+                ChangeJournalOperationKind.Insert);
             await LoadSelectedLookupAsync();
         }
         catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Сохранение списка", MessageBoxButton.OK, MessageBoxImage.Error); }
@@ -233,6 +248,8 @@ public partial class LookupSettingsWindow : Window
     private async void BtnEdit_Click(object sender, RoutedEventArgs e)
     {
         if (_selectedDefinition == null || _db == null || DataGrid.SelectedItem is not DataRowView row) return;
+        var database = CmbDatabase.SelectedItem as string;
+        var keys = _keys.ToList();
         var db = _db;
         var table = _selectedDefinition.LookupTable;
         var original = row.Row.Table.Columns.Cast<DataColumn>().ToDictionary(c => c.ColumnName, c => row.Row[c], StringComparer.OrdinalIgnoreCase);
@@ -244,28 +261,59 @@ public partial class LookupSettingsWindow : Window
         try
         {
             await db.UpdateRowByValuesAsync(table, original, window.Values);
+            var after = new Dictionary<string, object>(original, StringComparer.OrdinalIgnoreCase);
+            foreach (var value in window.Values) after[value.Key] = value.Value;
+            var identityBefore = keys.Count > 0
+                ? keys.ToDictionary(keyColumn => keyColumn, keyColumn => original[keyColumn], StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, object>(original, StringComparer.OrdinalIgnoreCase);
+            var identityAfter = keys.Count > 0
+                ? keys.ToDictionary(keyColumn => keyColumn, keyColumn => after[keyColumn], StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, object>(after, StringComparer.OrdinalIgnoreCase);
+            var change = CreateJournalChange(table, ChangeJournalOperationKind.Update, original, after, identityBefore, identityAfter);
+            RecordJournalEntry(database, table, "Изменена запись справочника", "Изменение", new[] { change },
+                ChangeJournalOperationKind.Update);
             if (ReferenceEquals(_db, db) && _selectedDefinition?.LookupTable == table)
                 await LoadSelectedLookupAsync();
         }
         catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Сохранение списка", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
-    private async void BtnDelete_Click(object sender, RoutedEventArgs e)
+    private async void DataGrid_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (_selectedDefinition == null || _db == null || DataGrid.SelectedItem is not DataRowView row || _keys.Count == 0) return;
-        if (Configurator.Infrastructure.ModernDialog.Show("Удалить выбранную запись справочника?", "Текстовый список", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-        var identity = _keys.ToDictionary(k => k, k => row[k], StringComparer.OrdinalIgnoreCase);
+        if (e.Key != Key.Delete || Keyboard.Modifiers != ModifierKeys.None ||
+            e.OriginalSource is not DependencyObject source ||
+            ItemsControl.ContainerFromElement(DataGrid, source) is not DataGridRow) return;
+
+        e.Handled = true;
+        if (!e.IsRepeat) await DeleteSelectedLookupRowAsync();
+    }
+
+    private async void BtnDelete_Click(object sender, RoutedEventArgs e) => await DeleteSelectedLookupRowAsync();
+
+    private async Task DeleteSelectedLookupRowAsync()
+    {
+        if (_deleteInProgress || !BtnDelete.IsEnabled ||
+            _selectedDefinition == null || _db == null || DataGrid.SelectedItem is not DataRowView row ||
+            _keys.Count == 0 || !UserAuthorizationService.Require(Permission.ManageTextLists)) return;
+
+        _deleteInProgress = true;
         try
         {
-            var connectionString = _connection.ToConnectionString(CmbDatabase.SelectedItem as string);
+            if (Configurator.Infrastructure.ModernDialog.Show(this, "Удалить выбранную запись справочника?",
+                "Текстовый список", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+
+            var database = CmbDatabase.SelectedItem as string;
+            var table = _selectedDefinition.LookupTable;
+            var identity = _keys.ToDictionary(k => k, k => row[k], StringComparer.OrdinalIgnoreCase);
+            var connectionString = _connection.ToConnectionString(database);
             var schema = await new DatabaseArchitectureAnalyzer(connectionString).AnalyzeAsync();
-            foreach (var relation in schema.Relations.Where(r => r.TargetTable.Equals(_selectedDefinition.LookupTable, StringComparison.OrdinalIgnoreCase)))
+            foreach (var relation in schema.Relations.Where(r => r.TargetTable.Equals(table, StringComparison.OrdinalIgnoreCase)))
                 foreach (var column in relation.TargetColumns)
-                    if (DataGrid.Columns.Any(c => c.Header?.ToString().Equals(column, StringComparison.OrdinalIgnoreCase) == true) && !identity.ContainsKey(column))
+                    if (row.Row.Table.Columns.Contains(column) && !identity.ContainsKey(column))
                         identity[column] = row[column];
 
             var protection = new DeletionProtectionService(connectionString, schema);
-            var plan = await protection.BuildPlanAsync(new DeletionRequest { TableName = _selectedDefinition.LookupTable, Key = identity, ExpectedValues = row.Row.Table.Columns.Cast<DataColumn>().ToDictionary(c => c.ColumnName, c => row[c.ColumnName], StringComparer.OrdinalIgnoreCase) });
+            var plan = await protection.BuildPlanAsync(new DeletionRequest { TableName = table, Key = identity, ExpectedValues = row.Row.Table.Columns.Cast<DataColumn>().ToDictionary(c => c.ColumnName, c => row[c.ColumnName], StringComparer.OrdinalIgnoreCase) });
             IReadOnlyList<ReferenceReplacement> replacements = Array.Empty<ReferenceReplacement>();
             if (plan.RequiresReplacement)
             {
@@ -287,10 +335,19 @@ public partial class LookupSettingsWindow : Window
                 if (dialog.ShowDialog() != true) return;
                 replacements = dialog.Replacements;
             }
+            var replacementChanges = await MainWindow.CaptureReplacementChangesAsync(connectionString, replacements);
             await protection.ExecuteAsync(plan, replacements, (_, _, _) => Task.FromResult(true));
+            var deleteBefore = plan.Request.ExpectedValues.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+            var deleteChange = CreateJournalChange(table, ChangeJournalOperationKind.Delete,
+                deleteBefore, null, identity, null);
+            replacementChanges.Add(deleteChange);
+            RecordJournalEntry(database, table, "Удалена запись справочника" +
+                (replacements.Count > 0 ? $" · замен связей: {replacements.Count}" : ""), "Удаление",
+                replacementChanges, replacements.Count > 0 ? ChangeJournalOperationKind.Composite : ChangeJournalOperationKind.Delete);
             await LoadSelectedLookupAsync();
         }
         catch (Exception ex) { Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Удаление", MessageBoxButton.OK, MessageBoxImage.Error); }
+        finally { _deleteInProgress = false; }
     }
 
     private async void Refresh_Click(object sender, RoutedEventArgs e)
@@ -311,6 +368,58 @@ public partial class LookupSettingsWindow : Window
             Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Обновление списков", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
+
+    private void RecordJournalEntry(string database, string table, string description, string category,
+        IReadOnlyList<ChangeJournalRowChange> changes,
+        ChangeJournalOperationKind operationKind, bool restoreIncludesAllChanges = true)
+    {
+        if (_changeJournalRequested == null) return;
+        var identity = changes.SelectMany(change => change.IdentityAfter.Count > 0 ? change.IdentityAfter : change.IdentityBefore)
+            .Select(pair => $"{pair.Key}={pair.Value?.ToObject() ?? "NULL"}").ToList();
+        var details = changes.SelectMany(change => change.Kind == ChangeJournalOperationKind.Update
+                ? change.ChangedBefore.Keys.Select(field => $"{field}: {ValueText(change.Before, field)} → {ValueText(change.After, field)}")
+                : change.Kind == ChangeJournalOperationKind.Delete
+                    ? change.Before.Keys.Select(field => $"{field}={ValueText(change.Before, field)}")
+                    : change.After.Keys.Select(field => $"{field}={ValueText(change.After, field)}"))
+            .Take(40);
+        _changeJournalRequested(new ChangeJournalEntry
+        {
+            Server = _connection.Server ?? "",
+            Database = database,
+            Category = category,
+            Source = table,
+            Description = description,
+            Details = string.Join("; ", details),
+            Mode = 1,
+            ProjectType = "Online",
+            EntityType = "Строка справочника",
+            EntityIdentity = string.Join(", ", identity.Distinct(StringComparer.OrdinalIgnoreCase)),
+            Result = "Успешно",
+            OperationKind = operationKind,
+            RestoreIncludesAllChanges = restoreIncludesAllChanges,
+            Changes = changes.ToList()
+        });
+    }
+
+    private static ChangeJournalRowChange CreateJournalChange(string table, ChangeJournalOperationKind kind,
+        IReadOnlyDictionary<string, object> before, IReadOnlyDictionary<string, object> after,
+        IReadOnlyDictionary<string, object> identityBefore, IReadOnlyDictionary<string, object> identityAfter)
+        => new()
+        {
+            TableName = table ?? "",
+            Kind = kind,
+            Before = ToJournalValues(before),
+            After = ToJournalValues(after),
+            IdentityBefore = ToJournalValues(identityBefore),
+            IdentityAfter = ToJournalValues(identityAfter)
+        };
+
+    private static Dictionary<string, ChangeJournalValue> ToJournalValues(IReadOnlyDictionary<string, object> values)
+        => values?.ToDictionary(pair => pair.Key, pair => ChangeJournalValue.FromObject(pair.Value), StringComparer.OrdinalIgnoreCase)
+           ?? new Dictionary<string, ChangeJournalValue>(StringComparer.OrdinalIgnoreCase);
+
+    private static string ValueText(Dictionary<string, ChangeJournalValue> values, string key)
+        => values.TryGetValue(key, out var value) ? value?.ToObject()?.ToString() ?? "NULL" : "NULL";
 
     private void Close_Click(object sender, RoutedEventArgs e) => Close();
 }

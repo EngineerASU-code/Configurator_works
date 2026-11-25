@@ -40,6 +40,11 @@ namespace Configurator
             _columns = columns;
             _currentValues = currentValues;
             _keyColumn = keyColumn;
+            var screen = SystemParameters.WorkArea;
+            MaxHeight = screen.Height;
+            Width = Math.Min(screen.Width, columns.Count(c => !c.IsReadOnly) > 12 ? 1080 : 700);
+            FieldsPanel.Columns = Width >= 900 ? 4 : 3;
+            SizeChanged += (_, e) => FieldsPanel.Columns = e.NewSize.Width >= 900 ? 4 : 3;
             GenerateFields();
             ValidateFields();
             Closed += (_, _) => _recordSuggestion?.Cancel();
@@ -63,14 +68,9 @@ namespace Configurator
                     !string.IsNullOrWhiteSpace(_classNumberColumn) &&
                     col.Name.Equals(_classNumberColumn, StringComparison.OrdinalIgnoreCase)) ||
                     normalizedColumnName is "plcclassnumber" or "plcclasssnumber" or "classnumber" or "plcclassno";
-                string titleText = isClassNumber ? "🔒 " : (isKey ? "🔑 " : "");
-                titleText += $"{col.Name} ({col.DataType})";
-                if (col.IsNullable) titleText += " — nullable";
-                if (col.HasDefault) titleText += " — default";
-
                 var label = new TextBlock
                 {
-                    Text = titleText,
+                    Text = $"{col.Name} ({col.DataType})",
                     FontSize = 11,
                     FontWeight = FontWeights.SemiBold,
                     TextWrapping = TextWrapping.Wrap,
@@ -113,25 +113,6 @@ namespace Configurator
                 fieldPanel.Children.Add(label);
                 fieldPanel.Children.Add(input);
                 if (textBox != null) _fieldInputs[col.Name] = textBox;
-
-                if (!isKey || (isKey && !isClassNumber))
-                {
-                    string hint = col.HasDefault
-                        ? "Пусто → поле не изменяется"
-                        : col.IsNullable
-                            ? "Пусто → NULL"
-                            : "Обязательное поле";
-                    var hintText = new TextBlock
-                    {
-                        Text = hint,
-                        FontSize = 10,
-                        Margin = new Thickness(0, 4, 0, 0),
-                        TextWrapping = TextWrapping.Wrap
-                    };
-                    hintText.SetResourceReference(TextBlock.ForegroundProperty, "BrushTextSecondary");
-                    fieldPanel.Children.Add(hintText);
-                    if (textBox != null) textBox.ToolTip = hint;
-                }
 
                 if (textBox != null) textBox.TextChanged += (s, e) => ValidateFields();
                 if (input is ComboBox comboInput) comboInput.SelectionChanged += (s, e) => ValidateFields();

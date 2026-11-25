@@ -8,6 +8,6 @@ namespace Configurator.Core.Projects;
 /// <summary>Optional atomic batch-create contract shared by storage adapters.</summary>
 public interface IProjectBatchCrudDataSource
 {
-    Task CreateRecordsAsync(string tableName, IReadOnlyList<IReadOnlyDictionary<string, object?>> records,
+    Task<IReadOnlyList<IReadOnlyDictionary<string, object?>>> CreateRecordsAsync(string tableName, IReadOnlyList<IReadOnlyDictionary<string, object?>> records,
         CancellationToken cancellationToken = default);
 }

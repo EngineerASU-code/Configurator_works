@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -8,6 +8,14 @@ namespace Configurator.Infrastructure;
 /// <summary>Project-styled replacement for legacy system MessageBox alerts.</summary>
 public static class ModernDialog
 {
+    internal static void CloseToolOnEnter(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key != System.Windows.Input.Key.Enter || System.Windows.Input.Keyboard.Modifiers != System.Windows.Input.ModifierKeys.None ||
+            e.OriginalSource is System.Windows.Controls.Primitives.ButtonBase or TextBox { AcceptsReturn: true } or ComboBox { IsDropDownOpen: true }) return;
+        e.Handled = true;
+        ((Window)sender).Close();
+    }
+
     public static MessageBoxResult Show(string message) => Show(null, message, "Configurator", MessageBoxButton.OK, MessageBoxImage.Information);
     public static MessageBoxResult Show(string message, string caption) => Show(null, message, caption, MessageBoxButton.OK, MessageBoxImage.Information);
     public static MessageBoxResult Show(string message, string caption, MessageBoxButton buttons) => Show(null, message, caption, buttons, MessageBoxImage.None);
@@ -40,7 +48,19 @@ public static class ModernDialog
         MessageBoxResult result = MessageBoxResult.None;
         void AddButton(string label, MessageBoxResult value, bool primary)
         {
-            var button = new Button { Content = label, MinWidth = 94, Height = 36, Margin = new Thickness(8, 0, 0, 0), Padding = new Thickness(14, 4, 14, 4), FontWeight = FontWeights.SemiBold, Cursor = System.Windows.Input.Cursors.Hand, Background = primary ? new SolidColorBrush(Color.FromRgb(37, 126, 78)) : new SolidColorBrush(Color.FromRgb(242, 245, 248)), Foreground = primary ? Brushes.White : new SolidColorBrush(Color.FromRgb(45, 57, 70)), BorderBrush = primary ? new SolidColorBrush(Color.FromRgb(37, 126, 78)) : new SolidColorBrush(Color.FromRgb(213, 220, 228)), BorderThickness = new Thickness(1) };
+            var button = new Button { Content = label, IsDefault = primary, MinWidth = 94, Height = 36, Margin = new Thickness(8, 0, 0, 0), Padding = new Thickness(14, 4, 14, 4), FontWeight = FontWeights.SemiBold, Cursor = System.Windows.Input.Cursors.Hand, Background = primary ? new SolidColorBrush(Color.FromRgb(37, 126, 78)) : new SolidColorBrush(Color.FromRgb(242, 245, 248)), Foreground = primary ? Brushes.White : new SolidColorBrush(Color.FromRgb(45, 57, 70)), BorderBrush = primary ? new SolidColorBrush(Color.FromRgb(37, 126, 78)) : new SolidColorBrush(Color.FromRgb(213, 220, 228)), BorderThickness = new Thickness(1) };
+            if (primary)
+            {
+                win.ContentRendered += (_, _) => button.Focus();
+                win.PreviewKeyDown += (_, e) =>
+                {
+                    if (e.Key != System.Windows.Input.Key.Enter || System.Windows.Input.Keyboard.Modifiers != System.Windows.Input.ModifierKeys.None) return;
+                    var action = System.Windows.Input.Keyboard.FocusedElement as Button;
+                    if (action == null || Window.GetWindow(action) != win) action = button;
+                    e.Handled = true;
+                    action.RaiseEvent(new RoutedEventArgs(Button.ClickEvent, action));
+                };
+            }
             button.Click += (_, _) => { result = value; if (value == MessageBoxResult.None) win.Close(); else win.DialogResult = true; };
             buttonsPanel.Children.Add(button);
         }

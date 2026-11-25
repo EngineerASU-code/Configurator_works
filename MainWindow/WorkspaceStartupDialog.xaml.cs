@@ -9,8 +9,8 @@ public partial class WorkspaceStartupDialog : Window
     public WorkspaceStartupDialog()
     {
         InitializeComponent();
-        Width = Math.Min(1100, SystemParameters.WorkArea.Width * 0.92);
-        Height = Math.Min(640, SystemParameters.WorkArea.Height * 0.86);
+        Width = Math.Min(1440, SystemParameters.WorkArea.Width * 0.96);
+        Height = Math.Min(900, SystemParameters.WorkArea.Height * 0.94);
         if (AppSettings.Load().ShowStartupAnimation && SystemParameters.ClientAreaAnimation)
             ContentRendered += (_, _) => Intro.Play(ShowWelcome);
         else

@@ -15,6 +15,25 @@ namespace Configurator
     {
             // === P1-11: Async ===
 #nullable enable
+            internal static async Task<string> JournalSnapshotProjectionAsync(SqlConnection connection, SqlTransaction? transaction,
+                string quotedTable, CancellationToken ct)
+            {
+                using var command = new SqlCommand("""
+                    SELECT QUOTENAME(name), system_type_id FROM sys.columns
+                    WHERE object_id=OBJECT_ID(@table) AND is_hidden=0 ORDER BY column_id
+                    """, connection, transaction);
+                command.Parameters.AddWithValue("@table", quotedTable);
+                var expressions = new List<string>();
+                using var reader = await command.ExecuteReaderAsync(ct);
+                while (await reader.ReadAsync(ct))
+                {
+                    var name = reader.GetString(0);
+                    expressions.Add(reader.GetByte(1) == 189 ? $"CONVERT(binary(8), {name}) AS {name}" : name);
+                }
+                if (expressions.Count == 0) throw new InvalidOperationException($"Нет доступных полей таблицы {quotedTable}.");
+                return string.Join(", ", expressions);
+            }
+
             public async Task InsertRowAsync(string tableName, Dictionary<string, object> values, CancellationToken ct = default)
                 => await InsertRowCoreAsync(tableName, values, null, ct).ConfigureAwait(false);
 
@@ -26,8 +45,15 @@ namespace Configurator
                 return await InsertRowCoreAsync(tableName, values, keyColumns, ct).ConfigureAwait(false);
             }
 
+            internal async Task<Dictionary<string, object>> InsertRowAndGetSnapshotAsync(string tableName,
+                Dictionary<string, object> values, CancellationToken ct = default)
+            {
+                var snapshot = await InsertRowCoreAsync(tableName, values, null, ct, fullSnapshot: true).ConfigureAwait(false);
+                return snapshot.ToDictionary(pair => pair.Key, pair => pair.Value ?? DBNull.Value, StringComparer.OrdinalIgnoreCase);
+            }
+
             private async Task<IReadOnlyDictionary<string, object?>> InsertRowCoreAsync(string tableName,
-                Dictionary<string, object> values, IReadOnlyList<string>? keyColumns, CancellationToken ct)
+                Dictionary<string, object> values, IReadOnlyList<string>? keyColumns, CancellationToken ct, bool fullSnapshot = false)
             {
                 ProjectWriteGuard.EnsureDataTableWritable(tableName);
                 if (values == null || values.Count == 0)
@@ -55,6 +81,13 @@ namespace Configurator
                 var outputSql = keyColumns == null ? "" : " OUTPUT " + string.Join(", ", keyColumns.Select(key => "INSERTED." + QuoteIdentifier(key))) + " INTO @inserted";
                 var captureSql = keyColumns == null ? "" : $"DECLARE @inserted TABLE ({string.Join(", ", keyColumns.Select(key => QuoteIdentifier(key) + " sql_variant"))}); ";
                 var selectSql = keyColumns == null ? "" : $"; SELECT {string.Join(", ", keyColumns.Select(QuoteIdentifier))} FROM @inserted";
+                if (fullSnapshot)
+                {
+                    var projection = await JournalSnapshotProjectionAsync(connection, null, quotedName, ct);
+                    captureSql = $"SELECT TOP(0) {projection} INTO #created FROM {quotedName} UNION ALL SELECT TOP(0) {projection} FROM {quotedName}; ";
+                    outputSql = " OUTPUT INSERTED.* INTO #created";
+                    selectSql = "; SELECT * FROM #created";
+                }
                 var query = $"{captureSql}INSERT INTO {quotedName} ({columnSql}){outputSql} VALUES ({paramSql}){selectSql}";
     
                 using var command = new SqlCommand(query, connection);
@@ -64,7 +97,7 @@ namespace Configurator
                     command.Parameters.AddWithValue($"@p{i}", value ?? DBNull.Value);
                 }
     
-                if (keyColumns == null)
+                if (keyColumns == null && !fullSnapshot)
                 {
                     await command.ExecuteNonQueryAsync(ct);
                     return new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
@@ -73,8 +106,8 @@ namespace Configurator
                 if (!await reader.ReadAsync(ct))
                     throw new InvalidOperationException("Вставка не вернула ключ созданной записи.");
                 var result = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-                for (int i = 0; i < keyColumns.Count; i++)
-                    result[keyColumns[i]] = reader.IsDBNull(i) ? null : reader.GetValue(i);
+                for (int i = 0; i < reader.FieldCount; i++)
+                    result[reader.GetName(i)] = reader.IsDBNull(i) ? null : reader.GetValue(i);
                 return result;
             }
 #nullable restore
@@ -145,8 +178,8 @@ namespace Configurator
                 }
             }
 
-            public async Task UpdateCompareRowAsync(ProjectTableSchema expectedSchema, ProjectRecord? expectedRecord,
-                Dictionary<string, object> keyValues, Dictionary<string, object> values, CancellationToken ct = default)
+            public async Task<ChangeJournalRowChange> UpdateCompareRowAsync(ProjectTableSchema expectedSchema, ProjectRecord? expectedRecord,
+                Dictionary<string, object> keyValues, Dictionary<string, object> values, CancellationToken ct = default, bool delete = false)
             {
                 ArgumentNullException.ThrowIfNull(expectedSchema);
                 ProjectWriteGuard.EnsureDataTableWritable(expectedSchema.TableName);
@@ -154,7 +187,7 @@ namespace Configurator
                 if (!expectedSchema.HasStableKey || expectedSchema.KeyColumns.Count == 0 ||
                     keyValues == null || expectedSchema.KeyColumns.Any(key => !keyValues.ContainsKey(key)))
                     throw new InvalidOperationException("Не подтвержден устойчивый ключ целевой записи.");
-                if (values == null || values.Count == 0)
+                if (values == null || (!delete && values.Count == 0) || (delete && insert))
                     throw new InvalidOperationException("Нет выбранных полей для переноса.");
 
                 var (schemaName, bareTableName) = ParseTableName(expectedSchema.TableName);
@@ -185,6 +218,7 @@ namespace Configurator
                     var columns = expectedSchema.Columns;
                     var selectSql = $"SELECT {string.Join(", ", columns.Select(column => QuoteIdentifier(column.Name)))} FROM {quotedName} WITH (UPDLOCK, HOLDLOCK) WHERE {string.Join(" AND ", expectedSchema.KeyColumns.Select((key, index) => $"{QuoteIdentifier(key)} = @key{index}"))}";
                     var actualRows = new List<JsonObject>();
+                    var actualSnapshots = new List<Dictionary<string, object>>();
                     await using (var selectCommand = new SqlCommand(selectSql, connection, transaction))
                     {
                         for (int i = 0; i < expectedSchema.KeyColumns.Count; i++)
@@ -193,22 +227,35 @@ namespace Configurator
                         while (await reader.ReadAsync(ct))
                         {
                             var row = new JsonObject();
+                            var snapshot = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
                             for (int i = 0; i < columns.Count; i++)
+                            {
                                 row[reader.GetName(i)] = OnlineProjectDataSource.ReadValue(reader, i);
+                                snapshot[reader.GetName(i)] = reader.IsDBNull(i) ? DBNull.Value : reader.GetValue(i);
+                            }
                             actualRows.Add(row);
+                            actualSnapshots.Add(snapshot);
                             if (actualRows.Count > 1) break;
                         }
+                    }
+
+                    if (insert && keyValues.TryGetValue("Record", out var recordNumber))
+                    {
+                        using var occupied = new SqlCommand($"SELECT TOP (1) 1 FROM {quotedName} WITH (UPDLOCK,HOLDLOCK) WHERE [Record]=@record", connection, transaction);
+                        occupied.Parameters.AddWithValue("@record", recordNumber);
+                        if (await occupied.ExecuteScalarAsync(ct) != null)
+                            throw new Configurator.Infrastructure.Projects.CompareRecordConflictException();
                     }
 
                     if (insert ? actualRows.Count != 0 : actualRows.Count != 1 || !CompareRecordValues(expectedRecord!.Values, actualRows[0], columns))
                         throw new InvalidOperationException("Целевая запись изменилась или стала неоднозначной после сравнения. Повторите сравнение.");
 
-                    foreach (string changedColumn in changedColumns)
-                        await EnsureCompareWriteStillSafeAsync(connection, transaction, schemaName, bareTableName, changedColumn, insert, ct);
+                    await EnsureCompareWriteStillSafeAsync(connection, transaction, schemaName, bareTableName,
+                        delete ? "DELETE" : insert ? "INSERT" : "UPDATE", ct);
 
-                    if (insert && CompareTransferPreview.IsValveTable(expectedSchema))
+                    if (insert && CompareTransferPreview.IsEquipmentTable(expectedSchema))
                     {
-                        foreach (var (table, fields, lookupValues) in CompareTransferPreview.ValveLookups(values))
+                        foreach (var (table, fields, lookupValues) in CompareTransferPreview.EquipmentLookups(expectedSchema, values))
                         {
                             var lookupWhere = string.Join(" AND ", fields.Select((field, index) => $"{QuoteIdentifier(field)} = @lookup{index}"));
                             var lookupSql = $"SELECT TOP (1) 1 FROM {QuoteTableName(table)} WHERE {lookupWhere}";
@@ -216,13 +263,15 @@ namespace Configurator
                             for (int index = 0; index < fields.Length; index++)
                                 lookup.Parameters.AddWithValue($"@lookup{index}", lookupValues[index] ?? DBNull.Value);
                             if (await lookup.ExecuteScalarAsync(ct) is null)
-                                throw new InvalidOperationException($"Для клапана отсутствует связанная запись в {table}.");
+                                throw new InvalidOperationException($"Для объекта отсутствует связанная запись в {table}.");
                         }
                     }
 
                     var assignments = string.Join(", ", changedColumns.Select((column, index) => $"{QuoteIdentifier(column)} = @value{index}"));
                     var updateSql = $"UPDATE {quotedName} SET {assignments} WHERE {string.Join(" AND ", expectedSchema.KeyColumns.Select((key, index) => $"{QuoteIdentifier(key)} = @key{index}"))}";
-                    if (insert)
+                    if (delete)
+                        updateSql = $"DELETE FROM {quotedName} WHERE {string.Join(" AND ", expectedSchema.KeyColumns.Select((key, index) => $"{QuoteIdentifier(key)} = @key{index}"))}";
+                    else if (insert)
                         updateSql = $"INSERT INTO {quotedName} ({string.Join(", ", changedColumns.Select(QuoteIdentifier))}) VALUES ({string.Join(", ", changedColumns.Select((_, index) => $"@value{index}"))})";
                     await using (var updateCommand = new SqlCommand(updateSql, connection, transaction))
                     {
@@ -235,7 +284,21 @@ namespace Configurator
                             throw new InvalidOperationException("Обновление не затронуло ровно одну запись. Транзакция отменена.");
                     }
 
+                    var afterSnapshot = delete ? new Dictionary<string, object>() : await ReadCompareRowSnapshotAsync(connection, transaction, expectedSchema.TableName,
+                        columns, expectedSchema.KeyColumns, keyValues, ct);
+                    var beforeSnapshot = insert ? new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase) : actualSnapshots[0];
+                    var captured = new ChangeJournalRowChange
+                    {
+                        TableName = expectedSchema.TableName,
+                        Kind = delete ? ChangeJournalOperationKind.Delete : insert ? ChangeJournalOperationKind.Insert : ChangeJournalOperationKind.Update,
+                        Before = ToCompareJournalValues(beforeSnapshot),
+                        After = ToCompareJournalValues(afterSnapshot),
+                        IdentityBefore = insert ? new Dictionary<string, ChangeJournalValue>(StringComparer.OrdinalIgnoreCase)
+                            : ToCompareJournalIdentity(beforeSnapshot, expectedSchema.KeyColumns),
+                        IdentityAfter = delete ? new() : ToCompareJournalIdentity(afterSnapshot, expectedSchema.KeyColumns)
+                    };
                     await transaction.CommitAsync(ct);
+                    return captured;
                 }
                 catch
                 {
@@ -244,35 +307,56 @@ namespace Configurator
                 }
             }
 
+            private async Task<Dictionary<string, object>> ReadCompareRowSnapshotAsync(SqlConnection connection,
+                SqlTransaction transaction, string tableName, IReadOnlyList<ProjectColumnSchema> columns,
+                IReadOnlyList<string> keyColumns, IReadOnlyDictionary<string, object> keyValues, CancellationToken ct)
+            {
+                var predicates = keyColumns.Select((key, index) => $"{QuoteIdentifier(key)} = @key{index}");
+                var sql = $"SELECT TOP (2) {string.Join(", ", columns.Select(column => QuoteIdentifier(column.Name)))} " +
+                    $"FROM {QuoteTableName(tableName)} WITH (UPDLOCK, HOLDLOCK) WHERE {string.Join(" AND ", predicates)}";
+                await using var command = new SqlCommand(sql, connection, transaction);
+                for (int i = 0; i < keyColumns.Count; i++)
+                    command.Parameters.AddWithValue($"@key{i}", keyValues[keyColumns[i]] ?? DBNull.Value);
+                await using var reader = await command.ExecuteReaderAsync(ct);
+                if (!await reader.ReadAsync(ct))
+                    throw new InvalidOperationException("Не удалось подтвердить целевую запись после переноса.");
+                var snapshot = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+                for (int i = 0; i < reader.FieldCount; i++)
+                    snapshot[reader.GetName(i)] = reader.IsDBNull(i) ? DBNull.Value : reader.GetValue(i);
+                if (await reader.ReadAsync(ct))
+                    throw new InvalidOperationException("Ключ целевой записи соответствует нескольким строкам после переноса.");
+                if (columns.Any(column => !snapshot.ContainsKey(column.Name)))
+                    throw new InvalidOperationException("Снимок целевой записи после переноса неполон.");
+                return snapshot;
+            }
+
+            private static Dictionary<string, ChangeJournalValue> ToCompareJournalValues(IReadOnlyDictionary<string, object> values)
+                => values.ToDictionary(pair => pair.Key, pair => ChangeJournalValue.FromObject(pair.Value), StringComparer.OrdinalIgnoreCase);
+
+            private static Dictionary<string, ChangeJournalValue> ToCompareJournalIdentity(
+                IReadOnlyDictionary<string, object> values, IReadOnlyList<string> keyColumns)
+                => keyColumns.ToDictionary(key => key, key => ChangeJournalValue.FromObject(values[key]), StringComparer.OrdinalIgnoreCase);
+
             private static async Task EnsureCompareWriteStillSafeAsync(SqlConnection connection, SqlTransaction transaction,
-                string schemaName, string tableName, string columnName, bool insert, CancellationToken ct)
+                string schemaName, string tableName, string permission, CancellationToken ct)
             {
                 const string sql = @"
-SELECT CASE WHEN HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'VIEW DEFINITION')=1
-                 AND HAS_PERMS_BY_NAME(QUOTENAME(s.name)+'.'+QUOTENAME(t.name), 'OBJECT', @permission)=1
+SELECT CASE WHEN HAS_PERMS_BY_NAME(QUOTENAME(s.name)+'.'+QUOTENAME(t.name), 'OBJECT', @permission)=1
                  AND DATABASEPROPERTYEX(DB_NAME(), 'Updateability')='READ_WRITE'
                  AND NOT EXISTS (SELECT 1 FROM sys.triggers tr WHERE tr.parent_id=t.object_id AND tr.is_disabled=0)
-            THEN 1 ELSE 0 END AS can_update,
-       CASE WHEN EXISTS (
-           SELECT 1 FROM sys.foreign_key_columns fkc
-           WHERE (fkc.parent_object_id=t.object_id AND fkc.parent_column_id=c.column_id)
-              OR (fkc.referenced_object_id=t.object_id AND fkc.referenced_column_id=c.column_id)
-       ) THEN 1 ELSE 0 END AS is_related
-FROM sys.tables t
-JOIN sys.schemas s ON s.schema_id=t.schema_id
-JOIN sys.columns c ON c.object_id=t.object_id
-WHERE s.name=@schema AND t.name=@table AND c.name=@column";
+                 AND (@permission <> 'DELETE' OR NOT EXISTS
+                     (SELECT 1 FROM sys.foreign_keys fk WHERE fk.referenced_object_id=t.object_id
+                      AND fk.delete_referential_action<>0 AND fk.is_disabled=0))
+            THEN 1 ELSE 0 END
+FROM sys.tables t JOIN sys.schemas s ON s.schema_id=t.schema_id
+WHERE s.name=@schema AND t.name=@table";
 
                 await using var command = new SqlCommand(sql, connection, transaction);
                 command.Parameters.Add("@schema", SqlDbType.NVarChar, 128).Value = schemaName;
                 command.Parameters.Add("@table", SqlDbType.NVarChar, 128).Value = tableName;
-                command.Parameters.Add("@column", SqlDbType.NVarChar, 128).Value = columnName;
-                command.Parameters.Add("@permission", SqlDbType.NVarChar, 16).Value = insert ? "INSERT" : "UPDATE";
-                await using var reader = await command.ExecuteReaderAsync(ct);
-                if (!await reader.ReadAsync(ct) || reader.GetInt32(0) != 1)
-                    throw new InvalidOperationException("Не подтверждены права записи, доступ к метаданным или отсутствие активных триггеров.");
-                if (reader.GetInt32(1) != 0)
-                    throw new InvalidOperationException("Изменение столбца, участвующего в физической связи базы данных, заблокировано.");
+                command.Parameters.Add("@permission", SqlDbType.NVarChar, 16).Value = permission;
+                if (!Equals(await command.ExecuteScalarAsync(ct), 1))
+                    throw new InvalidOperationException("Запись недоступна. Проверьте права SQL, триггеры и каскадные изменения целевой таблицы.");
             }
 
             private static bool SameCompareSchema(ProjectTableSchema expected, ProjectTableSchema current)

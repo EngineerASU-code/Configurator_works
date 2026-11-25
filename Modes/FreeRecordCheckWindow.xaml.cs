@@ -97,9 +97,19 @@ public partial class FreeRecordCheckWindow : Window
             var result = await _database!.CheckRecordsAsync(scope, ct);
             ct.ThrowIfCancellationRequested();
             TxtResultHeader.Text = $"{scope.Class.Title} · PLC {plc.Label}";
-            TxtResult.Text = result.MinRecord == null ? "Записи не найдены."
-                : $"Диапазон Record {result.MinRecord}–{result.MaxRecord}{Environment.NewLine}{Environment.NewLine}"
-                    + (result.Gaps.Count == 0 ? "Свободных Record нет." : $"Свободные Record ({result.FreeCount}): {string.Join(", ", result.Gaps)}");
+            if (result.MinRecord == null)
+            {
+                TxtResult.Text = "Записи не найдены.";
+            }
+            else
+            {
+                TxtResult.Text = $"Диапазон Record  {result.MinRecord}–{result.MaxRecord}\n\n";
+                var summary = result.Gaps.Count == 0 ? "Свободных Record нет." : $"Свободные Record ({result.FreeCount})";
+                TxtResult.Inlines.Add(new System.Windows.Documents.Run(summary)
+                    { FontSize = 22, FontWeight = FontWeights.SemiBold });
+                if (result.Gaps.Count > 0)
+                    TxtResult.Inlines.Add(new System.Windows.Documents.Run("\n" + string.Join(", ", result.Gaps)) { FontSize = 22 });
+            }
             TxtStatus.Text = "Проверка завершена";
         });
     }

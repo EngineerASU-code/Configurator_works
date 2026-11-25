@@ -19,6 +19,9 @@ public static class UserAuthorizationService
     private const int CurrentIterations = 600_000;
     private const int SaltSize = 16;
     private const int HashSize = 32;
+    private const string FixedAdminSalt = "VbwGHwR9sLxOtK6B+wrUig==";
+    private const string FixedAdminHash = "QYx6esuZDl8WHNpEicNTVoWMkyp6y1uuCIEsHGlGT5o=";
+    private const string ProtectedStorePrefix = "DPAPI:";
     private const int MinimumPasswordLength = 5;
     private const int MaximumPasswordLength = 1024;
     private static readonly Dictionary<string, LoginAttemptState> LoginAttempts = new(StringComparer.OrdinalIgnoreCase);
@@ -45,11 +48,19 @@ public static class UserAuthorizationService
         Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
         UserStoreDocument document;
         bool storeExists = File.Exists(filePath);
+        bool protectedStore = false;
         if (storeExists)
         {
             try
             {
-                document = DeserializeDocument(File.ReadAllText(filePath));
+                string content = File.ReadAllText(filePath);
+                protectedStore = content.StartsWith(ProtectedStorePrefix, StringComparison.Ordinal);
+                if (protectedStore)
+                {
+                    byte[] encrypted = Convert.FromBase64String(content[ProtectedStorePrefix.Length..]);
+                    content = Encoding.UTF8.GetString(ProtectedData.Unprotect(encrypted, null, DataProtectionScope.CurrentUser));
+                }
+                document = DeserializeDocument(content);
                 if (document == null || document.Users == null || document.Roles == null)
                     throw new InvalidDataException("Хранилище пользователей не содержит обязательные разделы.");
             }
@@ -66,8 +77,8 @@ public static class UserAuthorizationService
                 {
                     UserName = "admin", DisplayName = "Администратор", RoleName = "Администратор",
                     PasswordHashVersion = 1, PasswordIterations = 600_000,
-                    PasswordSalt = "VbwGHwR9sLxOtK6B+wrUig==",
-                    PasswordHash = "QYx6esuZDl8WHNpEicNTVoWMkyp6y1uuCIEsHGlGT5o="
+                    PasswordSalt = FixedAdminSalt,
+                    PasswordHash = FixedAdminHash
                 } }
             };
         }
@@ -88,12 +99,12 @@ public static class UserAuthorizationService
             throw new InvalidDataException("В хранилище отсутствует учётная запись администратора. Файл не перезаписан; восстановите резервную копию users.json.");
         if (!HasValidCredentialEncoding(admin))
             throw new InvalidDataException("Данные пароля административной учётной записи повреждены. Файл не перезаписан; восстановите резервную копию users.json.");
-        needsSetup = !admin.Enabled || IsDefaultAdminPassword(admin);
+        needsSetup = false;
         string beforeNormalization = JsonConvert.SerializeObject(document, Formatting.Indented);
         NormalizeAccounts(document);
         string normalized = JsonConvert.SerializeObject(document, Formatting.Indented);
-        if (!needsSetup && (!storeExists || beforeNormalization != normalized))
-            WriteAtomically(filePath, normalized);
+        if (!protectedStore || beforeNormalization != normalized)
+            WriteProtectedStore(filePath, normalized);
         return document;
     }
 
@@ -136,14 +147,16 @@ public static class UserAuthorizationService
         var admin = document.Users.FirstOrDefault(u => u.UserName.Equals("admin", StringComparison.OrdinalIgnoreCase))
             ?? throw new InvalidDataException("В хранилище отсутствует учётная запись администратора; файл не изменён.");
         var engineer = document.Users.FirstOrDefault(u => u.UserName.Equals("Инженер", StringComparison.OrdinalIgnoreCase));
-        if (engineer == null || !HasValidCredentialEncoding(engineer))
-        {
-            engineer = new UserAccount { UserName = "Инженер", PasswordHashVersion = 1, PasswordIterations = 600_000,
-                PasswordSalt = "gYKlsdbS22sKFZiRXPzjOw==",
-                PasswordHash = "0mat/x5zuoB9h0UIuaWvRJQ7tc1gj1MeWNfooOGnZpI=" };
-        }
+        engineer ??= new UserAccount { UserName = "Инженер" };
+        engineer.PasswordHash = engineer.PasswordSalt = string.Empty;
+        engineer.PasswordHashVersion = engineer.PasswordIterations = 0;
         engineer.DisplayName = engineer.RoleName = "Инженер";
         engineer.Enabled = true;
+        admin.Enabled = true;
+        admin.PasswordSalt = FixedAdminSalt;
+        admin.PasswordHash = FixedAdminHash;
+        admin.PasswordIterations = CurrentIterations;
+        admin.PasswordHashVersion = CurrentHashVersion;
         admin.DisplayName = admin.RoleName = "Администратор";
         var engineerPermissions = Enum.GetValues<Permission>().Where(p => p is not
             (Permission.Mode2Show or Permission.Mode2View or Permission.Mode2Manage or Permission.Mode2GraphShow or
@@ -182,49 +195,8 @@ public static class UserAuthorizationService
         catch { return false; }
     }
 
-    private static bool IsDefaultAdminPassword(UserAccount user)
-    {
-        if (user == null || string.IsNullOrWhiteSpace(user.PasswordSalt) || string.IsNullOrWhiteSpace(user.PasswordHash)) return false;
-        try
-        {
-            var salt = Convert.FromBase64String(user.PasswordSalt);
-            var expected = Convert.FromBase64String(user.PasswordHash);
-            var actual = Rfc2898DeriveBytes.Pbkdf2(Encoding.UTF8.GetBytes("admin"), salt, GetIterations(user), HashAlgorithmName.SHA256, expected.Length);
-            return CryptographicOperations.FixedTimeEquals(expected, actual);
-        }
-        catch { return false; }
-    }
-
-    public static void CompleteInitialSetup(string currentAdminPassword, string newAdminPassword)
-    {
-        lock (Sync)
-        {
-            ValidateAdministratorPassword(newAdminPassword);
-
-            string originalDocument = JsonConvert.SerializeObject(_document);
-            bool originalNeedsSetup = NeedsInitialSetup;
-            try
-            {
-                var admin = _document.Users.FirstOrDefault(u => u.UserName.Equals("admin", StringComparison.OrdinalIgnoreCase));
-                if (admin == null || !VerifyPassword(admin, currentAdminPassword ?? ""))
-                    throw new UnauthorizedAccessException("Текущий пароль администратора не подтверждён.");
-                SetPassword(admin, newAdminPassword);
-                admin.Enabled = true;
-
-                _document.SchemaVersion = Math.Max(_document.SchemaVersion, 5);
-                Save();
-                NeedsInitialSetup = false;
-                CurrentUser = admin;
-                Changed?.Invoke(null, EventArgs.Empty);
-            }
-            catch
-            {
-                _document = JsonConvert.DeserializeObject<UserStoreDocument>(originalDocument);
-                NeedsInitialSetup = originalNeedsSetup;
-                throw;
-            }
-        }
-    }
+    public static void CompleteInitialSetup(string currentAdminPassword, string newAdminPassword) =>
+        throw new InvalidOperationException("Пароль системного администратора фиксирован.");
 
     private static void CreateUserInternal(string name, string display, string role, string password, bool enabled)
     {
@@ -243,12 +215,14 @@ public static class UserAuthorizationService
         Changed?.Invoke(null, EventArgs.Empty);
     }
 
+    internal static bool RequiresPassword(UserAccount user) =>
+        !string.Equals(user?.UserName, "Инженер", StringComparison.OrdinalIgnoreCase);
+
     public static bool Login(string userName, string password, out string error)
     {
         error = null;
         InitializeIfNeeded();
         if (NeedsInitialSetup) { error = "Сначала завершите настройку пароля администратора."; return false; }
-        if (string.IsNullOrEmpty(password)) { error = "Пустой пароль запрещён."; return false; }
         string key = (userName ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(key)) key = "<empty>";
         lock (Sync)
@@ -260,29 +234,13 @@ public static class UserAuthorizationService
                 return false;
             }
             var user = _document.Users.FirstOrDefault(u => IsBuiltInUser(u.UserName) && u.UserName.Equals(key, StringComparison.OrdinalIgnoreCase));
-            if (user == null || !user.Enabled || !VerifyPassword(user, password))
+            if (user == null || !user.Enabled || (RequiresPassword(user) && (string.IsNullOrEmpty(password) || !VerifyPassword(user, password))))
             {
                 RegisterFailedLogin(key);
                 error = "Неверный логин/пароль или учётная запись отключена.";
                 return false;
             }
 
-            bool needsRehash = !user.UserName.Equals("admin", StringComparison.OrdinalIgnoreCase) &&
-                (user.PasswordHashVersion != CurrentHashVersion || GetIterations(user) != CurrentIterations);
-            if (needsRehash)
-            {
-                string oldHash = user.PasswordHash, oldSalt = user.PasswordSalt;
-                int oldVersion = user.PasswordHashVersion, oldIterations = user.PasswordIterations;
-                RehashVerifiedPassword(user, password);
-                try { Save(); }
-                catch
-                {
-                    user.PasswordHash = oldHash; user.PasswordSalt = oldSalt;
-                    user.PasswordHashVersion = oldVersion; user.PasswordIterations = oldIterations;
-                    error = "Пароль проверен, но обновить параметры его хранения не удалось. Повторите попытку позже.";
-                    return false;
-                }
-            }
             LoginAttempts.Remove(key);
             LoginAttempts.Remove("<overflow>");
             CurrentUser = user;
@@ -452,8 +410,8 @@ public static class UserAuthorizationService
             throw new InvalidOperationException("Перед включением пользователя задайте новый пароль.");
         if (!string.IsNullOrEmpty(newPassword))
         {
-            if (isAdmin) ValidateAdministratorPassword(newPassword);
-            else ValidatePassword(newPassword);
+            EnsurePasswordCanChange(user);
+            ValidatePassword(newPassword);
         }
         if (enabled && string.IsNullOrEmpty(newPassword) && (string.IsNullOrWhiteSpace(user.PasswordSalt) || string.IsNullOrWhiteSpace(user.PasswordHash)))
             throw new InvalidOperationException("Для учётной записи необходимо задать пароль перед включением.");
@@ -477,8 +435,15 @@ public static class UserAuthorizationService
             throw new InvalidOperationException("Нельзя отключить последнюю административную учётную запись. Для восстановления доступа используйте процедуру восстановления администратора.");
     }
 
+    private static void EnsurePasswordCanChange(UserAccount user)
+    {
+        if (string.Equals(user.UserName, "admin", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Пароль системного администратора фиксирован.");
+    }
+
     internal static void SetPassword(UserAccount user, string password)
     {
+        EnsurePasswordCanChange(user);
         ValidatePassword(password);
         RehashVerifiedPassword(user, password);
     }
@@ -603,7 +568,7 @@ public static class UserAuthorizationService
             }
 
             // Persist first. The in-memory authorization state is swapped only after the file write succeeds.
-            WriteAtomically(FilePath, json);
+            WriteProtectedStore(FilePath, json);
             _document = imported;
             NeedsInitialSetup = false;
             var previousUserName = CurrentUser?.UserName;
@@ -632,7 +597,7 @@ public static class UserAuthorizationService
         {
             if (!roleNames.Contains(user.RoleName))
                 throw new InvalidDataException($"Для пользователя '{user.UserName}' не найдена роль '{user.RoleName}'. Текущие настройки не изменены.");
-            bool awaitingPassword = !user.Enabled && string.IsNullOrEmpty(user.PasswordSalt) && string.IsNullOrEmpty(user.PasswordHash);
+            bool awaitingPassword = (!user.Enabled || !RequiresPassword(user)) && string.IsNullOrEmpty(user.PasswordSalt) && string.IsNullOrEmpty(user.PasswordHash);
             if (!awaitingPassword && !HasValidCredentialEncoding(user))
                 throw new InvalidDataException($"Данные пароля пользователя '{user.UserName}' имеют неверный формат. Текущие настройки не изменены.");
         }
@@ -648,7 +613,13 @@ public static class UserAuthorizationService
     {
         // Serialize completely before touching the current file; credentials are never logged.
         string json = JsonConvert.SerializeObject(_document, Formatting.Indented);
-        WriteAtomically(FilePath, json);
+        WriteProtectedStore(FilePath, json);
+    }
+
+    private static void WriteProtectedStore(string path, string json)
+    {
+        byte[] encrypted = ProtectedData.Protect(Encoding.UTF8.GetBytes(json), null, DataProtectionScope.CurrentUser);
+        WriteAtomically(path, ProtectedStorePrefix + Convert.ToBase64String(encrypted));
     }
 
     internal static void WriteAtomically(string destinationPath, string content)

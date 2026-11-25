@@ -54,7 +54,7 @@ public partial class MainWindow
         try
         {
             // Probe connectivity even while an editor has keyboard focus. A dead connection
-            // must disable the database node before the next user click can start a query.
+            // must collapse the database node before the next user click can start a query.
             if ((DateTime.UtcNow - _lastConnectionCheck).TotalSeconds >= 5)
             {
                 _lastConnectionCheck = DateTime.UtcNow;
@@ -64,6 +64,7 @@ public partial class MainWindow
                 if (refreshCancellation.IsCancellationRequested || _isOfflineWorkspace || _offlineSelectionRequired) return;
                 foreach (var result in results)
                 {
+                    if (!_connection.ConnectedDatabases.Contains(result.dbName, StringComparer.OrdinalIgnoreCase)) continue;
                     if (result.connected) MarkDatabaseAvailable(result.dbName);
                     else MarkDatabaseUnavailable(result.dbName, null);
                 }
@@ -217,17 +218,11 @@ public partial class MainWindow
     {
         if (string.IsNullOrWhiteSpace(dbName)) return;
         bool newlyFailed = _failedDatabases.Add(dbName);
+        if (newlyFailed)
+            _freeSqlWindow?.SetDatabaseAvailable(dbName, false);
         var node = _leftPanel.ServerTree.Items.OfType<System.Windows.Controls.TreeViewItem>()
             .FirstOrDefault(x => string.Equals(x.Tag?.ToString(), dbName, StringComparison.OrdinalIgnoreCase));
-        if (node != null)
-        {
-            node.IsExpanded = false;
-            node.IsEnabled = false;
-            node.Opacity = 0.48;
-            node.ToolTip = "Связь с БД потеряна. Дождитесь автоматической проверки соединения.";
-            node.Items.Clear();
-            node.Header = CreateTreeHeader("❌  " + dbName, "Нет связи с БД", true);
-        }
+        if (node != null) SetDatabaseNodeAvailability(node, dbName, false);
         _loadedTreeNodes.Remove(dbName);
         if (string.Equals(_activeDbName, dbName, StringComparison.OrdinalIgnoreCase))
         {
@@ -251,18 +246,10 @@ public partial class MainWindow
     private void MarkDatabaseAvailable(string dbName)
     {
         if (string.IsNullOrWhiteSpace(dbName) || !_failedDatabases.Remove(dbName)) return;
+        _freeSqlWindow?.SetDatabaseAvailable(dbName, true);
         var node = _leftPanel.ServerTree.Items.OfType<System.Windows.Controls.TreeViewItem>()
             .FirstOrDefault(x => string.Equals(x.Tag?.ToString(), dbName, StringComparison.OrdinalIgnoreCase));
-        if (node != null)
-        {
-            node.IsEnabled = true;
-            node.Opacity = 1.0;
-            node.ToolTip = "База проекта";
-            node.Header = CreateTreeHeader("▣  " + dbName, "База данных", true);
-            node.Items.Clear();
-            node.Items.Add(new System.Windows.Controls.TreeViewItem { Header = "Раскройте для загрузки таблиц…", IsEnabled = false });
-            node.IsExpanded = false;
-        }
+        if (node != null) SetDatabaseNodeAvailability(node, dbName, true);
         _loadedTreeNodes.Remove(dbName);
         // A TableViewModel may retain a dead connection/pool state from the outage.
         // Drop the cached VM so the next expand creates a fresh model and reloads tables.

@@ -1,4 +1,4 @@
-﻿#nullable enable
+#nullable enable
 using System;
 using System.Data;
 using System.Diagnostics;
@@ -467,6 +467,7 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
 
         private void SwitchToOffline_Click(object sender, RoutedEventArgs e)
         {
+            _freeSqlWindow?.Close();
             _databaseRefreshCancellation?.Cancel();
             var switchTimer = Stopwatch.StartNew();
             if (_openedLocalProject is null || string.IsNullOrWhiteSpace(_openedLocalProjectPath))
@@ -721,7 +722,7 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
             _offlineProjectDirty = true;
         }
 
-        private void CommitOfflineGridToProject()
+        private void CommitOfflineGridToProject(string? duplicateKey = null, string? sourceKey = null)
         {
             if (!_isOfflineWorkspace || _openedLocalProject is null || _offlineCurrentDataTable is null || _offlineCurrentTableName is null || !_offlineGridDirty) return;
             ProjectWriteGuard.EnsureDataTableWritable(_offlineCurrentTableName);
@@ -744,10 +745,11 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
                     _openedLocalProject.LocalRecords.Add(record);
                     _offlineCurrentRecordIndex[key] = record;
                 }
-                var values = new JsonObject();
+                var values = record.Values ?? new JsonObject();
                 foreach (DataColumn column in _offlineCurrentDataTable.Columns)
                 {
                     var raw = row[column] == DBNull.Value ? null : Convert.ToString(row[column], CultureInfo.InvariantCulture);
+                    if (string.Equals(values[column.ColumnName]?.ToString(), raw, StringComparison.Ordinal)) continue;
                     var columnSchema = schema?.Columns.FirstOrDefault(x => x.Name.Equals(column.ColumnName, StringComparison.OrdinalIgnoreCase));
                     if (raw is null) values[column.ColumnName] = null;
                     else if (columnSchema is not null && IsNumericOfflineType(columnSchema.DataType) && decimal.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out var number)) values[column.ColumnName] = JsonValue.Create(number);
@@ -765,7 +767,7 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
             }
             _offlineGridDirty = false;
             _offlineProjectDirty = true;
-            RecordOfflineGridChanges(schema);
+            RecordOfflineGridChanges(schema, duplicateKey, sourceKey);
             System.Diagnostics.Debug.WriteLine($"[OfflinePerf] grid-commit: {_offlineCurrentTableName}, rows={_offlineCurrentDataTable.Rows.Count}, ms={timer.ElapsedMilliseconds}");
         }
 
@@ -774,11 +776,19 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
             var values = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
             if (record?.Values != null)
                 foreach (var pair in record.Values)
-                    values[pair.Key] = pair.Value == null ? DBNull.Value : pair.Value.ToString();
+                    values[pair.Key] = pair.Value?.GetValueKind() switch
+                    {
+                        null or JsonValueKind.Null => DBNull.Value,
+                        JsonValueKind.True => true,
+                        JsonValueKind.False => false,
+                        JsonValueKind.Number when decimal.TryParse(pair.Value.ToJsonString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var number) => number,
+                        JsonValueKind.Number => double.Parse(pair.Value.ToJsonString(), CultureInfo.InvariantCulture),
+                        _ => pair.Value.ToString()
+                    };
             return values;
         }
 
-        private void RecordOfflineGridChanges(ProjectTableSchema? schema)
+        private void RecordOfflineGridChanges(ProjectTableSchema? schema, string? duplicateKey, string? sourceKey)
         {
             if (!_isOfflineWorkspace || _openedLocalProject == null || string.IsNullOrWhiteSpace(_offlineCurrentTableName)) return;
             var current = _openedLocalProject.LocalRecords
@@ -799,23 +809,18 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
             {
                 if (!_offlineBaselineRows.TryGetValue(pair.Key, out var before))
                 {
-                    changes.Add(CreateJournalChange(_offlineCurrentTableName, ChangeJournalOperationKind.Insert,
-                        null, pair.Value, null, Identity(pair.Value, pair.Key)));
+                    var duplicate = pair.Key == duplicateKey;
+                    var sourceIdentity = duplicate && sourceKey != null && current.TryGetValue(sourceKey, out var sourceValues)
+                        ? Identity(sourceValues, sourceKey) : null;
+                    changes.Add(CreateJournalChange(_offlineCurrentTableName,
+                        duplicate ? ChangeJournalOperationKind.Duplicate : ChangeJournalOperationKind.Insert,
+                        null, pair.Value, sourceIdentity, Identity(pair.Value, pair.Key), completeOfflineRow: true));
                     continue;
                 }
-                var changedBefore = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
-                var changedAfter = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
-                foreach (var name in before.Keys.Union(pair.Value.Keys, StringComparer.OrdinalIgnoreCase))
-                {
-                    before.TryGetValue(name, out var oldValue);
-                    pair.Value.TryGetValue(name, out var newValue);
-                    if (string.Equals(Convert.ToString(oldValue, CultureInfo.InvariantCulture) ?? "", Convert.ToString(newValue, CultureInfo.InvariantCulture) ?? "", StringComparison.Ordinal)) continue;
-                    changedBefore[name] = oldValue ?? DBNull.Value;
-                    changedAfter[name] = newValue ?? DBNull.Value;
-                }
-                if (changedBefore.Count > 0)
+                if (before.Count != pair.Value.Count || before.Any(field =>
+                    !pair.Value.TryGetValue(field.Key, out var value) || !Equals(field.Value, value)))
                     changes.Add(CreateJournalChange(_offlineCurrentTableName, ChangeJournalOperationKind.Update,
-                        before, pair.Value, Identity(before, pair.Key), Identity(pair.Value, pair.Key)));
+                        before, pair.Value, Identity(before, pair.Key), Identity(pair.Value, pair.Key), completeOfflineRow: true));
             }
             foreach (var pair in _offlineBaselineRows)
                 if (!current.ContainsKey(pair.Key))
@@ -826,10 +831,12 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
             foreach (var pair in current) _offlineBaselineRows[pair.Key] = new Dictionary<string, object>(pair.Value, StringComparer.OrdinalIgnoreCase);
             if (changes.Count == 0) return;
             var kind = changes.Select(x => x.Kind).Distinct().Count() == 1 ? changes[0].Kind : ChangeJournalOperationKind.Composite;
-            LogAction($"Offline: изменена таблица {_offlineCurrentTableName} · записей: {changes.Count}",
+            var counts = changes.GroupBy(change => change.Kind).Select(group =>
+                $"{group.First().KindDisplay.ToLowerInvariant()} — {group.Count()}");
+            LogAction($"{_offlineCurrentTableName} · {string.Join(", ", counts)}",
                 category: "Изменение данных", source: _offlineCurrentTableName,
                 details: $"Локальный проект: {_openedLocalProject.Manifest.Name}",
-                journalChanges: changes, operationKind: kind, databaseName: _openedLocalProject.Manifest.Name);
+                journalChanges: changes, operationKind: kind, databaseName: _openedLocalProject.Manifest.Name, offline: true);
         }
 
         private static bool IsNumericOfflineType(string type) => new[] { "int", "bigint", "smallint", "tinyint", "decimal", "numeric", "float", "real", "money", "smallmoney" }.Contains(type, StringComparer.OrdinalIgnoreCase);
@@ -854,7 +861,9 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
                 try
                 {
                     var plc = row["PLC"] as string;
-                    int record = suggestRecord(plc, CancellationToken.None);
+                    var classColumn = ProjectClassCatalog.FindRecordClassColumn(schema?.KeyColumns ?? new List<string>());
+                    int record = SuggestOfflineScopedRecord(_offlineCurrentDataTable, plc, classColumn: classColumn,
+                        classValue: classColumn == null ? null : row[classColumn]);
                     row["Record"] = record.ToString(CultureInfo.InvariantCulture);
                 }
                 catch (InvalidOperationException ex)
@@ -865,7 +874,8 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
             }
             _offlineCurrentDataTable.Rows.Add(row);
             _offlineRowRecordKeys[row] = "offline:" + Guid.NewGuid().ToString("N");
-            CommitOfflineGridToProject();
+            _offlineRowRecordKeys.TryGetValue(selected.Row, out var sourceKey);
+            CommitOfflineGridToProject(_offlineRowRecordKeys[row], sourceKey);
             _rightPanel.DataTableGrid.SelectedItem = row;
             _rightPanel.DataTableGrid.ScrollIntoView(row);
             UpdateOfflineTableCount();
@@ -883,15 +893,20 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
             var recordColumn = _offlineCurrentColumns.FirstOrDefault(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase))?.Name ?? "";
             var lookupOptions = OfflineLookupOptionsService.Build(_openedLocalProject, _offlineCurrentTableName, _offlineCurrentColumns);
             var suggestRecord = GetOfflineScopedRecordSuggestion(_offlineCurrentDataTable);
+            var schema = _openedLocalProject.TableSchemas.FirstOrDefault(x => x.TableName.Equals(_offlineCurrentTableName, StringComparison.OrdinalIgnoreCase));
+            var recordScopeClass = ProjectClassCatalog.FindRecordClassColumn(schema?.KeyColumns ?? new List<string>());
             var window = new AddRowWindow(_offlineCurrentTableName, _offlineCurrentColumns, 0, recordColumn, null, null,
                 classNumber, classNumberColumn, lookupOptions,
-                scopedRecordProvider: suggestRecord == null ? null : (plc, ct) => Task.FromResult(suggestRecord(plc, ct)),
-                recordExistsProvider: (plc, record, ct) => Task.FromResult(
+                scopedRecordProvider: suggestRecord == null ? null : (plc, cls, ct) =>
+                    Task.FromResult(SuggestOfflineScopedRecord(_offlineCurrentDataTable, plc, ct, recordScopeClass, cls)),
+                recordExistsProvider: (plc, cls, record, ct) => Task.FromResult(
                     _offlineCurrentDataTable.Columns.Contains("PLC") && _offlineCurrentDataTable.Columns.Contains("Record") &&
-                    _offlineCurrentDataTable.AsEnumerable().Any(row =>
+                    _offlineCurrentDataTable.AsEnumerable().Any(row => row.RowState != DataRowState.Deleted &&
                         OfflineKeyEquals(Convert.ToString(row["PLC"], CultureInfo.InvariantCulture), plc) &&
+                        (recordScopeClass == null || Mode3DuplicateValues.SameScopeValue(row[recordScopeClass], cls)) &&
                         OfflineKeyEquals(Convert.ToString(row["Record"], CultureInfo.InvariantCulture), record))),
-                preferFreeScopedRecord: suggestRecord != null) { Owner = this };
+                preferFreeScopedRecord: suggestRecord != null,
+                recordScopeClassColumn: recordScopeClass) { Owner = this };
             window.ShowDialog();
             if (!window.Confirmed || window.Values is null || window.Values.Count == 0) return;
             var row = _offlineCurrentDataTable.NewRow();
@@ -922,14 +937,16 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
             return (plc, ct) => SuggestOfflineScopedRecord(table, plc, ct);
         }
 
-        internal static int SuggestOfflineScopedRecord(DataTable table, string? plc, CancellationToken ct = default)
+        internal static int SuggestOfflineScopedRecord(DataTable table, string? plc, CancellationToken ct = default,
+            string? classColumn = null, object? classValue = null)
         {
             var suggestion = new ScopedRecordSuggestion();
             ct.ThrowIfCancellationRequested();
             foreach (DataRow row in table.Rows)
             {
                 ct.ThrowIfCancellationRequested();
-                if (row.RowState != DataRowState.Deleted && OfflineKeyEquals(row["PLC"] as string, plc))
+                if (row.RowState != DataRowState.Deleted && Mode3DuplicateValues.SameScopeValue(row["PLC"], plc) &&
+                    (classColumn == null || Mode3DuplicateValues.SameScopeValue(row[classColumn], classValue)))
                     suggestion.Add(row["Record"]);
             }
             return suggestion.GetValue();
@@ -960,7 +977,7 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
             SetOfflineEditorButtons();
         }
 
-        private async void DeleteOfflineRows()
+        private async Task DeleteOfflineRowsAsync()
         {
             if (!ProjectWriteGuard.IsDataTableWritable(_offlineCurrentTableName)) return;
             if (!UserAuthorizationService.Require(Permission.Mode1Delete)) return;
@@ -1090,7 +1107,7 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
                     category: "Удаление", source: _offlineCurrentTableName!,
                     details: $"Локальный проект: {_openedLocalProject.Manifest.Name}" + (replacements.Count > 0 ? $" · замен ссылок: {replacements.Count}" : ""),
                     journalChanges: journalChanges, operationKind: replacements.Count > 0 ? ChangeJournalOperationKind.Composite : ChangeJournalOperationKind.Delete,
-                    databaseName: _openedLocalProject.Manifest.Name);
+                    databaseName: _openedLocalProject.Manifest.Name, offline: true);
                 OpenOfflineTable(_offlineCurrentTableName!);
                 SetOfflineEditorButtons();
                 StatusText.Text = "Строки удалены только из локального проекта. SQL Server не изменялся.";

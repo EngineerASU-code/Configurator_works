@@ -500,7 +500,7 @@ public partial class ProjectModeView
     {
         if (_lookupWarnings.Count == 0) return;
         var panel = new DockPanel { Margin = new Thickness(18) };
-        var close = new Button { Content = "Закрыть", IsCancel = true, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 12, 0, 0) };
+        var close = new Button { Content = "Закрыть", IsDefault = true, IsCancel = true, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 12, 0, 0) };
         DockPanel.SetDock(close, Dock.Bottom);
         panel.Children.Add(close);
         panel.Children.Add(new ScrollViewer
@@ -633,7 +633,7 @@ public partial class ProjectModeView
                 var offlineIdentity = await BuildIdentityAsync();
                 var offlineKeyColumns = offlineIdentity.Keys.ToList();
                 if (offlineKeyColumns.Count == 0) throw new InvalidOperationException("Не удалось определить ключ изменяемой записи.");
-                await RequireCrudSource().UpdateRecordAsync(_selectedClass.PrimaryStorage.TableName, offlineKeyColumns, offlineIdentity, offlineValues);
+                await UpdateAndJournalAsync(_selectedClass.PrimaryStorage.TableName, offlineKeyColumns, offlineIdentity, offlineValues, _selectedRow, $"Изменён объект «{PickName(_selectedRow, _selectedClass)}»");
                 foreach (var pair in offlineValues)
                     if (_objects.Columns.Contains(pair.Key)) _selectedRow[pair.Key] = pair.Value ?? DBNull.Value;
                 await RenderLookupObjectDetailsAsyncTask();
@@ -660,7 +660,7 @@ public partial class ProjectModeView
             var identity = await BuildIdentityAsync();
             var keyColumns = identity.Keys.ToList();
             if (keyColumns.Count == 0) throw new InvalidOperationException("Не удалось определить ключ изменяемой записи.");
-            await RequireCrudSource().UpdateRecordAsync(_selectedClass.PrimaryStorage.TableName, keyColumns, identity, values);
+            await UpdateAndJournalAsync(_selectedClass.PrimaryStorage.TableName, keyColumns, identity, values, _selectedRow, $"Изменён объект «{PickName(_selectedRow, _selectedClass)}»");
             foreach (var pair in values)
                 if (_objects.Columns.Contains(pair.Key)) _selectedRow[pair.Key] = pair.Value ?? DBNull.Value;
             await RenderLookupObjectDetailsAsyncTask();

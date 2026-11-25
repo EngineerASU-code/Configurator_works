@@ -22,7 +22,7 @@ public partial class CompareWriteWindow : Window
                 current = previous?.ToString() ?? "NULL";
             var column = preview.TargetSchema!.Columns.First(item => item.Name == name);
             _fields.Add(new FieldEdit(name, current, Convert.ToString(value, CultureInfo.InvariantCulture) ?? "",
-                value is null, preview.ExpectedRecord is null, column.IsNullable));
+                value is null, preview.ExpectedRecord is null && !name.Equals("Record", StringComparison.OrdinalIgnoreCase), column.IsNullable));
         }
         Fields.ItemsSource = _fields;
     }

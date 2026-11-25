@@ -14,7 +14,7 @@
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="10"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
             <Button Grid.Column="0" Content="＋ Подключить новую" Style="{StaticResource BtnSecondary}" Click="ConnectNew_Click" HorizontalAlignment="Left"/>
             <Button Grid.Column="1" Content="Отмена" Style="{StaticResource BtnSecondary}" Width="100" Click="Cancel_Click"/>
-            <Button Grid.Column="3" Content="Выбрать" Style="{StaticResource BtnPrimary}" Width="110" Click="Select_Click"/>
+            <Button IsDefault="True" Grid.Column="3" Content="Выбрать" Style="{StaticResource BtnPrimary}" Width="110" Click="Select_Click"/>
         </Grid>
     </Grid>
 </Window>

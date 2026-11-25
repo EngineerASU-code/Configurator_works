@@ -52,7 +52,7 @@
                 </DataTemplate>
             </ListBox.ItemTemplate>
         </ListBox>
-        <Button Content="Закрыть" IsCancel="True" HorizontalAlignment="Right" Margin="0,12,0,0"
+        <Button IsDefault="True" Content="Закрыть" IsCancel="True" HorizontalAlignment="Right" Margin="0,12,0,0"
                 Padding="18,6" Style="{StaticResource BtnSecondary}"/>
     </StackPanel>
 </Window>

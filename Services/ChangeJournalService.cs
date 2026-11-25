@@ -97,6 +97,9 @@ public sealed class ChangeJournalRowChange
     public Dictionary<string, ChangeJournalValue> After { get; init; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, ChangeJournalValue> IdentityBefore { get; init; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, ChangeJournalValue> IdentityAfter { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>True when After contains the complete persisted Offline row, including its exact property set.</summary>
+    public bool AfterIsCompleteOfflineRecord { get; init; }
+    public string CaptureWarning { get; init; } = "";
     [Newtonsoft.Json.JsonIgnore]
     public string KindDisplay => Kind switch
     {
@@ -117,11 +120,21 @@ public sealed class ChangeJournalRowChange
     public string AfterText => Format(ChangedAfter);
     [Newtonsoft.Json.JsonIgnore]
     public string ChangeSummary => Kind == ChangeJournalOperationKind.Update
-        ? string.Join(", ", ChangedBefore.Keys.Select(k => $"{k}: {ValueText(Before, k)} → {ValueText(After, k)}"))
-        : Kind == ChangeJournalOperationKind.Delete ? "Удалена запись"
+        ? string.Join(", ", ChangedBefore.Keys.Union(ChangedAfter.Keys, StringComparer.OrdinalIgnoreCase).Select(k => $"{k}: {ValueText(Before, k)} → {ValueText(After, k)}"))
+        : Kind == ChangeJournalOperationKind.Delete ? FormatIdentity(IdentityBefore)
         : Kind == ChangeJournalOperationKind.Duplicate ? $"Источник: {FormatIdentity(IdentityBefore)} → новый объект: {FormatIdentity(IdentityAfter)}"
-        : Kind == ChangeJournalOperationKind.Insert ? "Добавлена запись" : KindDisplay;
-    private static string ValueText(Dictionary<string, ChangeJournalValue> values, string key) => values.TryGetValue(key, out var v) ? (v?.ToObject()?.ToString() ?? "NULL") : "NULL";
+        : Kind == ChangeJournalOperationKind.Insert ? FormatIdentity(IdentityAfter) : KindDisplay;
+    private static string ValueText(Dictionary<string, ChangeJournalValue> values, string key)
+    {
+        if (!values.TryGetValue(key, out var value)) return "—";
+        return value?.ToObject() switch
+        {
+            null or DBNull => "NULL",
+            string text when text.Length == 0 => "«»",
+            byte[] bytes => Convert.ToHexString(bytes),
+            var item => Convert.ToString(item, System.Globalization.CultureInfo.CurrentCulture)
+        };
+    }
     private static Dictionary<string, ChangeJournalValue> FilterChanged(Dictionary<string, ChangeJournalValue> source, Dictionary<string, ChangeJournalValue> other)
     {
         source ??= new Dictionary<string, ChangeJournalValue>(StringComparer.OrdinalIgnoreCase);
@@ -134,12 +147,13 @@ public sealed class ChangeJournalRowChange
         var av = a?.ToObject(); var bv = b?.ToObject();
         if (av == null || av == DBNull.Value) return bv == null || bv == DBNull.Value;
         if (bv == null || bv == DBNull.Value) return false;
+        if (av is byte[] left && bv is byte[] right) return left.AsSpan().SequenceEqual(right);
         return string.Equals(Convert.ToString(av, System.Globalization.CultureInfo.InvariantCulture), Convert.ToString(bv, System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal);
     }
     private static string Format(Dictionary<string, ChangeJournalValue> values)
-        => values == null || values.Count == 0 ? "—" : string.Join(", ", values.Select(x => $"{x.Key}={x.Value?.ToObject() ?? "NULL"}"));
+        => values == null || values.Count == 0 ? "—" : string.Join(", ", values.Keys.Select(key => $"{key}={ValueText(values, key)}"));
     private static string FormatIdentity(Dictionary<string, ChangeJournalValue> values)
-        => values == null || values.Count == 0 ? "не определён" : string.Join(", ", values.Select(x => $"{x.Key}={x.Value?.ToObject() ?? "NULL"}"));
+        => values == null || values.Count == 0 ? "не определён" : string.Join(", ", values.Keys.Select(key => $"{key}={ValueText(values, key)}"));
 }
 
 public sealed class ChangeJournalEntry
@@ -177,16 +191,65 @@ public sealed class ChangeJournalEntry
         ChangeJournalOperationKind.Duplicate => "Дублирование",
         ChangeJournalOperationKind.Composite => "Составная операция",
         ChangeJournalOperationKind.LogicalRelation => "Логическая связь",
+        ChangeJournalOperationKind.ObjectChange => "Изменение объекта",
+        ChangeJournalOperationKind.StructureChange => "Изменение структуры",
+        ChangeJournalOperationKind.ConfigurationChange => "Изменение конфигурации",
         _ => OperationKind.ToString()
     };
+    [Newtonsoft.Json.JsonIgnore]
+    public string DisplayDescription
+    {
+        get
+        {
+            var description = (Description ?? "").Trim();
+            var changes = Changes ?? new List<ChangeJournalRowChange>();
+            var meaningful = !string.IsNullOrWhiteSpace(description) &&
+                !string.Equals(description, Category, StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(description, "Действие", StringComparison.OrdinalIgnoreCase);
+            if (!meaningful)
+                description = OperationKindDisplay;
+
+            if (changes.Count == 0) return description;
+
+            var parts = new List<string>();
+            var tables = changes.Select(change => change?.TableName?.Trim())
+                .Where(table => !string.IsNullOrWhiteSpace(table))
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            var missingTables = tables.Where(table => description.IndexOf(table, StringComparison.OrdinalIgnoreCase) < 0).ToList();
+            if (missingTables.Count > 0)
+                parts.Add(string.Join(", ", missingTables.Take(2)) + (missingTables.Count > 2 ? $" и ещё {missingTables.Count - 2}" : ""));
+            if (changes.Count > 1 && !description.Contains("запис", StringComparison.OrdinalIgnoreCase) && !description.Contains("строк", StringComparison.OrdinalIgnoreCase))
+                parts.Add($"{changes.Count} {PluralizeRecords(changes.Count)}");
+            else if (changes.Count == 1 && !description.Contains("запис", StringComparison.OrdinalIgnoreCase) && !description.Contains("строк", StringComparison.OrdinalIgnoreCase))
+                parts.Add("1 запись");
+
+            return parts.Count == 0 ? description : description + " · " + string.Join(" · ", parts);
+        }
+    }
+    private static string PluralizeRecords(int count)
+    {
+        var lastTwo = count % 100;
+        if (lastTwo is >= 11 and <= 14) return "записей";
+        return (count % 10) switch { 1 => "запись", >= 2 and <= 4 => "записи", _ => "записей" };
+    }
+    [Newtonsoft.Json.JsonIgnore]
+    public bool IsRestored => RestoredUtc.HasValue;
+    [Newtonsoft.Json.JsonIgnore]
+    public string RestorationStatus => RestoredUtc is DateTime restored
+        ? $"Отменено {restored.ToLocalTime():dd.MM.yyyy HH:mm:ss}" + (string.IsNullOrWhiteSpace(RestoredBy) ? "" : $" · {RestoredBy}")
+        : "";
     [Newtonsoft.Json.JsonIgnore]
     public bool CanRestore
     {
         get
         {
             if (!RestoreIncludesAllChanges || RestoredUtc.HasValue || !string.Equals(Result, "Успешно", StringComparison.OrdinalIgnoreCase)) return false;
+            if (RestoreKind == Infrastructure.Database.SavedSqlQueryStore.JournalKind)
+                return Infrastructure.Database.SavedSqlQueryStore.ReadRevision(this) != null;
+            if (RestoreKind == Infrastructure.Projects.CompareProjectSettingsRestore.RestoreKind)
+                return Infrastructure.Projects.CompareProjectSettingsRestore.CanRestore(this);
             if ((Changes?.Count ?? 0) > 0)
-                return Changes.All(change => change != null && ProjectWriteGuard.IsDataTableWritable(change.TableName) && (change.Kind switch
+                return Changes.All(change => change != null && string.IsNullOrEmpty(change.CaptureWarning) && ProjectWriteGuard.IsDataTableWritable(change.TableName) && (change.Kind switch
                 {
                     ChangeJournalOperationKind.Insert or ChangeJournalOperationKind.Duplicate => change.After.Count > 0 && change.IdentityAfter.Count > 0,
                     ChangeJournalOperationKind.Update => change.Before.Count > 0 && change.After.Count > 0 && (change.IdentityAfter.Count > 0 || change.IdentityBefore.Count > 0),
@@ -197,13 +260,15 @@ public sealed class ChangeJournalEntry
         }
     }
     public List<ChangeJournalRowChange> Changes { get; init; } = new();
+    [Newtonsoft.Json.JsonIgnore]
+    public DateTime LocalTime => TimestampUtc.ToLocalTime();
 }
 
 /// <summary>
 /// Persistent change journal. Files are intentionally kept outside the database so
 /// the journal can be archived/cleaned independently from engineering data.
 /// </summary>
-public sealed class ChangeJournalService
+public sealed partial class ChangeJournalService
 {
     private readonly string _baseDirectory;
     private string _rootDirectory;
@@ -388,9 +453,7 @@ public sealed class ChangeJournalService
                 }
             }
             if (!Directory.Exists(_rootDirectory)) return Array.Empty<ChangeJournalEntry>();
-            var files = Directory.EnumerateFiles(_rootDirectory, "*.json", SearchOption.TopDirectoryOnly)
-                .OrderByDescending(File.GetLastWriteTimeUtc)
-                .Take(Math.Max(1, maxCount));
+            var files = Directory.EnumerateFiles(_rootDirectory, "*.json", SearchOption.TopDirectoryOnly);
             var result = new List<ChangeJournalEntry>();
             foreach (var file in files)
             {
@@ -404,7 +467,8 @@ public sealed class ChangeJournalService
                     System.Diagnostics.Debug.WriteLine($"[ChangeJournal] read failed '{file}': {ex.Message}");
                 }
             }
-            return result;
+            return result.OrderByDescending(entry => entry.TimestampUtc)
+                .Take(Math.Max(1, maxCount)).ToList();
         }
         catch (Exception ex)
         {
@@ -412,6 +476,10 @@ public sealed class ChangeJournalService
             return Array.Empty<ChangeJournalEntry>();
         }
     }
+
+    /// <summary>Returns the newest persisted operation that has not already been undone, regardless of mode.</summary>
+    public ChangeJournalEntry LoadLatestPending()
+        => LoadRecent(int.MaxValue).FirstOrDefault(entry => !entry.RestoredUtc.HasValue);
 
     /// <summary>
     /// Deletes old journal files and optionally trims by total size. This is intentionally
@@ -449,61 +517,41 @@ public sealed class ChangeJournalService
         return deleted;
     }
 
-    /// <summary>
-    /// Restores one persisted operation. This is the first recovery layer for simple CRUD
-    /// operations. Composite dependency operations are deliberately rejected until their
-    /// complete before/after row set is recorded, preventing a partial rollback.
-    /// </summary>
     public void MarkRestored(ChangeJournalEntry entry)
     {
-        if (entry == null) return;
-        entry.RestoredUtc = DateTime.UtcNow;
-        entry.RestoredBy = UserAuthorizationService.CurrentUser?.UserName ?? Environment.UserName;
-        try
+        ArgumentNullException.ThrowIfNull(entry);
+        lock (_sync)
         {
-            lock (_sync)
+            entry.RestoredUtc = DateTime.UtcNow;
+            entry.RestoredBy = UserAuthorizationService.CurrentUser?.UserName ?? Environment.UserName;
+            var json = JsonConvert.SerializeObject(entry, Formatting.Indented);
+            if (_offlineProject != null)
             {
-                if (_offlineProject != null)
-                {
-                    var journal = GetOfflineJournal(_offlineProject, false);
-                    var node = journal.FirstOrDefault(item => string.Equals(item?["OperationId"]?.ToString(), entry.OperationId, StringComparison.Ordinal));
-                    if (node != null)
-                    {
-                        var index = journal.IndexOf(node);
-                        journal[index] = JsonNode.Parse(JsonConvert.SerializeObject(entry));
-                        _offlineChanged?.Invoke();
-                        Changed?.Invoke(this, EventArgs.Empty);
-                    }
-                    return;
-                }
+                var journal = GetOfflineJournal(_offlineProject, false);
+                var node = journal.FirstOrDefault(item => string.Equals(item?["OperationId"]?.ToString(), entry.OperationId, StringComparison.Ordinal));
+                if (node == null) throw new InvalidOperationException("Исходная операция отсутствует в журнале проекта.");
+                journal[journal.IndexOf(node)] = JsonNode.Parse(json);
+                _offlineChanged?.Invoke();
             }
-            var files = Directory.EnumerateFiles(_rootDirectory, "*.json", SearchOption.TopDirectoryOnly);
-            foreach (var file in files)
+            else
             {
+                var file = Directory.EnumerateFiles(_rootDirectory, "*.json")
+                    .SingleOrDefault(path => Path.GetFileNameWithoutExtension(path).EndsWith("_" + entry.OperationId, StringComparison.Ordinal));
+                if (file == null) throw new InvalidOperationException("Изменения БД отменены, но исходная запись журнала не найдена.");
                 try
                 {
-                    var loaded = JsonConvert.DeserializeObject<ChangeJournalEntry>(File.ReadAllText(file));
-                    if (loaded?.OperationId != entry.OperationId) continue;
-                    var json = JsonConvert.SerializeObject(entry, Formatting.Indented);
-                    var temp = file + ".tmp";
-                    lock (_sync) { File.WriteAllText(temp, json); File.Move(temp, file, true); }
-                    Changed?.Invoke(this, EventArgs.Empty);
-                    break;
+                    File.WriteAllText(file + ".tmp", json);
+                    File.Move(file + ".tmp", file, true);
                 }
-                catch { }
+                catch (IOException ex)
+                {
+                    throw new IOException("Изменения БД отменены, но сохранить отметку об отмене в журнале не удалось.", ex);
+                }
             }
         }
-        catch (Exception ex)
-        {
-            System.Diagnostics.Debug.WriteLine($"[ChangeJournal] mark restored failed: {ex.Message}");
-        }
+        Changed?.Invoke(this, EventArgs.Empty);
     }
 
-    /// <summary>
-    /// Restores a journal entry directly in the bound local project. This path never creates
-    /// a SQL connection. Mutations are applied to a working copy and committed only when all
-    /// changes pass conflict checks.
-    /// </summary>
     public void RestoreOffline(ChangeJournalEntry entry, ConfiguratorProject project, Action changed)
     {
         if (entry == null) throw new ArgumentNullException(nameof(entry));
@@ -512,15 +560,22 @@ public sealed class ChangeJournalService
             throw new InvalidOperationException("Запись журнала не относится к Offline-проекту.");
         if (string.IsNullOrWhiteSpace(entry.ProjectId) || !string.Equals(entry.ProjectId, project.Manifest?.ProjectId, StringComparison.Ordinal))
             throw new InvalidOperationException("Запись принадлежит другому Offline-проекту. Восстановление отменено.");
-        if (entry.RestoredUtc.HasValue) throw new InvalidOperationException("Эта операция уже восстановлена.");
+        if (!entry.CanRestore) throw new InvalidOperationException("Для операции нет полного снимка для безопасной отмены.");
         if (entry.Changes == null || entry.Changes.Count == 0)
             throw new InvalidOperationException("В записи отсутствуют данные, достаточные для локального восстановления.");
 
         lock (_sync)
         {
             var working = project.LocalRecords.Select(CloneRecord).ToList();
-            foreach (var change in entry.Changes.AsEnumerable().Reverse())
-                RestoreOfflineChange(working, project.TableSchemas, change);
+            if (entry.RestoreKind == ChangeJournalRestoreKind.ProgramStepMove)
+                RestoreOfflineProgramStepMove(entry, working, project.TableSchemas);
+            else
+            {
+                var staged = new ConfiguratorProject { Manifest = project.Manifest, TableSchemas = project.TableSchemas,
+                    Architecture = project.Architecture, LocalRecords = working };
+                foreach (var change in entry.Changes.AsEnumerable().Reverse())
+                    RestoreOfflineChange(staged, change);
+            }
             project.LocalRecords = working;
             changed?.Invoke();
         }
@@ -536,10 +591,10 @@ public sealed class ChangeJournalService
         };
 
     private static void RestoreOfflineChange(
-        List<Configurator.Core.Projects.ProjectRecord> records,
-        List<Configurator.Core.Projects.ProjectTableSchema> schemas,
-        ChangeJournalRowChange change)
+        ConfiguratorProject project, ChangeJournalRowChange change)
     {
+        var records = project.LocalRecords;
+        var schemas = project.TableSchemas;
         if (string.IsNullOrWhiteSpace(change.TableName))
             throw new InvalidOperationException("В записи отсутствует таблица изменённой сущности.");
         var table = ResolveOfflineTable(records, schemas, change.TableName);
@@ -561,6 +616,13 @@ public sealed class ChangeJournalService
                         ? $"Созданная запись в {table} не найдена. Возможно, она уже изменена или удалена."
                         : $"В {table} найдено несколько подходящих записей; безопасное восстановление невозможно.");
                 EnsureOfflineValuesMatch(matches[0], after, table, "Созданная запись изменилась после исходной операции");
+                if (change.AfterIsCompleteOfflineRecord &&
+                    !matches[0].Values.Select(pair => pair.Key).ToHashSet(StringComparer.OrdinalIgnoreCase)
+                        .SetEquals(after.Keys))
+                    throw new InvalidOperationException($"Набор полей созданной записи в {table} изменился после операции. Восстановление отменено.");
+                var target = matches[0].Values.ToDictionary(pair => pair.Key, pair => (object?)pair.Value,
+                    StringComparer.OrdinalIgnoreCase);
+                OfflineObjectDeletionGuard.Check(new OfflineProjectDataSource(project), table, new[] { target });
                 records.Remove(matches[0]);
                 break;
             }
@@ -595,16 +657,23 @@ public sealed class ChangeJournalService
                         : $"В {table} найдено несколько подходящих записей. Восстановление отменено.");
                 var row = matches[0];
                 var changedFields = change.ChangedAfter.Keys.ToList();
-                if (changedFields.Count == 0) changedFields = before.Keys.Intersect(after.Keys, StringComparer.OrdinalIgnoreCase).ToList();
+                if (change.AfterIsCompleteOfflineRecord)
+                    changedFields = changedFields.Union(change.ChangedBefore.Keys, StringComparer.OrdinalIgnoreCase).ToList();
                 foreach (var field in changedFields)
                 {
                     var expected = after.TryGetValue(field, out var value) ? value : null;
                     var actual = row.Values[field]?.ToString();
-                    if (!OfflineValueEquals(actual, expected))
+                    if ((change.AfterIsCompleteOfflineRecord && row.Values.ContainsKey(field) != after.ContainsKey(field)) ||
+                        !OfflineValueEquals(actual, expected))
                         throw new InvalidOperationException($"Конфликт восстановления: поле «{field}» записи {table} изменилось после исходной операции.");
                 }
                 foreach (var field in changedFields)
                 {
+                    if (change.AfterIsCompleteOfflineRecord && !before.ContainsKey(field))
+                    {
+                        row.Values.Remove(field);
+                        continue;
+                    }
                     if (!before.TryGetValue(field, out var oldValue))
                         throw new InvalidOperationException($"В журнале нет прежнего значения поля «{field}».");
                     row.Values[field] = oldValue == null || oldValue == DBNull.Value
@@ -673,8 +742,9 @@ public sealed class ChangeJournalService
     private static bool OfflineValueEquals(string actual, object expected)
     {
         var expectedText = expected == null || expected == DBNull.Value ? null : Convert.ToString(expected, System.Globalization.CultureInfo.InvariantCulture);
-        if (string.IsNullOrEmpty(actual)) actual = null;
-        if (string.IsNullOrEmpty(expectedText)) expectedText = null;
+        if (actual == null || expectedText == null) return actual == null && expectedText == null;
+        if (expected is bool expectedBoolean && bool.TryParse(actual, out var actualBoolean))
+            return actualBoolean == expectedBoolean;
         return string.Equals(actual, expectedText, StringComparison.Ordinal);
     }
 
@@ -689,6 +759,17 @@ public sealed class ChangeJournalService
     public async Task RestoreAsync(ChangeJournalEntry entry, string connectionString, CancellationToken ct = default)
     {
         if (entry == null) throw new ArgumentNullException(nameof(entry));
+        if (!entry.CanRestore) throw new InvalidOperationException("Для операции нет полного снимка для безопасной отмены.");
+        if (entry.RestoreKind == Infrastructure.Database.SavedSqlQueryStore.JournalKind)
+        {
+            await new Infrastructure.Database.SavedSqlQueryStore(connectionString, entry.Database).RestoreAsync(entry, ct);
+            return;
+        }
+        if (entry.RestoreKind == ChangeJournalRestoreKind.ProgramStepMove)
+        {
+            await RestoreProgramStepMoveAsync(entry, connectionString, ct);
+            return;
+        }
         if (entry.Changes.Count == 0) throw new InvalidOperationException("В журнале нет данных для восстановления.");
         foreach (var change in entry.Changes) ProjectWriteGuard.EnsureDataTableWritable(change.TableName);
         var schema = await new DatabaseArchitectureAnalyzer(connectionString).AnalyzeAsync(ct);
@@ -798,6 +879,7 @@ public sealed class ChangeJournalService
     {
         if (a == null || a == DBNull.Value) return b == null || b == DBNull.Value;
         if (b == null || b == DBNull.Value) return false;
+        if (a is byte[] left && b is byte[] right) return left.AsSpan().SequenceEqual(right);
         return string.Equals(Convert.ToString(a, System.Globalization.CultureInfo.InvariantCulture), Convert.ToString(b, System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal);
     }
 
@@ -807,7 +889,7 @@ public sealed class ChangeJournalService
         var schema = parts.Length == 2 ? parts[0] : "dbo";
         var name = parts.Length == 2 ? parts[1] : parts[0];
         await using var cmd = new SqlCommand(@"SELECT CASE WHEN OBJECT_ID(QUOTENAME(@schema) + '.' + QUOTENAME(@table)) IS NULL THEN 0
-            WHEN EXISTS (SELECT 1 FROM sys.columns c WHERE c.object_id = OBJECT_ID(QUOTENAME(@schema) + '.' + QUOTENAME(@table)) AND c.name = @column AND c.is_computed = 1) THEN 1 ELSE 0 END", c, t);
+            WHEN EXISTS (SELECT 1 FROM sys.columns c WHERE c.object_id = OBJECT_ID(QUOTENAME(@schema) + '.' + QUOTENAME(@table)) AND c.name = @column AND (c.is_computed = 1 OR c.system_type_id = 189 OR c.generated_always_type <> 0)) THEN 1 ELSE 0 END", c, t);
         cmd.Parameters.AddWithValue("@schema", schema);
         cmd.Parameters.AddWithValue("@table", name);
         cmd.Parameters.AddWithValue("@column", column);

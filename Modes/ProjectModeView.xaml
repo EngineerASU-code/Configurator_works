@@ -16,8 +16,6 @@
                     <TextBlock x:Name="ActionFeedbackText" Grid.Column="2" Text="Выберите действие" Foreground="{DynamicResource BrushTextSecondary}" FontSize="11" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
                 </Grid>
                 <WrapPanel Grid.Column="1" VerticalAlignment="Center" HorizontalAlignment="Right">
-                    <Button x:Name="ConfigurationPanelButton" Content="К" Width="34" Height="34" Margin="2,0,4,0" Padding="0" FontSize="14" Style="{StaticResource NavigationPanelButtonStyle}" Click="NavigationPanel_Click" ToolTip="Свернуть конфигурацию" AutomationProperties.Name="Свернуть конфигурацию"/>
-                    <Button x:Name="ElementsPanelButton" Content="Э" Width="34" Height="34" Margin="2,0,4,0" Padding="0" FontSize="14" Style="{StaticResource NavigationPanelButtonStyle}" Click="NavigationPanel_Click" ToolTip="Свернуть элементы" AutomationProperties.Name="Свернуть элементы"/>
                     <Button x:Name="BtnObjectSearch" Content="⌕" Width="34" Height="34" Margin="2,0,4,0" Padding="0" FontSize="18" Style="{StaticResource BtnSecondary}" Click="ObjectSearch_Click" ToolTip="Открыть окно поиска" IsEnabled="False"/>
                     <Button x:Name="BtnObjectFilter" Width="34" Height="34" Margin="4,0,8,0" Padding="0" Style="{StaticResource BtnSecondary}" Click="ObjectFilterWindow_Click" ToolTip="Фильтр по PLC и Area" IsEnabled="False">
                         <Grid Width="18" Height="18">
@@ -26,11 +24,9 @@
                         </Grid>
                     </Button>
                     <Border Width="1" Height="24" Background="{DynamicResource BrushBorder}" Margin="4,0,8,0" VerticalAlignment="Center"/>
-                    <Button x:Name="BtnNewObject" Content="＋  Добавить" IsEnabled="False" Width="120" Height="34" FontSize="12" Margin="2,0,4,0" Padding="12,0" Style="{StaticResource BtnPrimary}" Click="NewObject_Click" ToolTip="Добавить новый объект или значение конфигурации"/>
-                    <Button x:Name="BtnNewObjectsBatch" IsEnabled="False" Content="＋  Несколько" Width="120" Height="34" FontSize="12" Margin="4,0,4,0" Padding="12,0" Style="{StaticResource BtnPrimary}" Click="NewObjectsBatch_Click" ToolTip="Создать несколько объектов, указав только имена"/>
-                    <Button x:Name="BtnConfigDelete" IsEnabled="False" Content="Удалить" Width="120" Height="34" FontSize="12" Margin="4,0,4,0" Padding="12,0" Style="{StaticResource BtnSecondary}" Click="DeleteConfigurationValue_Click"/>
-                    <Button x:Name="BtnDuplicate" IsEnabled="False" Content="Дублировать" Style="{StaticResource BtnSecondary}" Width="120" Height="34" FontSize="12" Margin="4,0,4,0" Padding="12,0" Click="DuplicateObject_Click"/>
-                    <Button x:Name="BtnDelete" IsEnabled="False" Content="Удалить" Style="{StaticResource BtnSecondary}" Width="120" Height="34" FontSize="12" Margin="4,0,4,0" Padding="12,0" Click="DeleteObject_Click"/>
+                    <Button x:Name="BtnNewObject" Visibility="Collapsed" Content="＋  Добавить" IsEnabled="False" Width="120" Height="34" FontSize="12" Margin="2,0,4,0" Padding="12,0" Style="{StaticResource BtnPrimary}" Click="NewObject_Click" ToolTip="Добавить новый объект или значение конфигурации"/>
+                    <Button x:Name="BtnConfigDelete" IsEnabled="False" Content="Удалить" Width="120" Height="34" FontSize="12" Margin="4,0,4,0" Padding="12,0" Style="{StaticResource BtnSecondary}" Click="DeleteSelection_Click"/>
+                    <Button x:Name="BtnDelete" IsEnabled="False" Content="Удалить" Style="{StaticResource BtnSecondary}" Width="120" Height="34" FontSize="12" Margin="4,0,4,0" Padding="12,0" Click="DeleteSelection_Click"/>
                     <Button x:Name="BtnSave" IsEnabled="False" Content="Сохранить" Style="{StaticResource BtnSaveObject}" Width="120" Height="34" FontSize="12" Margin="4,0,2,0" Padding="12,0" Click="SaveObject_Click"/>
                 </WrapPanel>
             </Grid>
@@ -42,9 +38,12 @@
                     <ColumnDefinition Width="*" MinWidth="520"/>
                 </Grid.ColumnDefinitions>
 
+                <Button x:Name="ConfigurationRestore" Grid.Column="0" Content="›" VerticalAlignment="Top" Height="32" Visibility="Collapsed" ToolTip="Развернуть: Конфигурация" AutomationProperties.Name="Развернуть: Конфигурация" Click="NavigationPanel_Click"/>
                 <Border x:Name="ConfigurationPanel" Grid.Column="0" Background="{DynamicResource BrushPanel}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="12" Padding="10">
                     <DockPanel>
-                        <TextBlock DockPanel.Dock="Top" Text="Конфигурация" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource BrushText}" Margin="2,2,2,8"/>
+                        <Button x:Name="ConfigurationHeader" DockPanel.Dock="Top" HorizontalContentAlignment="Stretch" Background="Transparent" BorderThickness="0" Padding="0" ToolTip="Свернуть конфигурацию" Click="NavigationPanel_Click">
+                            <TextBlock Text="Конфигурация" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource BrushText}" Margin="2,2,2,8"/>
+                        </Button>
                         <ListBox x:Name="ConfigurationList" BorderThickness="0" Background="Transparent" Padding="1" SelectionChanged="ConfigurationList_SelectionChanged" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                             <ListBox.ItemContainerStyle>
                                 <Style TargetType="ListBoxItem">
@@ -87,15 +86,16 @@
                     </DockPanel>
                 </Border>
 
+                <Button x:Name="ElementsRestore" Grid.Column="2" Content="›" VerticalAlignment="Top" Height="32" Visibility="Collapsed" ToolTip="Развернуть: Элементы" AutomationProperties.Name="Развернуть: Элементы" Click="NavigationPanel_Click"/>
                 <Grid x:Name="ElementsPanel" Grid.Column="2">
                 <Border x:Name="ObjectListPanel" Background="{DynamicResource BrushPanel}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="12" Padding="10">
                     <DockPanel>
-                        <StackPanel DockPanel.Dock="Top" Margin="2,2,2,8">
+                        <Button x:Name="ElementsHeader" HorizontalContentAlignment="Stretch" Background="Transparent" BorderThickness="0" Padding="0" ToolTip="Свернуть элементы" Click="NavigationPanel_Click" DockPanel.Dock="Top" Margin="2,2,2,8">
                             <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                 <TextBlock x:Name="TxtClassTitle" Text="Объекты" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource BrushText}"/>
                                 <TextBlock x:Name="TxtObjectCount" Grid.Column="1" Text="" FontSize="10" Foreground="{DynamicResource BrushTextSecondary}" VerticalAlignment="Center" Margin="8,0"/>
                             </Grid>
-                        </StackPanel>
+                        </Button>
                         <ListBox x:Name="ObjectList" SelectionMode="Extended" BorderThickness="0" Background="Transparent" Padding="1" SelectionChanged="ObjectList_SelectionChanged" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                             <ListBox.ItemContainerStyle><Style TargetType="ListBoxItem"><Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="Padding" Value="0"/><Setter Property="Margin" Value="0,2"/></Style></ListBox.ItemContainerStyle>
                             <ListBox.ItemTemplate><DataTemplate>
