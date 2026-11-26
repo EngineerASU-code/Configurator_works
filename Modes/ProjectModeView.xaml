@@ -23,11 +23,7 @@
                             <Ellipse x:Name="FilterActiveBadge" Width="10" Height="10" Stroke="White" StrokeThickness="1" HorizontalAlignment="Right" VerticalAlignment="Top" Fill="{DynamicResource BrushAccent}" Visibility="Collapsed"/>
                         </Grid>
                     </Button>
-                    <Border Width="1" Height="24" Background="{DynamicResource BrushBorder}" Margin="4,0,8,0" VerticalAlignment="Center"/>
                     <Button x:Name="BtnNewObject" Visibility="Collapsed" Content="＋  Добавить" IsEnabled="False" Width="120" Height="34" FontSize="12" Margin="2,0,4,0" Padding="12,0" Style="{StaticResource BtnPrimary}" Click="NewObject_Click" ToolTip="Добавить новый объект или значение конфигурации"/>
-                    <Button x:Name="BtnConfigDelete" IsEnabled="False" Content="Удалить" Width="120" Height="34" FontSize="12" Margin="4,0,4,0" Padding="12,0" Style="{StaticResource BtnSecondary}" Click="DeleteSelection_Click"/>
-                    <Button x:Name="BtnDelete" IsEnabled="False" Content="Удалить" Style="{StaticResource BtnSecondary}" Width="120" Height="34" FontSize="12" Margin="4,0,4,0" Padding="12,0" Click="DeleteSelection_Click"/>
-                    <Button x:Name="BtnSave" IsEnabled="False" Content="Сохранить" Style="{StaticResource BtnSaveObject}" Width="120" Height="34" FontSize="12" Margin="4,0,2,0" Padding="12,0" Click="SaveObject_Click"/>
                 </WrapPanel>
             </Grid>
         </Border>
@@ -38,7 +34,22 @@
                     <ColumnDefinition Width="*" MinWidth="520"/>
                 </Grid.ColumnDefinitions>
 
-                <Button x:Name="ConfigurationRestore" Grid.Column="0" Content="›" VerticalAlignment="Top" Height="32" Visibility="Collapsed" ToolTip="Развернуть: Конфигурация" AutomationProperties.Name="Развернуть: Конфигурация" Click="NavigationPanel_Click"/>
+                <StackPanel x:Name="RestoreTabs" VerticalAlignment="Top">
+                <Button x:Name="ConfigurationRestore" Margin="0,0,0,4" Grid.Column="0" VerticalAlignment="Top" Padding="4,10" MinWidth="0"
+                        Visibility="Collapsed" Style="{StaticResource BtnSecondary}" ToolTip="Развернуть: Конфигурация"
+                        AutomationProperties.Name="Развернуть: Конфигурация" Click="NavigationPanel_Click">
+                    <TextBlock Text="Конфигурация" FontWeight="SemiBold">
+                        <TextBlock.LayoutTransform><RotateTransform Angle="-90"/></TextBlock.LayoutTransform>
+                    </TextBlock>
+                </Button>
+                <Button x:Name="ElementsRestore" VerticalAlignment="Top" Padding="4,10" MinWidth="0"
+                        Visibility="Collapsed" Style="{StaticResource BtnSecondary}" ToolTip="Развернуть: Объекты"
+                        AutomationProperties.Name="Развернуть: Объекты" Click="NavigationPanel_Click">
+                    <TextBlock Text="Объекты" FontWeight="SemiBold">
+                        <TextBlock.LayoutTransform><RotateTransform Angle="-90"/></TextBlock.LayoutTransform>
+                    </TextBlock>
+                </Button>
+                </StackPanel>
                 <Border x:Name="ConfigurationPanel" Grid.Column="0" Background="{DynamicResource BrushPanel}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="12" Padding="10">
                     <DockPanel>
                         <Button x:Name="ConfigurationHeader" DockPanel.Dock="Top" HorizontalContentAlignment="Stretch" Background="Transparent" BorderThickness="0" Padding="0" ToolTip="Свернуть конфигурацию" Click="NavigationPanel_Click">
@@ -86,7 +97,7 @@
                     </DockPanel>
                 </Border>
 
-                <Button x:Name="ElementsRestore" Grid.Column="2" Content="›" VerticalAlignment="Top" Height="32" Visibility="Collapsed" ToolTip="Развернуть: Элементы" AutomationProperties.Name="Развернуть: Элементы" Click="NavigationPanel_Click"/>
+
                 <Grid x:Name="ElementsPanel" Grid.Column="2">
                 <Border x:Name="ObjectListPanel" Background="{DynamicResource BrushPanel}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="12" Padding="10">
                     <DockPanel>

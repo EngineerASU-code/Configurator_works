@@ -74,6 +74,7 @@ namespace Configurator
                 var quotedName = QuoteTableName(tableName);
                 var computedColumns = await GetComputedColumnsAsync(connection, tableName, ct);
                 var writableValues = values.Where(x => !computedColumns.Contains(x.Key)).ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
+                if (UsesUnifiedLanguage) UnifiedLanguage.Mirror(writableValues, (await GetTableColumnsAsync(tableName, ct)).Where(c => !c.IsReadOnly).Select(c => c.Name));
                 if (writableValues.Count == 0) throw new InvalidOperationException("Нет сохраняемых полей: все переданные столбцы вычисляемые.");
                 var columns = writableValues.Keys.ToList();
                 var columnSql = string.Join(", ", columns.Select(QuoteIdentifier));
@@ -132,6 +133,7 @@ namespace Configurator
                     var quotedName = QuoteTableName(tableName);
                     var computedColumns = await GetComputedColumnsAsync(connection, tableName, ct, transaction);
                     var writableValues = values.Where(x => !computedColumns.Contains(x.Key)).ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
+                    if (UsesUnifiedLanguage) UnifiedLanguage.Mirror(writableValues, (await GetTableColumnsAsync(tableName, ct)).Where(c => !c.IsReadOnly).Select(c => c.Name));
                     if (writableValues.Count == 0) throw new InvalidOperationException("Нет изменяемых полей: все переданные столбцы вычисляемые.");
                     var columns = writableValues.Keys.ToList();
                     var setClause = string.Join(", ", columns.Select((c, i) => $"{QuoteIdentifier(c)} = @p{i}"));
@@ -192,6 +194,11 @@ namespace Configurator
 
                 var (schemaName, bareTableName) = ParseTableName(expectedSchema.TableName);
                 var quotedName = QuoteTableName(expectedSchema.TableName);
+                if (UsesUnifiedLanguage && !delete)
+                {
+                    values = new Dictionary<string, object>(values, StringComparer.OrdinalIgnoreCase);
+                    UnifiedLanguage.Mirror(values, expectedSchema.Columns.Select(c => c.Name));
+                }
                 var changedColumns = values.Keys.ToArray();
                 foreach (string changedColumn in changedColumns)
                 {
@@ -239,12 +246,26 @@ namespace Configurator
                         }
                     }
 
-                    if (insert && keyValues.TryGetValue("Record", out var recordNumber))
+                    if (insert && keyValues.TryGetValue("Record", out var number))
                     {
-                        using var occupied = new SqlCommand($"SELECT TOP (1) 1 FROM {quotedName} WITH (UPDLOCK,HOLDLOCK) WHERE [Record]=@record", connection, transaction);
-                        occupied.Parameters.AddWithValue("@record", recordNumber);
-                        if (await occupied.ExecuteScalarAsync(ct) != null)
+                        if (actualRows.Count != 0)
                             throw new Configurator.Infrastructure.Projects.CompareRecordConflictException();
+                        if (expectedSchema.KeyColumns.Count > 1)
+                        {
+                            using var occupied = new SqlCommand($@"
+                                IF EXISTS (SELECT 1 FROM sys.indexes i
+                                    JOIN sys.index_columns k ON k.object_id=i.object_id AND k.index_id=i.index_id
+                                    WHERE i.object_id=OBJECT_ID(@table) AND i.is_unique=1 AND i.is_disabled=0
+                                      AND i.has_filter=0 AND k.key_ordinal>0
+                                    GROUP BY i.index_id
+                                    HAVING COUNT(*)=1 AND MAX(COL_NAME(i.object_id,k.column_id))='Record')
+                                SELECT TOP (1) 1 FROM {quotedName} WITH (UPDLOCK,HOLDLOCK) WHERE [Record]=@record",
+                                connection, transaction);
+                            occupied.Parameters.AddWithValue("@table", quotedName);
+                            occupied.Parameters.AddWithValue("@record", number ?? DBNull.Value);
+                            if (await occupied.ExecuteScalarAsync(ct) != null)
+                                throw new Configurator.Infrastructure.Projects.CompareRecordConflictException();
+                        }
                     }
 
                     if (insert ? actualRows.Count != 0 : actualRows.Count != 1 || !CompareRecordValues(expectedRecord!.Values, actualRows[0], columns))
@@ -451,7 +472,8 @@ WHERE s.name=@schema AND t.name=@table";
                             !TableViewModel.IsValueIdentityColumn(new ColumnInfo { DataType = column.DataType })))
                         throw new InvalidOperationException("Для безопасного обновления необходим полный сравнимый снимок строки. Обновите таблицу.");
                     var computedColumns = await GetComputedColumnsAsync(connection, tableName, ct, transaction);
-                    var writableValues = values.Where(item => !computedColumns.Contains(item.Key)).ToList();
+                    var writableValues = values.Where(item => !computedColumns.Contains(item.Key)).ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
+                    if (UsesUnifiedLanguage) UnifiedLanguage.Mirror(writableValues, (await GetTableColumnsAsync(tableName, ct)).Where(c => !c.IsReadOnly).Select(c => c.Name));
                     if (writableValues.Count == 0) throw new InvalidOperationException("Нет изменяемых полей: все переданные столбцы вычисляемые.");
                     var setParts = new List<string>();
                     var whereParts = new List<string>();

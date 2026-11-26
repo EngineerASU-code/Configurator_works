@@ -52,6 +52,16 @@ public sealed class OnlineProjectCrudDataSource : IProjectCrudDataSource, IProje
         if (records == null || records.Count == 0) return Array.Empty<IReadOnlyDictionary<string, object?>>();
         if (string.IsNullOrWhiteSpace(tableName)) throw new ArgumentException("Не задана таблица.", nameof(tableName));
         if (records.Any(r => r == null || r.Count == 0)) throw new InvalidOperationException("Пакет содержит пустую запись.");
+        if (_database.UsesUnifiedLanguage)
+        {
+            var names = (await _database.GetTableColumnsAsync(tableName, cancellationToken)).Select(c => c.Name).ToArray();
+            records = records.Select(record =>
+            {
+                var copy = record.ToDictionary(p => p.Key, p => p.Value, StringComparer.OrdinalIgnoreCase);
+                UnifiedLanguage.Mirror(copy, names);
+                return (IReadOnlyDictionary<string, object?>)copy;
+            }).ToList();
+        }
         var columns = records[0].Keys.ToList();
         var columnSet = columns.ToHashSet(StringComparer.OrdinalIgnoreCase);
         if (columns.Count == 0 || records.Any(r => r.Keys.Count() != columns.Count || !columnSet.SetEquals(r.Keys)))

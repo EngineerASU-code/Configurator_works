@@ -115,35 +115,8 @@ namespace Configurator
 
                     string displayName = $"{schema}.{tableName}";
 
-                    var tableItem = new TreeViewItem
-                    {
-                        Header = CreateTreeHeader(displayName, "ONLINE-ТАБЛИЦА", false),
-                        FontWeight = FontWeights.Normal,
-                        Padding = new Thickness(5, 4, 5, 4),
-                        Margin = new Thickness(1, 1, 1, 1),
-                        ToolTip = displayName,
-                        Tag = new TableNodeInfo
-                        {
-                            DatabaseName = dbName,
-                            Schema = schema,
-                            TableName = tableName
-                        }
-                    };
-                    tableItem.Selected += (s, e) =>
-                    {
-                        e.Handled = true;
-                        OnTableSelected(dbName, schema, tableName);
-                    };
-                    tableItem.PreviewMouseLeftButtonDown += (s, e) =>
-                    {
-                        if (s is TreeViewItem item)
-                        {
-                            item.Focus();
-                            item.IsSelected = true;
-                            e.Handled = true;
-                        }
-                    };
-                    dbItem.Items.Add(tableItem);
+                    dbItem.Items.Add(CreateTableNode(displayName, dbName, schema, tableName,
+                        () => OnTableSelected(dbName, schema, tableName)));
                 }
 
                 if (dbItem.Items.Count == 0)
@@ -226,6 +199,32 @@ namespace Configurator
             _ = LoadDataAsync();
         }
 
+
+        private static TreeViewItem CreateTableNode(string displayName, string database, string schema, string tableName, Action openTable)
+        {
+            var item = new TreeViewItem
+            {
+                Header = new TextBlock { Text = displayName, FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis },
+                FontWeight = FontWeights.Normal,
+                Padding = new Thickness(5, 4, 5, 4),
+                Margin = new Thickness(1),
+                ToolTip = displayName,
+                Tag = new TableNodeInfo { DatabaseName = database, Schema = schema, TableName = tableName }
+            };
+            item.SetResourceReference(FrameworkElement.StyleProperty, "ProjectTreeItemStyle");
+            item.Selected += (_, e) =>
+            {
+                e.Handled = true;
+                openTable();
+            };
+            item.PreviewMouseLeftButtonDown += (_, e) =>
+            {
+                item.Focus();
+                item.IsSelected = true;
+                e.Handled = true;
+            };
+            return item;
+        }
 
         private static StackPanel CreateTreeHeader(string title, string subtitle, bool bold)
         {

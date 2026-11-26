@@ -12,6 +12,13 @@ namespace Configurator.Security.Tests;
 public sealed class LookupOptionRulesTests
 {
     [Fact]
+    public void ReglerLegacyDictionaryResolvesInEitherDirection()
+    {
+        foreach (var (available, requested) in new[] { ("dbo.ReglerType", "dbo.Reglers_Types"), ("dbo.Reglers_Types", "dbo.ReglerType") })
+            Assert.Equal(available, LookupOptionRules.ResolveLegacyTable([available], "dbo.Reglers", "PID", "Type", requested, true, true));
+    }
+
+    [Fact]
     public void ResolveKeyField_PrefersConfiguredAndRecognizedIdsWithoutUsingLabelsAsKeys()
     {
         var columns = new[] { "Name", "Record", "RecordID" };

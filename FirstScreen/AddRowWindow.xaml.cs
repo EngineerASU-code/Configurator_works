@@ -22,7 +22,9 @@ namespace Configurator
         private readonly string _plcColumn;
         private CancellationTokenSource _recordCts;
         private int _recordGeneration;
-        private bool _updatingAutoRecord;
+        private readonly Func<string, string, CancellationToken, Task<Dictionary<string, List<LookupOption>>>> _freeAddressProvider;
+        private Dictionary<string, List<LookupOption>> _addresses = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, TextBlock> _hints = new(StringComparer.OrdinalIgnoreCase);
         private readonly int? _forcedClassNumber;
         private readonly string _recordScopeClassColumn;
         private readonly string _classNumberColumn;
@@ -31,11 +33,11 @@ namespace Configurator
         private readonly Func<string, string, string, CancellationToken, Task<bool>> _recordExistsProvider;
         private readonly bool _editMode;
         private readonly bool _preferFreeScopedRecord;
-        private string _suggestedRecordText;
         private CancellationTokenSource _recordCheckCts;
         private readonly Dictionary<string, ComboBox> _lookupInputs = new(StringComparer.OrdinalIgnoreCase);
 
         public Dictionary<string, object> Values { get; private set; }
+        internal Func<bool> CanApply { get; set; }
         public bool Confirmed { get; private set; } = false;
 
         public AddRowWindow(
@@ -53,7 +55,8 @@ namespace Configurator
             Func<string, string, CancellationToken, Task<int>> scopedRecordProvider = null,
             Func<string, string, string, CancellationToken, Task<bool>> recordExistsProvider = null,
             bool preferFreeScopedRecord = false,
-            string recordScopeClassColumn = null)
+            string recordScopeClassColumn = null,
+            Func<string, string, CancellationToken, Task<Dictionary<string, List<LookupOption>>>> freeAddressProvider = null)
         {
             InitializeComponent();
             _forcedClassNumber = forcedClassNumber;
@@ -63,10 +66,11 @@ namespace Configurator
             _scopedRecordProvider = scopedRecordProvider;
             _recordExistsProvider = recordExistsProvider;
             _editMode = editMode;
+            _freeAddressProvider = freeAddressProvider;
             _preferFreeScopedRecord = preferFreeScopedRecord;
             _tableName = tableName ?? "";
             WindowTitle.Text = (editMode ? "Редактирование строки — " : "Новая строка — ") + _tableName;
-            _columns = columns ?? new List<ColumnInfo>();
+            _columns = columns?.Where(c => !MainWindow.HideLanguageField(c.Name)).ToList() ?? new List<ColumnInfo>();
             _recordColumn = recordColumn ?? "";
             _autoRecordValue = nextRecordValue;
             _connectionString = connectionString;
@@ -127,7 +131,7 @@ namespace Configurator
                 groupPanel.Children.Add(header);
 
                 var fieldsGrid = new UniformGrid { Columns = 3 };
-                foreach (var col in group)
+                foreach (var col in group.OrderBy(c => InputPlaceholder.FieldOrder(c.Name)))
                 {
                     var fieldPanel = new StackPanel { Margin = new Thickness(0, 0, 12, 8) };
                     bool isKey = col.Name.Equals(_recordColumn, StringComparison.OrdinalIgnoreCase);
@@ -168,10 +172,6 @@ namespace Configurator
                         textBox.IsReadOnly = true;
                         textBox.ToolTip = "Номер класса назначается автоматически и не редактируется для системного класса.";
                     }
-                    else if (isRecord && _autoRecordValue > 0 && textBox != null)
-                    {
-                        textBox.Text = _autoRecordValue.ToString(CultureInfo.InvariantCulture);
-                    }
                     if (textBox != null)
                         textBox.ToolTip = isClassNumber
                             ? "Номер класса назначается автоматически."
@@ -181,12 +181,23 @@ namespace Configurator
                             : (col.HasDefault ? "Пусто → значение по умолчанию" : col.IsNullable ? "Пусто → NULL" : "Обязательное поле");
 
                     fieldPanel.Children.Add(label);
-                    fieldPanel.Children.Add(input);
+                    if (!_editMode && textBox != null && (isRecord || PlcAddressCatalog.IsSuggestedField(col.Name)))
+                    {
+                        var hint = new TextBlock { Text = isRecord ? "Введите Record" : "Введите адрес" };
+                        _hints[col.Name] = hint;
+                        if (isRecord && _autoRecordValue > 0)
+                            hint.Text = _autoRecordValue.ToString(CultureInfo.InvariantCulture);
+                        var editor = InputPlaceholder.Wrap(textBox, hint);
+                        fieldPanel.Children.Add(isRecord ? editor : InputPlaceholder.WithAddressList(editor, textBox,
+                            () => Task.FromResult(_addresses.GetValueOrDefault(col.Name))));
+                    }
+                    else fieldPanel.Children.Add(input);
                     if (textBox != null) _fieldInputs[col.Name] = textBox;
                     if (isRecord && textBox != null) textBox.TextChanged += (_, _) => CheckRecord();
                     if (isLookup && input is ComboBox lookupBox) lookupBox.SelectedIndex = options.FindIndex(x => x.Key == (isClassNumber ? _forcedClassNumber?.ToString(CultureInfo.InvariantCulture) : ""));
                     if (col.Name.Equals(_plcColumn, StringComparison.OrdinalIgnoreCase) ||
-                        !isClassNumber && col.Name.Equals(_recordScopeClassColumn, StringComparison.OrdinalIgnoreCase))
+                        !isClassNumber && (col.Name.Equals(_recordScopeClassColumn, StringComparison.OrdinalIgnoreCase) ||
+                        col.Name.Equals(_classNumberColumn, StringComparison.OrdinalIgnoreCase)))
                     {
                         if (textBox != null) textBox.TextChanged += (_, _) => RecordScopeChanged();
                         if (input is ComboBox scopeCombo) scopeCombo.SelectionChanged += (_, _) => RecordScopeChanged();
@@ -238,7 +249,7 @@ namespace Configurator
 
         private void RecordScopeChanged()
         {
-            if (_updatingAutoRecord || !IsLoaded) return;
+            if (_editMode || !IsLoaded) return;
             CheckRecord();
             _ = UpdateRecordFromPlcAsync(ReadInput(_plcColumn), CancellationToken.None);
         }
@@ -291,99 +302,66 @@ namespace Configurator
 
         private async Task UpdateRecordFromPlcAsync(string plcText, CancellationToken externalToken)
         {
-            if (string.IsNullOrWhiteSpace(_tableName) || string.IsNullOrWhiteSpace(_recordColumn) || string.IsNullOrWhiteSpace(_plcColumn))
-                return;
-            if (string.IsNullOrWhiteSpace(_connectionString) && _scopedRecordProvider == null)
-                return;
-
-            if (!_fieldInputs.TryGetValue(_recordColumn, out var recordBox))
-                return;
-
+            if (string.IsNullOrWhiteSpace(_plcColumn)) return;
             int generation = ++_recordGeneration;
-            var previous = _recordCts;
-            try { previous?.Cancel(); } catch (ObjectDisposedException) { }
+            _recordCts?.Cancel();
             _recordCts = CancellationTokenSource.CreateLinkedTokenSource(externalToken);
             var ct = _recordCts.Token;
-
-            if (_preferFreeScopedRecord)
-            {
-                if (recordBox.Text == _suggestedRecordText)
-                    recordBox.Clear();
-                _suggestedRecordText = null;
-                BtnConfirm.IsEnabled = true;
-                if (!string.IsNullOrWhiteSpace(recordBox.Text)) return;
-            }
+            _hints.TryGetValue(_recordColumn, out var recordHint);
+            var addressHints = _hints.Where(pair => PlcAddressCatalog.IsSuggestedField(pair.Key)).ToList();
+            _addresses.Clear();
+            bool needsPlc = string.IsNullOrWhiteSpace(plcText);
+            if (recordHint != null) recordHint.Text = needsPlc ? "Выберите PLC" : "Введите Record";
+            foreach (var hint in addressHints) hint.Value.Text = needsPlc && _freeAddressProvider != null ? "Выберите PLC" : "Введите адрес";
+            BtnConfirm.IsEnabled = true;
+            if (string.IsNullOrWhiteSpace(plcText)) return;
             string classValue = ReadRecordScopeClass();
-            if (string.IsNullOrWhiteSpace(plcText) || _recordScopeClassColumn != null && string.IsNullOrWhiteSpace(classValue))
-                return;
-
-            if (_preferFreeScopedRecord) BtnConfirm.IsEnabled = false;
+            BtnConfirm.IsEnabled = false;
             try
             {
-                var plcColumn = _columns.FirstOrDefault(c => c.Name.Equals(_plcColumn, StringComparison.OrdinalIgnoreCase));
-                if (plcColumn == null) return;
-
-                int nextRecord;
-                if (_scopedRecordProvider != null)
+                if (recordHint != null && (_recordScopeClassColumn == null || !string.IsNullOrWhiteSpace(classValue)))
                 {
-                    nextRecord = await _scopedRecordProvider(plcText.Trim(), classValue, ct);
-                }
-                else
-                {
-                    object plcValue = ConvertValue(plcText.Trim(), plcColumn);
-                    var db = new DatabaseService(_connectionString);
-                    nextRecord = _preferFreeScopedRecord
-                        ? await db.GetFreeScopedRecordValueAsync(_tableName, _recordColumn, _plcColumn, plcValue, ct, _recordScopeClassColumn, ConvertRecordScopeClass(classValue))
-                        : await db.GetNextScopedRecordValueAsync(_tableName, _recordColumn, _plcColumn, plcValue, ct);
-                }
-                if (generation != _recordGeneration || ct.IsCancellationRequested) return;
-                if (_preferFreeScopedRecord && !string.IsNullOrWhiteSpace(recordBox.Text)) return;
-
-                _updatingAutoRecord = true;
-                recordBox.Text = nextRecord.ToString(CultureInfo.InvariantCulture);
-                _suggestedRecordText = recordBox.Text;
-                _updatingAutoRecord = false;
-            }
-            catch (OperationCanceledException)
-            {
-                _updatingAutoRecord = false;
-            }
-            catch
-            {
-                _updatingAutoRecord = false;
-                // Некорректный PLC не блокирует ручной ввод Record.
-            }
-            finally
-            {
-                if (_preferFreeScopedRecord && generation == _recordGeneration && !ct.IsCancellationRequested)
-                    BtnConfirm.IsEnabled = true;
-            }
-        }
-
-        private async void BtnConfirm_Click(object sender, RoutedEventArgs e)
-        {
-            if (!BtnConfirm.IsEnabled) return;
-            if ((!string.IsNullOrWhiteSpace(_connectionString) || _scopedRecordProvider != null) &&
-                !string.IsNullOrWhiteSpace(_plcColumn) && !string.IsNullOrWhiteSpace(_recordColumn) &&
-                _fieldInputs.TryGetValue(_recordColumn, out var recordBox) && string.IsNullOrWhiteSpace(recordBox.Text))
-            {
-                string plcText = _fieldInputs.TryGetValue(_plcColumn, out var plcBox)
-                    ? plcBox.Text
-                    : _lookupInputs.TryGetValue(_plcColumn, out var plcCombo)
-                        ? Convert.ToString(plcCombo.SelectedValue, CultureInfo.InvariantCulture) ?? ""
-                        : "";
-                if (!string.IsNullOrWhiteSpace(plcText))
-                {
-                    await UpdateRecordFromPlcAsync(plcText, CancellationToken.None);
-                    if (_preferFreeScopedRecord && (!IsVisible || !BtnConfirm.IsEnabled)) return;
-                    if (_preferFreeScopedRecord && string.IsNullOrWhiteSpace(recordBox.Text))
+                    try
                     {
-                        Configurator.Infrastructure.ModernDialog.Show("Не удалось подобрать свободный Record. Укажите значение вручную.");
-                        return;
+                        int? next = null;
+                        if (_scopedRecordProvider != null)
+                            next = await _scopedRecordProvider(plcText, classValue, ct);
+                        else if (!string.IsNullOrWhiteSpace(_connectionString))
+                        {
+                            var plc = ConvertValue(plcText, _columns.First(c => c.Name.Equals(_plcColumn, StringComparison.OrdinalIgnoreCase)));
+                            var db = new DatabaseService(_connectionString);
+                            next = _preferFreeScopedRecord
+                                ? await db.GetFreeScopedRecordValueAsync(_tableName, _recordColumn, _plcColumn, plc, ct, _recordScopeClassColumn, ConvertRecordScopeClass(classValue))
+                                : await db.GetNextScopedRecordValueAsync(_tableName, _recordColumn, _plcColumn, plc, ct);
+                        }
+                        if (!ct.IsCancellationRequested && next.HasValue) recordHint.Text = next.Value.ToString(CultureInfo.InvariantCulture);
+                    }
+                    catch (Exception ex) when (!ct.IsCancellationRequested) { System.Diagnostics.Debug.WriteLine(ex); }
+                }
+                if (addressHints.Count > 0 && _freeAddressProvider != null && !ct.IsCancellationRequested)
+                {
+                    var addressClass = _forcedClassNumber?.ToString(CultureInfo.InvariantCulture) ?? classValue ?? ReadInput(_classNumberColumn);
+                    var suggestions = await _freeAddressProvider(plcText, addressClass, ct);
+                    if (!ct.IsCancellationRequested)
+                    {
+                        _addresses = suggestions;
+                        foreach (var hint in addressHints)
+                            if (suggestions.TryGetValue(hint.Key, out var options) && options.Count > 0)
+                                hint.Value.Text = options[0].Key;
                     }
                 }
             }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
+            finally
+            {
+                if (generation == _recordGeneration && !ct.IsCancellationRequested) BtnConfirm.IsEnabled = true;
+            }
+        }
 
+        private void BtnConfirm_Click(object sender, RoutedEventArgs e)
+        {
+            if (!BtnConfirm.IsEnabled) return;
             Values = new Dictionary<string, object>();
             var errors = new List<string>();
             bool hasUserValue = false;
@@ -405,6 +383,10 @@ namespace Configurator
                 if (!generatedField && !string.IsNullOrEmpty(text))
                     hasUserValue = true;
 
+                if (string.IsNullOrEmpty(text) && _hints.TryGetValue(fieldName, out var hint) &&
+                    (int.TryParse(hint.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out _) ||
+                     PlcAddressCatalog.IsSuggestedField(fieldName) && Configurator.Core.Workspace.PlcAddressMap.IsSingleAddress(hint.Text)))
+                    text = hint.Text;
                 if (string.IsNullOrEmpty(text))
                 {
                     if (colInfo.HasDefault)
@@ -465,6 +447,11 @@ namespace Configurator
                 return;
             }
 
+            if (CanApply != null && !CanApply())
+            {
+                Infrastructure.ModernDialog.Show(this, "Исходная таблица или запись изменилась. Вернитесь к ней или откройте редактор заново.", "Сохранение строки", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
             Confirmed = true;
             Close();
         }

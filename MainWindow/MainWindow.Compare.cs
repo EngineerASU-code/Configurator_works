@@ -31,7 +31,7 @@ public partial class MainWindow
         MenuCompare.Visibility = canOpen ? Visibility.Visible : Visibility.Collapsed;
         MenuCheckRecord.Visibility = UserAuthorizationService.Has(Permission.CheckTools) ? Visibility.Visible : Visibility.Collapsed;
         MenuAddressMap.Visibility = MenuCheckRecord.Visibility;
-        MenuCheckRecord.IsEnabled = _workspaceModeChosen && !_isOfflineWorkspace && !_offlineSelectionRequired;
+        MenuCheckRecord.IsEnabled = _workspaceModeChosen && !_offlineSelectionRequired && (!_isOfflineWorkspace || _openedLocalProject != null);
     }
 
     private void MenuCompare_Click(object sender, RoutedEventArgs e)
@@ -51,7 +51,7 @@ public partial class MainWindow
             return;
         }
 
-        bool canUseOnline = _workspaceModeChosen && !_isOfflineWorkspace && !_offlineSelectionRequired;
+        bool canUseOnline = _workspaceModeChosen && !_offlineSelectionRequired && (!_isOfflineWorkspace || _openedLocalProject != null);
         IEnumerable<string> databases = canUseOnline ? GetActiveDatabases() : Array.Empty<string>();
         bool canRequestWrite = (canShowMode3 && (UserAuthorizationService.Has(Permission.ManageTextLists) ||
             UserAuthorizationService.Has(Permission.EditData) || UserAuthorizationService.Has(Permission.AddData) || UserAuthorizationService.Has(Permission.DeleteData))) ||
@@ -98,7 +98,8 @@ public partial class MainWindow
             canShowMode2 || canShowMode3)
         {
             Owner = this,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Width = Math.Min(1720, ActualWidth * 0.9),
+            Height = Math.Min(1000, ActualHeight * 0.9),
             ApplyTransferAsync = CompareTransfer.ApplyAsync,
             ApplyMetadataTransferAsync = CompareTransfer.ApplyMetadataAsync
         };

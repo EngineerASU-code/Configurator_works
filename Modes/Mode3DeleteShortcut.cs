@@ -9,13 +9,18 @@ namespace Configurator;
 
 internal static class Mode3DeleteShortcut
 {
-    public static void Handle(KeyEventArgs e, Button? action)
+    public static void Handle(KeyEventArgs e, Button? action) => Handle(e, action, Keyboard.Modifiers);
+
+    internal static void Handle(KeyEventArgs e, Button? action, ModifierKeys modifiers)
+        => Handle(e, action?.IsEnabled == true, () => action!.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent)), modifiers);
+
+    internal static void Handle(KeyEventArgs e, bool enabled, System.Action execute, ModifierKeys? modifiers = null)
     {
-        if (e.Key != Key.Delete || Keyboard.Modifiers != ModifierKeys.None ||
-            action?.IsEnabled != true || IsEditing(e.OriginalSource as DependencyObject)) return;
+        if (e.Key != Key.Delete || (modifiers ?? Keyboard.Modifiers) != ModifierKeys.None ||
+            !enabled || IsEditing(e.OriginalSource as DependencyObject)) return;
 
         e.Handled = true;
-        if (!e.IsRepeat) action.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        if (!e.IsRepeat) execute();
     }
 
     private static bool IsEditing(DependencyObject? source)

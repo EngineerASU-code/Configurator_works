@@ -10,11 +10,21 @@
         Background="{DynamicResource BrushBase}"
         SnapsToDevicePixels="True">
     <Grid>
+        <Grid>
+            <Grid.Style>
+                <Style TargetType="Grid">
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding Visibility, ElementName=WorkspaceSelectionOverlay}" Value="Visible">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Grid.Style>
         <Grid.RowDefinitions><RowDefinition Height="42"/><RowDefinition Height="64"/><RowDefinition Height="1"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
         <Menu Grid.Row="0" Padding="6,0" Background="{DynamicResource BrushPanel}" Foreground="{DynamicResource BrushText}">
-            <MenuItem Header="Файл" Style="{StaticResource TopMenuItemStyle}"><MenuItem x:Name="MenuCloseOfflineProject" Header="Закрыть Offline-проект" Click="MenuCloseOfflineProject_Click" IsEnabled="False"/><MenuItem Header="Сформировать лог файл" Click="MenuExportSessionLog_Click"/><Separator/><MenuItem x:Name="MenuExportProject" Header="Экспорт проекта (SQL backup)" Click="MenuFileExportProject_Click"/><MenuItem x:Name="MenuRestoreDatabase" Header="Импорт проекта (SQL backup)" Click="MenuRestoreDatabase_Click"/><MenuItem x:Name="MenuSaveLocalCopy" Header="Сохранить локальную копию (.cfgproj)" Click="MenuFileSaveLocalProject_Click"/><Separator/><MenuItem Header="Выход" Click="MenuFileExit_Click"/></MenuItem>
-            <MenuItem Header="Вид" Style="{StaticResource TopMenuItemStyle}"><MenuItem x:Name="IntroSetting" Header="Показывать вступительную анимацию" IsCheckable="True" Click="IntroSetting_Click"/><Separator/><MenuItem Header="Тема оформления" Click="MenuViewTheme_Click"/><MenuItem Header="На весь экран" Click="MenuViewFullscreen_Click"/></MenuItem>
-            <MenuItem x:Name="MenuDatabase" Header="База данных" Style="{StaticResource TopMenuItemStyle}"><MenuItem Header="Добавить базу" Click="BtnOpenConnection_Click"/><MenuItem Header="Экспорт выбранной БД в Excel" Click="MenuDatabaseExportExcel_Click"/><Separator/><MenuItem Header="Свободный ввод" Click="MenuDatabaseFreeSql_Click"/></MenuItem>
+            <MenuItem Header="Файл" Style="{StaticResource TopMenuItemStyle}"><MenuItem x:Name="MenuCloseOfflineProject" Header="Закрыть Offline-проект" Click="MenuCloseOfflineProject_Click" IsEnabled="False"/><MenuItem Header="Сформировать лог файл" Click="MenuExportSessionLog_Click"/><Separator/><MenuItem x:Name="MenuSaveLocalCopy" Header="Сохранить локальную копию (.cfgproj)" Click="MenuFileSaveLocalProject_Click"/><Separator/><MenuItem Header="Выход" Click="MenuFileExit_Click"/></MenuItem>
+            <MenuItem Header="Вид" Style="{StaticResource TopMenuItemStyle}" SubmenuOpened="ViewMenu_Opened"><MenuItem x:Name="UnifiedLanguageSetting" Header="Использовать единую ЯС" IsCheckable="True" Click="UnifiedLanguage_Click"/><Separator/><MenuItem x:Name="IntroSetting" Header="Показывать вступительную анимацию" IsCheckable="True" Click="IntroSetting_Click"/><Separator/><MenuItem Header="Тема оформления" Click="MenuViewTheme_Click"/><MenuItem Header="На весь экран" Click="MenuViewFullscreen_Click"/></MenuItem>
+            <MenuItem x:Name="MenuDatabase" Header="База данных" Style="{StaticResource TopMenuItemStyle}"><MenuItem x:Name="MenuExportProject" Header="Экспорт проекта (SQL backup)" Click="MenuFileExportProject_Click"/><MenuItem x:Name="MenuRestoreDatabase" Header="Импорт проекта (SQL backup)" Click="MenuRestoreDatabase_Click"/><Separator/><MenuItem x:Name="MenuDatabaseExcel" Header="Экспорт выбранной БД в Excel" Click="MenuDatabaseExportExcel_Click"/><Separator/><MenuItem IsEnabled="{Binding IsEnabled, ElementName=MenuDatabaseExcel}" Header="Свободный ввод" Click="MenuDatabaseFreeSql_Click"/></MenuItem>
             <MenuItem Header="Опции" Style="{StaticResource TopMenuItemStyle}" SubmenuOpened="MenuOptions_SubmenuOpened">
                 <MenuItem x:Name="MenuAddressMap" Header="Карта адресов PLC" Click="MenuAddressMap_Click" Visibility="Collapsed"/>
                 <MenuItem x:Name="MenuCompare" Header="Сравнение проектов" Click="MenuCompare_Click" Visibility="Collapsed"/>
@@ -33,22 +43,11 @@
         </Border>
         <Border Grid.Row="2" Background="{DynamicResource BrushBorder}"/>
         <Grid Grid.Row="3" x:Name="ModeHost">
-            <Grid x:Name="EditorModeView" Visibility="Visible"><Grid.ColumnDefinitions><ColumnDefinition x:Name="LeftColumn" Width="Auto" MinWidth="320" MaxWidth="560"/><ColumnDefinition Width="1"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><local:LeftPanel x:Name="LeftPanelControl" Grid.Column="0"/><Border Grid.Column="1" Background="{DynamicResource BrushBorder}"/><local:RightPanel x:Name="RightPanelControl" Grid.Column="2"/></Grid>
+            <Grid x:Name="EditorModeView" Visibility="Visible"><Grid.ColumnDefinitions><ColumnDefinition x:Name="LeftColumn" Width="320"/><ColumnDefinition Width="1"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><local:LeftPanel x:Name="LeftPanelControl" Grid.Column="0"/><Border Grid.Column="1" Background="{DynamicResource BrushBorder}"/><local:RightPanel x:Name="RightPanelControl" Grid.Column="2"/></Grid>
             <Grid x:Name="Mode2View" Visibility="Collapsed" Background="{DynamicResource BrushBase}"><local:TemplateArchitectureView x:Name="TemplateArchitectureControl"/></Grid>
             <Grid x:Name="Mode3View" Visibility="Collapsed" Background="{DynamicResource BrushBase}"><local:ProjectModeView x:Name="ProjectModeControl"/></Grid>
             <Grid x:Name="Mode4View" Visibility="Collapsed" Background="{DynamicResource BrushBase}"><local:FunctionalBlockEditorControl x:Name="FunctionalBlockEditorControl" ProjectDataChanged="FunctionalBlockEditorControl_ProjectDataChanged" /></Grid>
-            <Border x:Name="WorkspaceSelectionOverlay" Panel.ZIndex="20" Visibility="Collapsed" Background="{DynamicResource BrushBase}">
-                <Grid>
-                    <Border MaxWidth="620" Padding="36" CornerRadius="14" BorderThickness="1" BorderBrush="{DynamicResource BrushBorder}" Background="{DynamicResource BrushPanel}" HorizontalAlignment="Center" VerticalAlignment="Center">
-                        <StackPanel>
-                            <TextBlock Text="Рабочий проект не выбран" FontSize="25" FontWeight="SemiBold" Foreground="{DynamicResource BrushText}" TextAlignment="Center"/>
-                            <TextBlock Text="Чтобы продолжить в Offline, откройте файл .cfgproj. Если локальный проект не нужен, явно переключитесь в Online." TextWrapping="Wrap" TextAlignment="Center" Margin="0,14,0,24" Foreground="{DynamicResource BrushTextSecondary}" FontSize="14"/>
-                            <Button Content="Выбрать локальный проект…" Click="ChooseOfflineProject_Click" Height="44" Margin="0,0,0,10" FontWeight="SemiBold"/>
-                            <Button Content="Переключиться в Online" Click="ReturnOnlineFromSelection_Click" Height="44" FontWeight="SemiBold"/>
-                        </StackPanel>
-                    </Border>
-                </Grid>
-            </Border>
+
         </Grid>
         <Border Grid.Row="4" MinHeight="58" Background="{DynamicResource BrushBase}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,1,0,0" Padding="12,5">
             <Grid VerticalAlignment="Center" Margin="4,2">
@@ -90,5 +89,8 @@
                 <Border x:Name="OnlineModeBadge" Visibility="Collapsed"><TextBlock Text="ONLINE"/></Border>
             </Grid>
         </Border>
+        </Grid>
+        <local:WorkspaceWelcome x:Name="WorkspaceSelectionOverlay" Visibility="Collapsed"
+                                OnlineRequested="ReturnOnlineFromSelection_Click" OfflineRequested="ChooseOfflineProject_Click"/>
     </Grid>
 </Window>

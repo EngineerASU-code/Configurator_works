@@ -6,10 +6,14 @@
     <Grid Margin="18">
         <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
         <TextBlock x:Name="PromptText" FontWeight="SemiBold" Margin="0,0,0,8"/>
-        <TextBox x:Name="InputText" Grid.Row="1" Width="360" Height="32"/>
-        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+        <Grid x:Name="InputHost" Grid.Row="1"><TextBox x:Name="InputText" Width="360" MinHeight="32" Padding="8,3" VerticalContentAlignment="Center"/></Grid>
+        <StackPanel Grid.Row="2">
+            <StackPanel x:Name="AddressPanel" Visibility="Collapsed" Margin="0,10,0,0">
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
             <Button Content="Отмена" Style="{StaticResource BtnSecondary}" Width="90" Click="Cancel_Click"/>
             <Button IsDefault="True" Content="ОК" Style="{StaticResource BtnPrimary}" Width="90" Margin="7,0,0,0" Click="Ok_Click"/>
+            </StackPanel>
         </StackPanel>
     </Grid>
 </Window>

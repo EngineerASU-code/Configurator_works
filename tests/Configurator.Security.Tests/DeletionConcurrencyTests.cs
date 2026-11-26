@@ -87,6 +87,30 @@ public sealed class DeletionConcurrencyTests
     }
 
     [CompareLocalDbFact]
+    public async Task UndoAreaCreationAllowsSelfReferenceButProtectsOtherRows()
+    {
+        await using var db = await CompareLocalDb.CreateAsync();
+        await db.ExecuteAsync("""
+            CREATE TABLE dbo.Areas (Id int PRIMARY KEY, AreaName nvarchar(40), Area nvarchar(40));
+            INSERT dbo.Areas VALUES (1,N'Zone1',N'Zone1'),(2,N'Zone2',N'Zone1');
+            """);
+        var entry = new ChangeJournalEntry { Changes = new() { new ChangeJournalRowChange {
+            TableName = "dbo.Areas", Kind = ChangeJournalOperationKind.Insert,
+            IdentityAfter = new() { ["Id"] = ChangeJournalValue.FromObject(1) },
+            After = new() { ["Id"] = ChangeJournalValue.FromObject(1), ["AreaName"] = ChangeJournalValue.FromObject("Zone1"),
+                ["Area"] = ChangeJournalValue.FromObject("Zone1") }
+        } } };
+        var journal = new ChangeJournalService();
+        var conflict = await Assert.ThrowsAsync<InvalidOperationException>(() => journal.RestoreAsync(entry, db.ConnectionString));
+        Assert.Contains("dbo.Areas", conflict.Message);
+        Assert.Equal(2, await db.DecimalAsync("SELECT COUNT(*) FROM dbo.Areas"));
+        await db.ExecuteAsync("UPDATE dbo.Areas SET Area=NULL WHERE Id=2");
+        await journal.RestoreAsync(entry, db.ConnectionString);
+        Assert.Equal(0, await db.DecimalAsync("SELECT COUNT(*) FROM dbo.Areas WHERE Id=1"));
+        Assert.Equal(1, await db.DecimalAsync("SELECT COUNT(*) FROM dbo.Areas WHERE Id=2"));
+    }
+
+    [CompareLocalDbFact]
     public async Task FreeSqlTimeoutRollsBackAndReleasesLockForSecondConnection()
     {
         await using var db = await CompareLocalDb.CreateAsync();

@@ -191,6 +191,9 @@ public partial class TableViewModel
                         $"Не удалось автоматически определить новое значение поля {recordColumn}. Дублирование отменено.");
                 }
 
+                if (nextRecord.HasValue && Core.Workspace.ScopedRecordSuggestion.IsAreasTable(CurrentTable) &&
+                    values.ContainsKey("AreaName"))
+                    values["AreaName"] = Core.Workspace.ScopedRecordSuggestion.AreaNameForRecord(nextRecord.Value);
                 return values;
             }
 

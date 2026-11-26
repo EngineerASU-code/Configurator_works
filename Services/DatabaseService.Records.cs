@@ -84,7 +84,7 @@ namespace Configurator
         }
 
 #nullable restore
-        private static bool TryReadIntegralValue(object raw, out int value)
+        internal static bool TryReadIntegralValue(object raw, out int value)
         {
             value = 0;
             if (raw == null || raw == DBNull.Value) return false;

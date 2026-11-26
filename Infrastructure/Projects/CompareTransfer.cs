@@ -478,7 +478,7 @@ public static class CompareTransfer
 
             bool offlinePid = preview.Source.Workspace.IsOffline && CompareTransferPreview.IsEquipmentTable(schema) &&
                 schema.TableName.Equals("dbo.Reglers", StringComparison.OrdinalIgnoreCase);
-            bool uniqueName = !offlinePid || physicalTable is null || !physicalTable.Keys.Any(key => key.IsUnique) ||
+            bool uniqueName = !CompareTransferPreview.IsEquipmentTable(schema) || physicalTable is null || !physicalTable.Keys.Any(key => key.IsUnique) ||
                 physicalTable.Keys.Any(key => key.IsUnique && key.Columns.Contains("Name", StringComparer.OrdinalIgnoreCase));
             EnsureNameIsAvailable(dataSource.GetRecords(schema.TableName), preview.Values, uniqueName);
             if (CompareTransferPreview.IsEquipmentTable(schema))

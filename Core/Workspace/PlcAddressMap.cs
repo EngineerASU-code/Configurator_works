@@ -59,6 +59,8 @@ internal sealed class PlcAddressMap
         _owners.TryGetValue(description, out var owners) && owners.Count == 1 ? owners[0] : null;
     internal List<string> Issues { get; } = new();
 
+    internal static bool IsSingleAddress(string value) => Address.IsMatch(value);
+
     internal void Add(string raw, string owner, char? defaultArea, bool analog, AddressOwner? identity = null)
     {
         foreach (var part in Separator.Split(raw))
@@ -129,7 +131,8 @@ internal sealed class PlcAddressMap
         if (Issues.Count != 0 || !owner.Schema.HasStableKey || owner.Schema.KeyColumns.Count == 0 ||
             !ProjectWriteGuard.IsDataTableWritable(owner.TableName)) return Array.Empty<string>();
         var column = owner.Schema.Columns.FirstOrDefault(c => c.Name.Equals(owner.Field, StringComparison.OrdinalIgnoreCase));
-        if (column == null || column.IsReadOnly || column.IsComputed || column.IsIdentity) return Array.Empty<string>();
+        if (column == null || column.IsReadOnly || column.IsComputed || column.IsIdentity ||
+            owner.Schema.KeyColumns.Contains(column.Name, StringComparer.OrdinalIgnoreCase)) return Array.Empty<string>();
         var match = Address.Match(owner.Raw.Trim());
         if (!match.Success) return Array.Empty<string>();
         var area = match.Groups["area"].Success ? char.ToUpperInvariant(match.Groups["area"].Value[0]) : owner.DefaultArea;
@@ -138,6 +141,12 @@ internal sealed class PlcAddressMap
         bool bit = match.Groups["bit"].Success;
         if ((bit && width is not ("" or "X")) || (width == "X" && !bit)) return Array.Empty<string>();
         int size = width switch { "D" => 4, "W" => 2, "" when owner.Analog && !bit => 2, _ => 1 };
+        return FreeAddresses(selectedArea, bit, size, owner.Analog && !match.Groups["area"].Success && width.Length == 0, limit);
+    }
+
+    internal IReadOnlyList<string> FreeAddresses(char selectedArea, bool bit, int size, bool numeric, int limit = 256)
+    {
+        if (Issues.Count != 0) return Array.Empty<string>();
         var result = new List<string>();
         for (int offset = 0; offset <= 65536 - size && result.Count < limit; offset++)
         {
@@ -148,7 +157,7 @@ internal sealed class PlcAddressMap
                         result.Add($"{selectedArea}{offset}.{b}");
             }
             else if (Enumerable.Range(offset, size).All(i => !_bytes.TryGetValue((selectedArea, i), out var bits) || bits.All(x => x.Count == 0)))
-                result.Add(owner.Analog && !match.Groups["area"].Success && width.Length == 0
+                result.Add(numeric
                     ? offset.ToString(CultureInfo.InvariantCulture)
                     : $"{selectedArea}{(size == 4 ? "D" : size == 2 ? "W" : "B")}{offset}");
         }

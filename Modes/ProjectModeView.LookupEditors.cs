@@ -40,6 +40,7 @@ public partial class ProjectModeView
         int index = 0;
         foreach (DataColumn column in row.Table.Columns)
         {
+            if (MainWindow.HideLanguageField(column.ColumnName)) continue;
             int rowIndex = index / 2;
             int columnIndex = index % 2;
             while (content.RowDefinitions.Count <= rowIndex)
@@ -82,7 +83,7 @@ public partial class ProjectModeView
                 combo.SelectionChanged += (_, _) =>
                 {
                     if (!ReferenceEquals(_selectedRow, row)) return;
-                    BtnSave.IsEnabled = UserAuthorizationService.Has(Permission.ManageObjects);
+                    SaveItem.IsEnabled = UserAuthorizationService.Has(Permission.ManageObjects);
                     UpdateConfigurationTypePreview(row);
                 };
                 value = combo;
@@ -114,7 +115,7 @@ public partial class ProjectModeView
                 {
                     if ((_configurationKind is ConfigurationKind.Plc or ConfigurationKind.Area)
                         && ReferenceEquals(_selectedRow, row))
-                        BtnSave.IsEnabled = UserAuthorizationService.Has(Permission.ManageObjects);
+                        SaveItem.IsEnabled = UserAuthorizationService.Has(Permission.ManageObjects);
                     if (_configurationKind == ConfigurationKind.Plc && ReferenceEquals(_selectedRow, row))
                         UpdateConfigurationTypePreview(row);
                 };
@@ -228,6 +229,7 @@ public partial class ProjectModeView
         ImgObjectTypePreview.Source = null;
         ImgObjectTypePreview.Visibility = Visibility.Collapsed;
         var actualFields = _selectedRow.Table.Columns.Cast<DataColumn>()
+            .Where(c => !MainWindow.HideLanguageField(c.ColumnName))
             .Select(c => _selectedClass.Fields.FirstOrDefault(f => f.Name.Equals(c.ColumnName, StringComparison.OrdinalIgnoreCase))
                          ?? new Core.Architecture.FieldDefinition { Name = c.ColumnName, DataType = c.DataType.Name, Group = "Прочее" })
             .ToList();
@@ -435,6 +437,21 @@ public partial class ProjectModeView
                     box.SetResourceReference(Control.ForegroundProperty, "BrushText");
                     box.SetResourceReference(Control.BorderBrushProperty, "BrushBorder");
                     editor = box;
+                }
+                if (editor is TextBox addressInput && PlcAddressCatalog.IsSuggestedField(field.Name)
+                    && selectedClass.PrimaryStorage is { } storage)
+                {
+                    string SelectedPlc() => FindEditorControls(ObjectEditor).OfType<ComboBox>()
+                        .FirstOrDefault(c => string.Equals(c.Tag as string, "PLC", StringComparison.OrdinalIgnoreCase))
+                        ?.SelectedValue?.ToString() ?? GetText("PLC");
+                    editor = InputPlaceholder.WithAddressList(addressInput, addressInput, async () =>
+                    {
+                        if (!IsCurrentRender()) return null;
+                        var plc = SelectedPlc();
+                        var choices = await PlcAddressCatalog.SuggestAddressesAsync(RequireWorkspace(), storage.TableName,
+                            plc, selectedClass.ClassNumber.ToString(System.Globalization.CultureInfo.InvariantCulture), default);
+                        return IsCurrentRender() && plc == SelectedPlc() ? choices.GetValueOrDefault(field.Name) : null;
+                    });
                 }
                 if (editor is TextBox typeBox
                     && (field.Name.Contains("Type", StringComparison.OrdinalIgnoreCase)

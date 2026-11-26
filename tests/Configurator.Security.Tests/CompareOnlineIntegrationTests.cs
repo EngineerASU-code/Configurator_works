@@ -13,6 +13,22 @@ namespace Configurator.Security.Tests;
 public sealed class CompareOnlineIntegrationTests
 {
     [CompareLocalDbFact]
+    public async Task SingleColumnUniqueRecordIndexStillOffersRecordConflict()
+    {
+        await using var db = await CompareLocalDb.CreateAsync();
+        await db.ExecuteAsync("""
+            CREATE TABLE dbo.Example (Record int NOT NULL UNIQUE, PLC int NOT NULL, PRIMARY KEY(Record,PLC));
+            INSERT dbo.Example VALUES (1,8);
+            """);
+        var reader = new OnlineProjectDataSource(db.ConnectionString, "Unique Record");
+        var schema = Assert.Single(await reader.GetTablesAsync(), table => table.TableName == "dbo.Example");
+        var values = new Dictionary<string, object?> { ["Record"] = 1, ["PLC"] = 1 };
+        var crud = new OnlineProjectCrudDataSource(db.ConnectionString);
+        await Assert.ThrowsAsync<CompareRecordConflictException>(() => crud.UpdateCompareRecordAsync(schema, null, values, values));
+        Assert.Equal(1m, await db.DecimalAsync("SELECT COUNT(*) FROM dbo.Example WHERE PLC=8"));
+    }
+
+    [CompareLocalDbFact]
     public async Task CompareAddPreservesTheCopiedKeyAndRejectsAnOccupiedKey()
     {
         await using var db = await CompareLocalDb.CreateAsync();

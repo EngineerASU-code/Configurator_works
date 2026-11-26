@@ -22,7 +22,7 @@ namespace Configurator
             _panel.Children.Clear();
             Fields.Clear();
 
-            foreach (var col in columns)
+            foreach (var col in columns.Where(c => !MainWindow.HideLanguageField(c.Name)))
             {
                 bool isKey = !string.IsNullOrEmpty(keyColumn) &&
                     col.Name.Equals(keyColumn, StringComparison.OrdinalIgnoreCase);

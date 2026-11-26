@@ -147,7 +147,7 @@ namespace Configurator
 
         private async Task ReloadCurrentPageFastAsync(
             int preferredRowIndex = -1,
-            Dictionary<string, object> preferredIdentity = null)
+            Dictionary<string, object> preferredIdentity = null, string copyRecordMessage = null)
         {
             if (_activeVm == null) return;
 
@@ -162,11 +162,24 @@ namespace Configurator
             {
                 // Важное отличие от старой логики: после CRUD НЕ выполняем COUNT(*).
                 // Загружается только одна текущая страница.
+                bool hidden = false;
+                if (copyRecordMessage != null)
+                {
+                    var page = await vm.FindRowPageAsync(preferredIdentity, ct);
+                    if (_loadGeneration != generation || ct.IsCancellationRequested || _activeVm != vm) return;
+                    if (page.HasValue) vm.CurrentPage = page.Value;
+                    else hidden = true;
+                }
                 var pageData = await vm.ReloadCurrentPageAsync(ct);
                 if (_loadGeneration != generation || ct.IsCancellationRequested) return;
 
                 BindPageData(pageData, preferredRowIndex, preferredIdentity, resetScroll: false);
                 UpdatePagination();
+                if (hidden && vm.ColumnView.HasFilters)
+                {
+                    LastActionText.Text = $"Копия создана, но скрыта фильтром.{copyRecordMessage}";
+                    StatusText.Text = LastActionText.Text;
+                }
             }
             catch (OperationCanceledException)
             {
@@ -401,14 +414,27 @@ namespace Configurator
             return result;
         }
 
+        private Dictionary<string, object> InitialPlcForNewRow()
+        {
+            var plc = CurrentColumnView?.Filters.FirstOrDefault(filter =>
+                filter.Column.Equals("PLC", StringComparison.OrdinalIgnoreCase) && filter.Operator == "Equals")?.Value;
+            if (string.IsNullOrWhiteSpace(plc) && _rightPanel.DataTableGrid.SelectedItem is DataRowView row && row.Row.Table.Columns.Contains("PLC"))
+                plc = Convert.ToString(row["PLC"], System.Globalization.CultureInfo.InvariantCulture);
+            return string.IsNullOrWhiteSpace(plc) ? null : new Dictionary<string, object> { ["PLC"] = plc };
+        }
+
         private async void BtnAdd_Click(object sender, RoutedEventArgs e)
         {
             if (!RequireMode1Permission(Permission.Mode1Add)) return;
-            if (_isOfflineWorkspace) { AddOfflineRow(); return; }
+            if (_isOfflineWorkspace) { await AddOfflineRow(); return; }
             if (_activeVm == null || string.IsNullOrEmpty(_activeVm.CurrentTable)
                 || _activeVm.Columns == null || _activeVm.Columns.Count == 0)
                 return;
 
+            var addVm = _activeVm;
+            var addTable = addVm.CurrentTable;
+            var addDbName = _activeDbName;
+            bool CanAdd() => !_isOfflineWorkspace && _activeVm == addVm && addVm.CurrentTable == addTable && _activeDbName == addDbName;
             int nextRecord = 0;
             var plcColumn = _activeVm.Columns.FirstOrDefault(c => c.Name.Equals("PLC", StringComparison.OrdinalIgnoreCase));
             var recordColumn = _activeVm.Columns.FirstOrDefault(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase));
@@ -425,6 +451,11 @@ namespace Configurator
             }
 
             var addLookupOptions = await LoadLookupOptionsForTableAsync(_activeVm.CurrentTable);
+            if (!CanAdd()) return;
+            var source = new Configurator.Core.Projects.OnlineProjectDataSource(_connection.ToConnectionString(_activeDbName), _activeDbName);
+            using var addressWorkspace = new Configurator.Core.Projects.ProjectWorkspace(source,
+                architecture: new Configurator.Infrastructure.Projects.ProjectArchitectureDataSource(source.Server, source.Database));
+            var tableName = _activeVm.CurrentTable;
             var addWindow = new AddRowWindow(
                 _activeVm.CurrentTable,
                 _activeVm.Columns,
@@ -434,21 +465,20 @@ namespace Configurator
                 plcColumn?.Name,
                 forcedClassNumber,
                 classNumberColumn,
-                addLookupOptions,
+                addLookupOptions, initialValues: InitialPlcForNewRow(),
                 preferFreeScopedRecord: suggestScopedRecord,
-                recordScopeClassColumn: ProjectClassCatalog.FindRecordClassColumn(_activeVm.KeyColumns))
+                recordScopeClassColumn: ProjectClassCatalog.FindRecordClassColumn(_activeVm.KeyColumns),
+                freeAddressProvider: (plc, cls, ct) => PlcAddressCatalog.SuggestAddressesAsync(addressWorkspace, tableName, plc, cls, ct))
             { Owner = this };
 
-            addWindow.ShowDialog();
+            addWindow.CanApply = CanAdd;
+            await addWindow.ShowRowEditorAsync();
 
             if (!addWindow.Confirmed || addWindow.Values == null || addWindow.Values.Count == 0)
                 return;
 
             try
             {
-                var addVm = _activeVm;
-                var addTable = addVm.CurrentTable;
-                var addDbName = _activeDbName;
                 var keys = addVm.KeyColumns.ToList();
                 var addValues = await addVm.InsertAndGetSnapshotAsync(addWindow.Values);
                 var addIdentity = keys.Count > 0 ? keys.ToDictionary(key => key, key => addValues[key]) : addVm.BuildIdentityValues(addValues);
@@ -479,7 +509,7 @@ namespace Configurator
         private async void BtnUpdate_Click(object sender, RoutedEventArgs e)
         {
             if (!RequireMode1Permission(Permission.Mode1Edit)) return;
-            if (_isOfflineWorkspace) { EditOfflineRow(); return; }
+            if (_isOfflineWorkspace) { await EditOfflineRow(); return; }
             if (_activeVm == null || !_activeVm.HasValidKey) return;
             if (_rightPanel.DataTableGrid.SelectedItem is not DataRowView selectedRow) return;
 
@@ -510,6 +540,9 @@ namespace Configurator
                 suggestRecord = (plc, ct) => db.GetFreeScopedRecordValueAsync(updateTable, recordColumn.Name, plcColumn.Name,
                     plc == null ? DBNull.Value : EditRowWindow.ConvertValue(plc, plcColumn), ct);
             }
+            var source = new Configurator.Core.Projects.OnlineProjectDataSource(_connection.ToConnectionString(updateDbName), updateDbName);
+            using var addressWorkspace = new Configurator.Core.Projects.ProjectWorkspace(source,
+                architecture: new Configurator.Infrastructure.Projects.ProjectArchitectureDataSource(source.Server, source.Database));
             var editWindow = new EditRowWindow(
                 updateTable,
                 editColumns,
@@ -518,22 +551,43 @@ namespace Configurator
                 editClassNumberColumn,
                 editClassNumber,
                 editLookupOptions,
-                suggestRecord)
+                suggestRecord, plc => PlcAddressCatalog.SuggestAddressesAsync(addressWorkspace, updateTable, plc, editClassNumber?.ToString(), default))
             { Owner = this };
 
-            editWindow.ShowDialog();
+            editWindow.CanApply = () => !_isOfflineWorkspace && _activeVm == editVm && _activeDbName == updateDbName;
+            editWindow.SaveChangesAsync = async () =>
+            {
+                var relatedChanges = editWindow.Values
+                    .Where(pair => oldValues.TryGetValue(pair.Key, out var oldValue) && !ValuesEqual(oldValue, pair.Value))
+                    .Where(pair => editLookupOptions.ContainsKey(pair.Key) || IsLikelyRelatedField(pair.Key))
+                    .Select(pair => $"{pair.Key}: {FormatLogValue(oldValues.TryGetValue(pair.Key, out var oldValue) ? oldValue : null)} → {FormatLogValue(pair.Value)}")
+                    .ToList();
+                if (relatedChanges.Count > 0 && Configurator.Infrastructure.ModernDialog.Show(editWindow,
+                    "Вы изменяете связанные поля. Это может изменить привязки объекта к справочникам или другим объектам:\n\n" + string.Join("\n", relatedChanges) + "\n\nПродолжить изменение?",
+                    "Предупреждение о смене связей", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+                    return false;
+                try
+                {
+                    await editVm.UpdateSnapshotAsync(updateTable, usesValueIdentity, keyColumns, oldIdentity, oldValues, editWindow.Values);
+                    return true;
+                }
+                catch (SqlException ex) when (ex.Number is 2601 or 2627)
+                {
+                    Configurator.Infrastructure.ModernDialog.Show(editWindow, "Такая комбинация ключевых полей уже существует. Измените значение и повторите сохранение.", "Конфликт ключа", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    foreach (var key in keyColumns.Where(editWindow.Values.ContainsKey))
+                        editWindow.MarkConflict(key);
+                    return false;
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine(ex);
+                    Configurator.Infrastructure.ModernDialog.Show(editWindow, "Проверьте введённые значения и повторите сохранение.", "Не удалось изменить запись", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return false;
+                }
+            };
+            await editWindow.ShowRowEditorAsync();
 
             if (!editWindow.Confirmed || editWindow.Values == null || editWindow.Values.Count == 0)
-                return;
-
-            var relatedChanges = editWindow.Values
-                .Where(pair => oldValues.TryGetValue(pair.Key, out var oldValue) && !ValuesEqual(oldValue, pair.Value))
-                .Where(pair => editLookupOptions.ContainsKey(pair.Key) || IsLikelyRelatedField(pair.Key))
-                .Select(pair => $"{pair.Key}: {FormatLogValue(oldValues.TryGetValue(pair.Key, out var oldValue) ? oldValue : null)} → {FormatLogValue(pair.Value)}")
-                .ToList();
-            if (relatedChanges.Count > 0 && Configurator.Infrastructure.ModernDialog.Show(
-                "Вы изменяете связанные поля. Это может изменить привязки объекта к справочникам или другим объектам:\n\n" + string.Join("\n", relatedChanges) + "\n\nПродолжить изменение?",
-                "Предупреждение о смене связей", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
                 return;
 
             try
@@ -542,8 +596,6 @@ namespace Configurator
                 foreach (var pair in editWindow.Values)
                     if (preferredIdentity.ContainsKey(pair.Key))
                         preferredIdentity[pair.Key] = pair.Value;
-
-                await editVm.UpdateSnapshotAsync(updateTable, usesValueIdentity, keyColumns, oldIdentity, oldValues, editWindow.Values);
 
                 var afterValues = new Dictionary<string, object>(oldValues);
                 foreach (var pair in editWindow.Values) afterValues[pair.Key] = pair.Value;
@@ -568,13 +620,8 @@ namespace Configurator
             }
             catch (Exception ex)
             {
-                if (ex is SqlException sqlEx && (sqlEx.Number == 2601 || sqlEx.Number == 2627))
-                    Configurator.Infrastructure.ModernDialog.Show("Нарушено ограничение уникальности. Такой Record или составная комбинация PLC + Class + Record уже существует. Выберите другое значение Record.", "Конфликт ключа", MessageBoxButton.OK, MessageBoxImage.Warning);
-                else
-                {
-                    System.Diagnostics.Debug.WriteLine(ex);
-                    Configurator.Infrastructure.ModernDialog.Show("Не удалось изменить запись. Проверьте введённые значения и повторите попытку.");
-                }
+                System.Diagnostics.Debug.WriteLine(ex);
+                Configurator.Infrastructure.ModernDialog.Show("Запись сохранена. Не удалось обновить её отображение или журнал.");
             }
         }
 
@@ -624,14 +671,9 @@ namespace Configurator
                 duplicateVm.NotifyInserted(1);
                 if (duplicateVm.ColumnView.HasFilters)
                     await duplicateVm.RefreshTotalCountAsync();
-                bool usedScopedRecord = !string.IsNullOrEmpty(duplicateVm.PlcColumn) &&
-                    duplicateVm.Columns.Any(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase) && !c.IsReadOnly && !c.IsIdentity);
-                if (!usedScopedRecord) duplicateVm.CurrentPage = duplicateVm.TotalPages;
-
-                // Ищем копию по тем значениям, которые реально были вставлены.
-                // Это работает и для PLC + Record, и для keyless таблиц.
-                await ReloadCurrentPageFastAsync(-1, duplicateIdentity);
-                if (usedScopedRecord) StatusText.Text = $"Копия строки добавлена.{newRecordMsg}";
+                if (_activeVm != duplicateVm || duplicateVm.CurrentTable != duplicateTable || _activeDbName != duplicateDbName) return;
+                StatusText.Text = $"Копия строки добавлена.{newRecordMsg}";
+                await ReloadCurrentPageFastAsync(-1, duplicateIdentity, copyRecordMessage: newRecordMsg);
             }
             catch (Exception ex)
             {

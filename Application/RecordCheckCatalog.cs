@@ -1,5 +1,9 @@
 #nullable enable
 using Configurator.Core.Projects;
+using Configurator.Core.Workspace;
+using System.Globalization;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Configurator;
 
@@ -32,6 +36,47 @@ internal static class RecordCheckCatalog
         }
         return classes.OrderBy(c => c.Title, StringComparer.CurrentCultureIgnoreCase)
             .ThenBy(c => c.TableName, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    internal static IReadOnlyList<RecordCheckScope> LocalScopes(OfflineProjectDataSource source,
+        IReadOnlyList<RecordCheckClass> classes, CancellationToken ct)
+    {
+        var scopes = new List<RecordCheckScope>();
+        foreach (var group in classes)
+        {
+            var controllers = LocalRows(source, group, ct).Select(row => row.Plc).Distinct();
+            scopes.AddRange(controllers.Select(plc => new RecordCheckScope(group, plc)));
+        }
+        return scopes;
+    }
+
+    internal static RecordCheckResult CheckLocal(OfflineProjectDataSource source, RecordCheckScope scope, CancellationToken ct)
+    {
+        var occupied = new SortedSet<int>();
+        foreach (var row in LocalRows(source, scope.Class, ct))
+        {
+            if (!Equals(row.Plc, scope.Plc)) continue;
+            var raw = row.Record.ToString();
+            object value = row.Record.GetValueKind() == JsonValueKind.Number &&
+                decimal.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var numeric) ? numeric : raw;
+            if (!DatabaseService.TryReadIntegralValue(value, out var number))
+                throw new InvalidOperationException($"В {scope.Class.TableName} найдены значения Record вне диапазона целых чисел Int32.");
+            occupied.Add(number);
+        }
+        return RecordCheckResult.FromOccupied(occupied);
+    }
+
+    private static IEnumerable<(string Plc, JsonNode Record)> LocalRows(OfflineProjectDataSource source,
+        RecordCheckClass group, CancellationToken ct)
+    {
+        foreach (var row in source.GetRecords(group.TableName))
+        {
+            ct.ThrowIfCancellationRequested();
+            var plc = ProjectClassCatalog.Read(row, group.PlcColumn);
+            if (string.IsNullOrWhiteSpace(plc) || ProjectClassCatalog.ReadNode(row, group.RecordColumn) is not { } record) continue;
+            if (group.ClassColumn != null && ProjectClassCatalog.Read(row, group.ClassColumn) != group.ClassValue) continue;
+            yield return (plc, record);
+        }
     }
 
     private static string? FindColumn(ProjectTableSchema table, string name) =>

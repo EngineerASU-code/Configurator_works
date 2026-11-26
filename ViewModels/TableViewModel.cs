@@ -123,7 +123,7 @@ namespace Configurator
                 "tinyint" or "smallint" or "int" or "bigint" or "decimal" or "numeric" or "money" or "smallmoney" or "float" or "real";
 
         // === P1-11: Async ===
-        public async Task<DataTable> LoadPageAsync(CancellationToken ct = default)
+        private List<TableColumnSort> GetPageSorts()
         {
             var sorts = ColumnView.Sorts.ToList();
             var fallback = KeyColumns.Count > 0 ? KeyColumns : Columns?.Take(1).Select(column => column.Name) ?? Enumerable.Empty<string>();
@@ -134,6 +134,15 @@ namespace Configurator
                 sorts.Add(new TableColumnSort(name, System.ComponentModel.ListSortDirection.Ascending, column?.UsesTextOrdering == true));
             }
 
+            return sorts;
+        }
+
+        internal Task<int?> FindRowPageAsync(IReadOnlyDictionary<string, object> identity, CancellationToken ct = default) =>
+            _db.FindColumnViewPageAsync(CurrentTable, PageSize, GetPageSorts(), ColumnView.Filters.ToArray(), identity, ct);
+
+        public async Task<DataTable> LoadPageAsync(CancellationToken ct = default)
+        {
+            var sorts = GetPageSorts();
             // Snapshot navigation state before leaving the dispatcher. Opening a guarded
             // connection and materializing buffered SQL rows can both run synchronously.
             var table = CurrentTable;
@@ -266,7 +275,7 @@ namespace Configurator
                     "decimal" or "numeric" or "money" or "smallmoney" or
                     "float" or "real")
                 {
-                    return await _db.GetMaxRecordValueAsync(CurrentTable, record.Name, ct) + 1;
+                    return await _db.GetFreeScopedRecordValueAsync(CurrentTable, record.Name, null, null, ct);
                 }
             }
 

@@ -67,6 +67,46 @@ public sealed class PlcAddressSuggestionTests
     }
 
     [Fact]
+    public async Task NewWordUsesTheSelectedPlcAndIncludesBitsFromOtherClasses()
+    {
+        var project = new ConfiguratorProject();
+        project.TableSchemas.Add(new ProjectTableSchema { TableName = "dbo.AnalogIn", Columns = [
+            new() { Name = "PLC" }, new() { Name = "Adress" }] });
+        project.TableSchemas.Add(new ProjectTableSchema { TableName = "dbo.Valves2S", Columns = [
+            new() { Name = "PLC" }, new() { Name = "Address_Input", DataType = "nvarchar" }, new() { Name = "Address_output", DataType = "nvarchar" }, new() { Name = "Address_Feedback", DataType = "nvarchar" }, new() { Name = "Address_MS", DataType = "nvarchar" }] });
+        project.LocalRecords.Add(new ProjectRecord { TableName = "dbo.AnalogIn", Values = new JsonObject {
+            ["PLC"] = 1, ["Adress"] = 0 } });
+        project.LocalRecords.Add(new ProjectRecord { TableName = "dbo.Valves2S", Values = new JsonObject {
+            ["PLC"] = 1, ["Address_Input"] = "I3.1" } });
+        using var workspace = new ProjectWorkspace(new OfflineProjectDataSource(project),
+            architecture: new ProjectArchitectureDataSource(project));
+        var discrete = await PlcAddressCatalog.SuggestAddressesAsync(workspace, "dbo.Valves2S", "1", null, default);
+        Assert.Equal("I2.0", discrete["address_input"][0].Key);
+        Assert.Equal("I2.1", discrete["Address_Feedback"][0].Key);
+        Assert.Equal("I2.2", discrete["Address_MS"][0].Key);
+        Assert.DoesNotContain(discrete["Address_MS"], option => option.Key == "I3.1");
+        Assert.Equal("Q0.0", discrete["Address_output"][0].Key);
+        Assert.Equal("4", (await PlcAddressCatalog.SuggestAddressesAsync(workspace, "dbo.AnalogIn", "1", null, default))["Adress"][0].Key);
+        Assert.Equal("0", (await PlcAddressCatalog.SuggestAddressesAsync(workspace, "dbo.AnalogIn", "2", null, default))["Adress"][0].Key);
+    }
+
+    [Theory]
+    [InlineData("DiscretOUT", "Q")]
+    [InlineData("DiscretIN", "I")]
+    public async Task DiscreteAddressUsesFreeBitsOnSelectedPlc(string table, string prefix)
+    {
+        var project = new ConfiguratorProject();
+        project.TableSchemas.Add(new ProjectTableSchema { TableName = table, Columns = [
+            new() { Name = "PLC" }, new() { Name = "Address", DataType = "varchar" }] });
+        project.LocalRecords.Add(new ProjectRecord { TableName = table, Values = new JsonObject {
+            ["PLC"] = 7, ["Address"] = prefix + "0.0" } });
+        using var workspace = new ProjectWorkspace(new OfflineProjectDataSource(project),
+            architecture: new ProjectArchitectureDataSource(project));
+        var choices = await PlcAddressCatalog.SuggestAddressesAsync(workspace, table, "7", null, default);
+        Assert.Equal(prefix + "0.1", choices["Address"][0].Key);
+        Assert.DoesNotContain(choices["Address"], option => option.Key == prefix + "0.0");
+    }
+    [Fact]
     public async Task AdditionalSignalFieldsReserveTheirArea()
     {
         var project = new ConfiguratorProject();
@@ -144,7 +184,10 @@ public sealed class PlcAddressMapTests(WpfDialogHost host)
     {
         await host.RunAsync(async () =>
         {
-            var window = new PlcAddressWindow([new("Offline", ct => Task.FromResult(Fixture()))], (_, _) => throw new InvalidOperationException()) { ShowInTaskbar = false };
+            var external = new AddressMapSource("Другой проект", ct => throw new InvalidOperationException());
+            var active = new AddressMapSource("Активный Offline", ct => Task.FromResult(Fixture()));
+            var window = new PlcAddressWindow([external, active], (_, _) => throw new InvalidOperationException(),
+                initialSource: active) { ShowInTaskbar = false };
             try
             {
                 window.Show();
@@ -153,8 +196,8 @@ public sealed class PlcAddressMapTests(WpfDialogHost host)
                 var filter = (ComboBox)window.FindName("Filter");
                 using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                 var projects = (ComboBox)window.FindName("Project");
-                Assert.False(plc.IsEnabled);
-                projects.SelectedIndex = 0;
+                await Dispatcher.Yield(DispatcherPriority.Loaded);
+                Assert.Same(active, projects.SelectedItem);
                 while (!plc.IsEnabled && !timeout.IsCancellationRequested) await Task.Delay(20);
                 Assert.Null(plc.SelectedItem);
                 plc.SelectedIndex = 0;

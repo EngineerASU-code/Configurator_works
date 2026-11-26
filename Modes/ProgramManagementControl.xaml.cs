@@ -663,7 +663,7 @@ public partial class ProgramManagementControl : UserControl
         foreach (var aliases in fields)
         {
             string column = aliases.FirstOrDefault(row.Row.Table.Columns.Contains);
-            if (column == null) continue;
+            if (column == null || MainWindow.HideLanguageField(column)) continue;
             bool readOnly = !canEdit || ProtectedContextColumns.Contains(column) ||
                 (_nonEditableColumns.TryGetValue("programs", out var protectedColumns) && protectedColumns.Contains(column));
             var line = new DockPanel { Margin = new Thickness(4, 0, 8, 8), MinHeight = 52 };
@@ -948,6 +948,7 @@ public partial class ProgramManagementControl : UserControl
 
     private void ConditionsGrid_AutoGeneratingColumn(object sender, DataGridAutoGeneratingColumnEventArgs e)
     {
+        if (Configurator.MainWindow.HideLanguageField(e.PropertyName)) { e.Cancel = true; return; }
         if (e.PropertyName == "Назначение")
         {
             var choices = DestinationChoices().ToList();
@@ -1377,7 +1378,7 @@ public partial class ProgramManagementControl : UserControl
         var fields = await _repository.GetInsertColumnsAsync(tableName, generatedColumns);
         var panel = new StackPanel { Margin = new Thickness(14) };
         var editors = new List<(ColumnInfo Column, TextBox Editor)>();
-        foreach (var column in fields)
+        foreach (var column in fields.Where(c => !MainWindow.HideLanguageField(c.Name)))
         {
             bool required = !column.IsNullable && !column.HasDefault || column.Name.Equals("Name_L1", StringComparison.OrdinalIgnoreCase);
             panel.Children.Add(new TextBlock
@@ -2036,6 +2037,7 @@ public partial class ProgramManagementControl : UserControl
 
     private void EntityGrid_AutoGeneratingColumn(object sender, DataGridAutoGeneratingColumnEventArgs e)
     {
+        if (Configurator.MainWindow.HideLanguageField(e.PropertyName)) { e.Cancel = true; return; }
         if (sender is not DataGrid grid) return;
         string gridKey = Convert.ToString(grid.Tag);
         if (gridKey != "programs" && (e.PropertyName is "PLC" or "PLC_Class_Prog_Number" or "Prog_Record" or "Seq_Record"))

@@ -14,7 +14,7 @@
             </Grid>
 
             <Border Grid.Row="1" Margin="12,0,12,12" CornerRadius="9" Background="{DynamicResource BrushBase}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1">
-                <TreeView x:Name="ServerTree" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource BrushText}" Padding="7" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto" HorizontalContentAlignment="Stretch">
+                <TreeView x:Name="ServerTree" PreviewMouseDown="ServerTree_PreviewMouseDown" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource BrushText}" Padding="7" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Visible" HorizontalContentAlignment="Stretch">
                     <TreeView.ItemContainerStyle>
                         <StaticResource ResourceKey="ProjectTreeItemStyle"/>
                     </TreeView.ItemContainerStyle>

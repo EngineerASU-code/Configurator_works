@@ -1,4 +1,5 @@
 #nullable enable
+using System.Text.Json.Nodes;
 using Configurator.Core.Architecture;
 using Configurator.Core.Projects;
 
@@ -71,8 +72,12 @@ internal static class ProjectClassCatalog
     }
 
     internal static string? Read(ProjectRecord row, string column) =>
-        row.Values.FirstOrDefault(v => v.Key.Equals(column, StringComparison.OrdinalIgnoreCase)).Value?.ToString().Trim() is { Length: > 0 } value
+        ReadNode(row, column)?.ToString().Trim() is { Length: > 0 } value
             ? value : null;
+
+    internal static JsonNode? ReadNode(ProjectRecord row, string column) =>
+        row.Values.TryGetPropertyValue(column, out var value) ? value :
+            row.Values.FirstOrDefault(pair => pair.Key.Equals(column, StringComparison.OrdinalIgnoreCase)).Value;
 
     private static string? ResolveLegacyTable(IReadOnlyList<string> names, string className)
     {

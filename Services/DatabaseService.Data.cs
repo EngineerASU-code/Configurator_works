@@ -127,6 +127,40 @@ namespace Configurator
                 return count > int.MaxValue ? int.MaxValue : (int)count;
             }
     
+            internal async Task<int?> FindColumnViewPageAsync(string table, int pageSize, IReadOnlyList<TableColumnSort> sorts,
+                IReadOnlyList<TableFilter> filters, IReadOnlyDictionary<string, object> identity, CancellationToken ct)
+            {
+                if (identity.Count == 0 || sorts.Count == 0) return null;
+                using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
+                await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection, ct);
+                using var command = connection.CreateCommand();
+                var where = BuildFilterClause(filters, out var parameters);
+                command.Parameters.AddRange(parameters.ToArray());
+                var keys = new List<string>();
+                foreach (var pair in identity)
+                {
+                    var column = QuoteIdentifier(pair.Key);
+                    if (pair.Value == null || pair.Value == DBNull.Value) keys.Add($"{column} IS NULL");
+                    else
+                    {
+                        var parameter = "@identity" + keys.Count;
+                        keys.Add($"{column} = {parameter}");
+                        command.Parameters.AddWithValue(parameter, pair.Value);
+                    }
+                }
+                var order = string.Join(", ", sorts.Select(BuildColumnOrder));
+                command.CommandText = $"""
+                    SELECT MIN(position) FROM (
+                        SELECT ROW_NUMBER() OVER (ORDER BY {order}) AS position,
+                               CASE WHEN {string.Join(" AND ", keys)} THEN 1 ELSE 0 END AS matched
+                        FROM {QuoteTableName(table)} {where}
+                    ) AS ranked WHERE matched = 1
+                    """;
+                command.CommandTimeout = 60;
+                var position = await command.ExecuteScalarAsync(ct);
+                return position is long row ? checked((int)((row - 1) / pageSize + 1)) : null;
+            }
+
             private string BuildColumnOrder(TableColumnSort sort)
             {
                 var column = QuoteIdentifier(sort.Column);

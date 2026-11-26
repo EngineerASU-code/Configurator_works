@@ -1190,7 +1190,7 @@ public static class CompareEngine
             JsonNode.DeepEquals(JsonSerializer.SerializeToNode(tableA.Schema), JsonSerializer.SerializeToNode(tableB.Schema)))
             return [];
 
-        if (!lineageMatches)
+        if (!lineageMatches && !(CompareTransferPreview.IsEquipmentTable(tableA.Schema) && CompareTransferPreview.IsEquipmentTable(tableB.Schema)))
         {
             return recordsA.Select(x => ObjectDifference(tableA, tableB, x, null, CompareStatus.Ambiguous,
                     "Не совпадают идентификатор проекта или сохранённое происхождение источника.", identityCertain: false))
@@ -1505,7 +1505,7 @@ public static class CompareEngine
         return records;
     }
 
-    private static bool SameLineage(CompareSource a, CompareSource b)
+    internal static bool SameLineage(CompareSource a, CompareSource b)
     {
         if (!string.IsNullOrWhiteSpace(a.ProjectId) && !string.IsNullOrWhiteSpace(b.ProjectId) &&
             string.Equals(a.ProjectId.Trim(), b.ProjectId.Trim(), StringComparison.OrdinalIgnoreCase))

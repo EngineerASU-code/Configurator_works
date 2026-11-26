@@ -193,7 +193,7 @@ public partial class MatrixCatalogControl : UserControl
             var options = (root.MatrixListRows ?? Array.Empty<MatrixListRow>()).Select(row => new MatrixRecordOption
             {
                 Record = row.Key.Record,
-                Caption = $"{row.Key.Record} · {row.Name_L1} / {row.Name_L2} · DB {row.DB_Number?.ToString(CultureInfo.InvariantCulture) ?? "—"}"
+                Caption = $"{row.Key.Record} · {row.Name_L1}{(MainWindow.HideLanguageField("Name_L2") ? "" : " / " + row.Name_L2)} · DB {row.DB_Number?.ToString(CultureInfo.InvariantCulture) ?? "—"}"
             }).ToList();
             object? previousRecord = _appliedMatrixRecord;
             _suppressSelectionEvents = true;
@@ -1385,6 +1385,7 @@ public partial class MatrixCatalogControl : UserControl
 
     private void RowsGrid_AutoGeneratingColumn(object sender, DataGridAutoGeneratingColumnEventArgs e)
     {
+        if (Configurator.MainWindow.HideLanguageField(e.PropertyName)) { e.Cancel = true; return; }
         if (_tableData == null) { e.Column.IsReadOnly = true; return; }
         string name = e.PropertyName;
         if (e.Column is DataGridTextColumn textColumn)

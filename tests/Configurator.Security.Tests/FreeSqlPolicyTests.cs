@@ -6,6 +6,8 @@ namespace Configurator.Security.Tests;
 public sealed class FreeSqlPolicyTests
 {
     [Theory]
+    [InlineData("DROP TABLE dbo.AnaIN")]
+    [InlineData("TRUNCATE TABLE dbo.AnaIN")]
     [InlineData("USE master")]
     [InlineData("/* comment */ USE master")]
     [InlineData("-- comment before command\nUSE [master]")]

@@ -170,7 +170,7 @@ private void RebuildGroups()
             var effectiveFields = _selectedClass.IsSystem
                 ? _selectedClass.Fields
                 : _architecture.GetEffectiveFields(_selectedClass);
-            var fields = effectiveFields
+            var fields = effectiveFields.Where(f => !MainWindow.HideLanguageField(f.Name))
                 .Where(x => string.Equals(
                     string.IsNullOrWhiteSpace(x.Group) ? FieldGroupCatalog.Resolve(_selectedClass.Name, x.Name) : x.Group,
                     groupName,

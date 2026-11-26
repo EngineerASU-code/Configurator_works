@@ -1,4 +1,6 @@
 #nullable enable
+using System.IO;
+using System.Text.Json.Nodes;
 using Configurator.Core.Projects;
 using Configurator.Core.Workspace;
 using Configurator.Infrastructure.Projects;
@@ -86,6 +88,99 @@ public sealed class PlcAddressReassignmentTests
         var owner = await Owner(workspace);
         await Assert.ThrowsAsync<InvalidOperationException>(() => workspace.ReassignPlcAddressAsync(owner, "I10.0"));
         Assert.Equal(2, await db.DecimalAsync("SELECT COUNT(*) FROM dbo.Valves WHERE Address_Input='I1.0'"));
+    }
+
+    [Theory]
+    [InlineData("Record", "Address_Input")]
+    [InlineData("record", "address_input")]
+    public async Task OfflineMovePersistsAddressAndUndoInExistingPackage(string keyField, string addressField)
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".cfgproj");
+        var packages = new ProjectPackageService();
+        var project = CreateOfflineProject(keyField, addressField);
+        try
+        {
+            await packages.SaveAsync(path, project);
+            using var workspace = new ProjectWorkspace(new OfflineProjectDataSource(project),
+                architecture: new ProjectArchitectureDataSource(project), allowWrite: false);
+            var owner = await Owner(workspace);
+            await using (var reserved = File.Open(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read))
+            {
+                await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                    PlcAddressReassignment.ExecuteOfflineAsync(project, path, reserved, packages, owner, "I8.0", default));
+                var entry = await PlcAddressReassignment.ExecuteOfflineAsync(project, path, reserved, packages, owner, "I3.0", default);
+                Assert.True(entry.CanRestore);
+                Assert.Equal(project.Manifest.ProjectId, entry.ProjectId);
+                Assert.Equal("I3.0", project.LocalRecords[0].Values[addressField]!.ToString());
+                await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                    PlcAddressReassignment.ExecuteOfflineAsync(project, path, reserved, packages, owner, "I4.0", default));
+            }
+            var reopened = await packages.OpenAsync(path);
+            Assert.Equal("I3.0", reopened.LocalRecords[0].Values[addressField]!.ToString());
+            Assert.Equal("I1.0", reopened.LocalRecords[1].Values[addressField]!.ToString());
+            Assert.Single((JsonArray)reopened.Architecture["changeJournal"]!);
+            var journal = new ChangeJournalService();
+            journal.BindOfflineProject(reopened, () => { }, mode: 1);
+            journal.RestoreOffline(Assert.Single(journal.LoadRecent()), reopened, () => { });
+            Assert.Equal("I1.0", reopened.LocalRecords[0].Values[addressField]!.ToString());
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task OfflineWriteFailurePreservesLiveAndReopenedPackage()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".cfgproj");
+        var packages = new ProjectPackageService();
+        var project = CreateOfflineProject();
+        try
+        {
+            await packages.SaveAsync(path, project);
+            var originalBytes = await File.ReadAllBytesAsync(path);
+            using var workspace = new ProjectWorkspace(new OfflineProjectDataSource(project),
+                architecture: new ProjectArchitectureDataSource(project), allowWrite: false);
+            var owner = await Owner(workspace);
+            packages.SaveCheckpoint = point =>
+            {
+                if (point == "after-truncate") throw new IOException("Injected package write failure.");
+            };
+            await using (var reserved = File.Open(path, FileMode.Open, FileAccess.ReadWrite, FileShare.Read))
+            {
+                await Assert.ThrowsAsync<IOException>(() =>
+                    PlcAddressReassignment.ExecuteOfflineAsync(project, path, reserved, packages, owner, "I3.0", default));
+            }
+            Assert.Equal(originalBytes, await File.ReadAllBytesAsync(path));
+            foreach (var state in new[] { project, await packages.OpenAsync(path) })
+            {
+                Assert.Equal("I1.0", state.LocalRecords[0].Values["Address_Input"]!.ToString());
+                Assert.Null(state.Architecture["changeJournal"]);
+            }
+        }
+        finally { File.Delete(path); }
+    }
+
+    private static ConfiguratorProject CreateOfflineProject(string keyField = "Record", string addressField = "Address_Input")
+    {
+        const string table = "dbo.Valves";
+        return new ConfiguratorProject
+        {
+            TableSchemas = [new()
+            {
+                TableName = table, HasStableKey = true, KeyColumns = ["Record"], Columns =
+                [
+                    new() { Name = "Record", DataType = "int" },
+                    new() { Name = "PLC", DataType = "int" },
+                    new() { Name = "Address_Input", DataType = "varchar", MaxLength = 30 }
+                ]
+            }],
+            LocalRecords = Enumerable.Range(1, 3).Select(id => new ProjectRecord
+            {
+                TableName = table, Key = id.ToString(), Values = new JsonObject
+                {
+                    [keyField] = id, ["PLC"] = 1, [addressField] = id <= 2 ? "I1.0" : "I8.0"
+                }
+            }).ToList()
+        };
     }
 
     private static async Task<AddressOwner> Owner(ProjectWorkspace workspace)

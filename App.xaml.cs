@@ -51,7 +51,7 @@ namespace Configurator
 
                 try
                 {
-                    var editor = new global::Configurator.MainWindow();
+                    var editor = new global::Configurator.MainWindow { StartOffline = welcome.StartOffline };
                     var desiredState = editor.WindowState;
                     editor.WindowState = WindowState.Normal;
                     editor.Owner = welcome;

@@ -11,7 +11,7 @@
                 <TextBlock Text="Журнал операций" FontSize="20" FontWeight="SemiBold" Foreground="{DynamicResource BrushText}"/>
                 <TextBlock Text="История изменений текущего проекта" Margin="0,3,0,0" FontSize="11" Foreground="{DynamicResource BrushTextSecondary}"/>
             </StackPanel>
-            <TextBlock x:Name="TxtCount" Grid.Column="1" VerticalAlignment="Center" Foreground="{DynamicResource BrushTextSecondary}" FontSize="11"/>
+            <TextBlock x:Name="TxtCount" Grid.Column="1" VerticalAlignment="Center" Foreground="{DynamicResource BrushTextSecondary}" FontSize="14" TextWrapping="Wrap"/>
         </Grid>
         <Border Grid.Row="1" Background="{DynamicResource BrushPanel}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="9" Padding="6">
             <ListBox x:Name="LogList" BorderThickness="0" Background="Transparent" HorizontalContentAlignment="Stretch" ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
@@ -21,10 +21,10 @@
                         <Border Padding="12" HorizontalAlignment="Stretch" Background="{DynamicResource BrushBase}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1" CornerRadius="7">
                             <Grid>
                                 <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="170"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="12"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                 <StackPanel Grid.Row="0" Grid.Column="0">
-                                    <TextBlock Text="{Binding LocalTime, Mode=OneWay, StringFormat={}{0:dd.MM.yyyy HH:mm:ss}}" Foreground="{DynamicResource BrushTextSecondary}" FontSize="12"/>
-                                    <TextBlock Foreground="{DynamicResource BrushTextSecondary}" FontSize="11" TextTrimming="CharacterEllipsis">
+                                    <TextBlock Text="{Binding LocalTime, Mode=OneWay, StringFormat={}{0:dd.MM.yyyy HH:mm:ss}}" Foreground="{DynamicResource BrushTextSecondary}" FontSize="14"/>
+                                    <TextBlock Foreground="{DynamicResource BrushTextSecondary}" FontSize="14" TextWrapping="Wrap">
                                         <Run Text="{Binding User, Mode=OneWay}"/><Run Text=" · "/><Run Text="{Binding UserRole, Mode=OneWay}"/>
                                     </TextBlock>
                                 </StackPanel>
@@ -34,12 +34,12 @@
                                 <StackPanel Grid.Column="3" Grid.Row="0">
                                     <TextBlock Text="{Binding DisplayDescription, Mode=OneWay}" Foreground="{DynamicResource BrushText}" FontSize="14" FontWeight="SemiBold" TextWrapping="Wrap"/>
                                     <TextBlock Text="{Binding RestorationStatus, Mode=OneWay}" Foreground="{DynamicResource BrushAccent}" FontSize="11" FontWeight="SemiBold" Margin="0,3,0,0"/>
-                                    <TextBlock Foreground="{DynamicResource BrushTextSecondary}" FontSize="11" Margin="0,3,0,0">
+                                    <TextBlock Foreground="{DynamicResource BrushTextSecondary}" FontSize="14" TextWrapping="Wrap" Margin="0,3,0,0">
                                         <Run Text="{Binding ProjectType, Mode=OneWay}"/><Run Text=" · режим "/><Run Text="{Binding Mode, Mode=OneWay}"/><Run Text=" · проект: "/><Run Text="{Binding ProjectName, Mode=OneWay}"/>
                                     </TextBlock>
-                                    <TextBlock Text="{Binding Database, Mode=OneWay, StringFormat=БД: {0}}" Foreground="{DynamicResource BrushTextSecondary}" FontSize="11"/>
-                                    <TextBlock Text="{Binding EntityIdentity, Mode=OneWay, StringFormat=Элемент: {0}}" Foreground="{DynamicResource BrushTextSecondary}" FontSize="11" TextWrapping="Wrap"/>
-                                    <TextBlock Text="{Binding Details, Mode=OneWay}" Foreground="{DynamicResource BrushTextSecondary}" FontSize="10" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                                    <TextBlock Text="{Binding Database, Mode=OneWay, StringFormat=БД: {0}}" Foreground="{DynamicResource BrushTextSecondary}" FontSize="14" TextWrapping="Wrap"/>
+                                    <TextBlock Text="{Binding EntityIdentity, Mode=OneWay, StringFormat=Элемент: {0}}" Foreground="{DynamicResource BrushTextSecondary}" FontSize="14" TextWrapping="Wrap"/>
+                                    <TextBlock Text="{Binding Details, Mode=OneWay}" Foreground="{DynamicResource BrushTextSecondary}" FontSize="14" TextWrapping="Wrap" Margin="0,3,0,0"/>
                                 </StackPanel>
                                 <Button Grid.Column="4" Grid.Row="0" Content="Отменить действие" Width="150" Height="34" Style="{StaticResource BtnSecondary}" IsEnabled="{Binding CanRestore, Mode=OneWay}" Tag="{Binding}" Click="Restore_Click" VerticalAlignment="Top" Margin="8,0,0,0"/>
                                 <ItemsControl Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="5" ItemsSource="{Binding Changes}" Margin="0,8,0,0">

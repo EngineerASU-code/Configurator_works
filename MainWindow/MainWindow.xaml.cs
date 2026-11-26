@@ -50,6 +50,8 @@ namespace Configurator
 
         private string VmCacheKey(string dbName) => $"{_connection.Server}|{dbName}";
 
+        internal bool StartOffline { get; init; }
+
         public MainWindow()
         {
             InitializeComponent();
@@ -106,6 +108,7 @@ namespace Configurator
         private void UpdateWorkspaceModeUi()
         {
             if (OnlineModeButton == null || OfflineModeButton == null) return;
+            if (_offlineSelectionRequired) _workspaceModeChosen = false;
             RefreshActionLogUi();
 
             // Offline can always be requested from Online; a project must be selected before its editor is unlocked.
@@ -127,7 +130,7 @@ namespace Configurator
             if (MenuRestoreDatabase != null) MenuRestoreDatabase.IsEnabled = !_isOfflineWorkspace && _workspaceModeChosen;
             if (MenuSaveLocalCopy != null) MenuSaveLocalCopy.IsEnabled = !_isOfflineWorkspace;
             if (MenuCloseOfflineProject != null) MenuCloseOfflineProject.IsEnabled = _isOfflineWorkspace && _openedLocalProject != null;
-            if (MenuDatabase != null) MenuDatabase.IsEnabled = !_isOfflineWorkspace && !_offlineSelectionRequired && _currentMode == 1;
+            if (MenuDatabaseExcel != null) MenuDatabaseExcel.IsEnabled = !_isOfflineWorkspace && !_offlineSelectionRequired && _currentMode == 1;
             if (_leftPanel != null)
                 _leftPanel.SetAddDbButtonText(_isOfflineWorkspace ? "＋  Добавить проект" : "＋  Добавить базу");
             if (OnlineModeBadge != null) OnlineModeBadge.Visibility = Visibility.Collapsed;
@@ -140,7 +143,7 @@ namespace Configurator
                 Mode2View.Visibility = Visibility.Collapsed;
                 Mode3View.Visibility = Visibility.Collapsed;
                 NavDatabase.IsEnabled = NavTemplates.IsEnabled = NavProject.IsEnabled = NavFbEditor.IsEnabled = false;
-                MenuDatabase.IsEnabled = false;
+                MenuDatabaseExcel.IsEnabled = false;
                 CurrentProjectText.IsEnabled = false;
             }
         }
@@ -176,8 +179,58 @@ namespace Configurator
             }
         }
 
+        private string LanguageDatabase => _currentMode == 1 && !string.IsNullOrWhiteSpace(_activeDbName)
+            ? _activeDbName : _selectedDbName;
+
+        private bool UnifiedLanguageEnabled => _isOfflineWorkspace
+            ? _openedLocalProject?.Settings.UnifiedLanguage == true
+            : !string.IsNullOrEmpty(LanguageDatabase) && new DatabaseService(_connection.ToConnectionString(LanguageDatabase)).UsesUnifiedLanguage;
+
+        internal static bool HideLanguageField(string name) => name?.EndsWith("L2", StringComparison.OrdinalIgnoreCase) == true
+            && System.Windows.Application.Current?.MainWindow is MainWindow window && window.UnifiedLanguageEnabled;
+
+        private void ViewMenu_Opened(object sender, RoutedEventArgs e)
+        {
+            UnifiedLanguageSetting.IsChecked = UnifiedLanguageEnabled;
+        }
+
+        private async void UnifiedLanguage_Click(object sender, RoutedEventArgs e)
+        {
+            bool enabled = UnifiedLanguageSetting.IsChecked;
+            try
+            {
+                if (!UserAuthorizationService.Require(Permission.ManageDatabases)) return;
+                if (_isOfflineWorkspace && _openedLocalProject == null && !await OpenLocalProjectAsync()) return;
+                if (!_isOfflineWorkspace && string.IsNullOrWhiteSpace(LanguageDatabase) && !SelectProjectForMode()) return;
+                IsEnabled = false;
+                if (_isOfflineWorkspace && _projectDataSource.Current is OfflineProjectDataSource source)
+                {
+                    CommitOfflineGridToProject();
+                    UnifiedLanguage.SetOffline(source, enabled);
+                    _offlineProjectDirty = true;
+                    if (_offlineCurrentTableName != null) OpenOfflineTable(_offlineCurrentTableName);
+                }
+                else if (!_isOfflineWorkspace && !string.IsNullOrWhiteSpace(LanguageDatabase))
+                {
+                    await new DatabaseService(_connection.ToConnectionString(LanguageDatabase)).SetUnifiedLanguageAsync(enabled);
+                    if (_activeVm != null)
+                    {
+                        _fieldsBuilder.Generate(_activeVm.Columns, _activeVm.KeyColumn);
+                        await ReloadCurrentPageFastAsync();
+                    }
+                }
+                if (_currentMode != 1) ActivateMode(_currentMode);
+            }
+            catch (Exception ex)
+            {
+                Infrastructure.ModernDialog.Show(this, Infrastructure.UserErrorMessage.Format(ex), "Единая ЯС", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally { IsEnabled = true; UnifiedLanguageSetting.IsChecked = UnifiedLanguageEnabled; }
+        }
+
         private void DataTableGrid_AutoGeneratingColumn(object sender, DataGridAutoGeneratingColumnEventArgs e)
         {
+            if (Configurator.MainWindow.HideLanguageField(e.PropertyName)) { e.Cancel = true; return; }
             e.Column.SortMemberPath = e.PropertyName;
             ConfigureColumnHeader(e.Column, e.PropertyName);
 
@@ -244,7 +297,7 @@ namespace Configurator
             Mode3View.Visibility = Visibility.Collapsed;
             Mode4View.Visibility = Visibility.Collapsed;
             WorkspaceSelectionOverlay.Visibility = Visibility.Collapsed;
-            MenuDatabase.IsEnabled = false;
+            MenuDatabaseExcel.IsEnabled = false;
             MenuRestoreDatabase.IsEnabled = false;
             MenuExportProject.IsEnabled = false;
             MenuSaveLocalCopy.IsEnabled = false;
@@ -265,16 +318,26 @@ namespace Configurator
             OfflineModeButton.IsEnabled = true;
             CurrentProjectText.IsEnabled = true;
             ApplyAuthorizationUi(allowModeActivation: false);
-            _workspaceModeChosen = true;
-            _isOfflineWorkspace = false;
-            UpdateWorkspaceModeUi();
-            ShowKnownDatabasesLoading();
-            await TryReconnectDatabasesAsync();
-            if (!_isOfflineWorkspace)
+            if (StartOffline)
             {
-                RebuildTree();
-                UpdateAddDbButtonState();
-                _rightPanel.TableTitle.Text = "Выберите таблицу слева";
+                _offlineSelectionRequired = true;
+                UpdateWorkspaceModeUi();
+                await OpenLocalProjectAsync();
+            }
+            else
+            {
+                _workspaceModeChosen = true;
+                _isOfflineWorkspace = false;
+                UpdateWorkspaceModeUi();
+                ShowKnownDatabasesLoading();
+                await TryReconnectDatabasesAsync();
+                if (!_isOfflineWorkspace)
+                {
+                    RebuildTree();
+                    UpdateAddDbButtonState();
+                    _rightPanel.TableTitle.Text = "Выберите таблицу слева";
+                }
+
             }
 
             // Only after the login dialog has closed and the workspace choice is known,
@@ -414,7 +477,7 @@ namespace Configurator
                     : $"{user.DisplayName} · {user.RoleName}";
                 CurrentUserText.ToolTip = user == null ? null : $"Логин: {user.UserName} · Роль: {user.RoleName}";
             }
-            if (MenuDatabase != null) MenuDatabase.IsEnabled = !_isOfflineWorkspace && !_offlineSelectionRequired && _currentMode == 1;
+            if (MenuDatabaseExcel != null) MenuDatabaseExcel.IsEnabled = !_isOfflineWorkspace && !_offlineSelectionRequired && _currentMode == 1;
             // Visibility permissions are independent of viewing/editing permissions.
             if (NavDatabase != null) NavDatabase.Visibility = PermissionPolicy.CanShowMode(UserAuthorizationService.CurrentUser, UserAuthorizationService.CurrentRole, 1) ? Visibility.Visible : Visibility.Collapsed;
             if (NavTemplates != null) NavTemplates.Visibility = PermissionPolicy.CanShowMode(UserAuthorizationService.CurrentUser, UserAuthorizationService.CurrentRole, 2) ? Visibility.Visible : Visibility.Collapsed;
@@ -728,7 +791,7 @@ namespace Configurator
             Mode4View.Visibility = mode == 4 ? Visibility.Visible : Visibility.Collapsed;
             StatusText.Text = mode switch { 1 => "БД проекта", 2 => "Шаблоны проекта", 3 => "Объекты проекта", 4 => "Редактор FB-блоков", _ => "БД проекта" };
             UpdateModeNavigation(mode);
-            if (FindName("MenuDatabase") is MenuItem databaseMenu) databaseMenu.IsEnabled = mode == 1 && !_isOfflineWorkspace && !_offlineSelectionRequired;
+            if (FindName("MenuDatabaseExcel") is MenuItem databaseMenu) databaseMenu.IsEnabled = mode == 1 && !_isOfflineWorkspace && !_offlineSelectionRequired;
             string availableProject = string.IsNullOrWhiteSpace(_selectedDbName) || _failedDatabases.Contains(_selectedDbName)
                 ? string.Empty : _selectedDbName;
             ConfigureActiveProjectEditor(mode, availableProject);
@@ -895,7 +958,22 @@ namespace Configurator
         private void MenuOptionsCheckRecord_Click(object sender, RoutedEventArgs e)
         {
             if (!UserAuthorizationService.Require(Permission.CheckTools)) return;
-            if (!_workspaceModeChosen || _isOfflineWorkspace || _offlineSelectionRequired) return;
+            if (!_workspaceModeChosen || _offlineSelectionRequired) return;
+            if (_isOfflineWorkspace)
+            {
+                if (_openedLocalProject == null) return;
+                try
+                {
+                    CommitOfflineGridToProject();
+                    new FreeRecordCheckWindow(_openedLocalProject) { Owner = this }.Show();
+                }
+                catch (Exception ex)
+                {
+                    Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex),
+                        "Проверить Record", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+                return;
+            }
             var activeDatabases = GetActiveDatabases();
             if (activeDatabases.Count == 0)
             {
@@ -903,7 +981,7 @@ namespace Configurator
                     "Проверить Record", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
-            new FreeRecordCheckWindow(_connection.ToConnectionString, activeDatabases, _selectedDbName) { Owner = this }.ShowDialog();
+            new FreeRecordCheckWindow(_connection.ToConnectionString, activeDatabases, _selectedDbName) { Owner = this }.Show();
         }
 
         private void MenuOptionsCheckAddresses_Click(object sender, RoutedEventArgs e)
@@ -966,7 +1044,7 @@ namespace Configurator
                 Редактируйте строки таблиц, создавайте объекты по одному или группами. В разделе программ доступны последовательности, шаги и параметры.
 
                 Проверка и сравнение
-                В меню «Опции» откройте «Проверить Record», выберите базу, PLC и класс, чтобы найти свободные номера внутри занятого диапазона. «Карта адресов PLC» показывает свободные биты и конфликты адресов. «Сравнение проектов» позволяет проверить различия перед выборочным переносом.
+                В меню «Опции» откройте «Проверить Record», выберите PLC и класс, чтобы найти свободные номера внутри занятого диапазона. В Online проверка читает выбранную базу, в Offline — открытый проект. В «Карте адресов PLC» дважды нажмите конфликтующий адрес, чтобы выбрать свободный совместимый адрес. «Сравнение проектов» позволяет проверить различия перед выборочным переносом.
 
                 Копии и история
                 В меню «Файл» можно сохранить локальную копию .cfgproj, создать SQL backup или восстановить его в новую базу. Для просмотра изменений и доступной отмены откройте «Опции → Журнал операций».

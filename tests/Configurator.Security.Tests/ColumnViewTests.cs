@@ -92,6 +92,9 @@ public class ColumnViewTests(WpfDialogHost host)
         Assert.Equal(100, page.Rows.Count);
         Assert.Equal(126, page.Rows[0]["ID"]);
         Assert.Equal(125, page.Rows[1]["ID"]);
+        Assert.Equal(2, await vm.FindRowPageAsync(new Dictionary<string, object> { ["ID"] = 26 }));
+        Assert.Equal(1, await vm.FindRowPageAsync(new Dictionary<string, object> { ["ID"] = 126 }));
+        Assert.Null(await vm.FindRowPageAsync(new Dictionary<string, object> { ["ID"] = 128 }));
         vm.CurrentPage = 2;
         Assert.Equal(26, (await vm.LoadPageAsync()).Rows[0]["ID"]);
 

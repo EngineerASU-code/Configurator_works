@@ -8,7 +8,8 @@ using Configurator.Infrastructure;
 namespace Configurator;
 
 internal sealed record AddressMapSource(string Name, Func<CancellationToken, Task<ProjectWorkspace>> Open,
-    bool CanEdit = false, string? Path = null, string? Server = null, string? Database = null)
+    bool CanEdit = false, string? Path = null, string? Server = null, string? Database = null,
+    Func<AddressOwner, string, CancellationToken, Task<ChangeJournalRowChange>>? ReassignOffline = null)
 {
     public override string ToString() => Name;
 }
@@ -33,13 +34,14 @@ public partial class PlcAddressWindow : Window
     }
 
     internal PlcAddressWindow(IEnumerable<AddressMapSource> sources, Func<string, CancellationToken, Task<ProjectWorkspace>> openFile,
-        Action<ChangeJournalEntry>? changeJournalRequested = null)
+        Action<ChangeJournalEntry>? changeJournalRequested = null, AddressMapSource? initialSource = null)
     {
         InitializeComponent();
         KeyDown += Configurator.Infrastructure.ModernDialog.CloseToolOnEnter;
         _openFile = openFile;
         _changeJournalRequested = changeJournalRequested;
         foreach (var source in sources) Project.Items.Add(source);
+        if (initialSource != null) Loaded += (_, _) => Project.SelectedItem ??= initialSource;
     }
 
     private void BrowseProject(object sender, RoutedEventArgs e)
@@ -211,9 +213,9 @@ public partial class PlcAddressWindow : Window
     private async Task EditConflictAsync(Cell cell, string? preferredOwner)
     {
         if (cell.State != "Конфликт" || Plc.SelectedItem is not string plc || _maps == null) return;
-        if (Project.SelectedItem is not AddressMapSource { CanEdit: true })
+        if (Project.SelectedItem is not AddressMapSource { CanEdit: true } selectedSource)
         {
-            MessageBox.Show(this, "Изменение адресов доступно только в онлайн-проекте при наличии права редактирования.",
+            MessageBox.Show(this, "Для изменения адресов выберите Online-базу или активный Offline-проект и войдите с правом редактирования.",
                 "Карта адресов", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
@@ -260,7 +262,6 @@ public partial class PlcAddressWindow : Window
         if (MessageBox.Show(this, $"Изменить адрес назначения «{selectedOwner.Display}» с «{origin}» на «{destination}»?",
             "Подтверждение изменения", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
         var timer = System.Diagnostics.Stopwatch.StartNew();
-        var selectedSource = Project.SelectedItem as AddressMapSource;
         var context = $"{_workspace!.DisplayName} · PLC {plc} · {selectedOwner.Display} · {origin} → {destination}";
         bool committed = false;
         try
@@ -271,7 +272,9 @@ public partial class PlcAddressWindow : Window
             if (!UserAuthorizationService.Has(Permission.CheckTools) || !UserAuthorizationService.Has(Permission.Mode1Edit))
                 throw new UnauthorizedAccessException("Нет права изменять адреса проекта.");
             var token = _lifetime.Token;
-            var change = await Task.Run(() => _workspace!.ReassignPlcAddressAsync(selectedOwner, destination.Value, token), token);
+            var change = selectedSource.ReassignOffline is { } reassignOffline
+                ? await reassignOffline(selectedOwner, destination.Value, token)
+                : await Task.Run(() => _workspace!.ReassignPlcAddressAsync(selectedOwner, destination.Value, token), token);
             committed = true;
             if (selectedSource is { Database: not null } && _changeJournalRequested != null)
             {
@@ -293,7 +296,9 @@ public partial class PlcAddressWindow : Window
                     Changes = new List<ChangeJournalRowChange> { change }
                 });
             }
-            SessionTestLog.Trace("КАРТА PLC", $"SQL COMMIT: {context}, {timer.ElapsedMilliseconds} мс");
+            bool offline = selectedSource.ReassignOffline != null;
+            var savedIn = offline ? "Offline-проекте" : "базе данных";
+            SessionTestLog.Trace("КАРТА PLC", $"Сохранено в {savedIn}: {context}, {timer.ElapsedMilliseconds} мс");
             Status.Text = "Сохранено. Перечитываем карту…";
             await ReloadAsync(plc);
             if (token.IsCancellationRequested) return;
@@ -303,10 +308,11 @@ public partial class PlcAddressWindow : Window
             }
             else
             {
+                var address = Convert.ToString(change.After[selectedOwner.Field].ToObject(), System.Globalization.CultureInfo.InvariantCulture)?.Trim();
                 var moved = _maps.TryGetValue(plc, out var refreshed)
-                    ? refreshed.FindOwner(selectedOwner.Display + " · " + destination.Value) : null;
+                    ? refreshed.FindOwner(selectedOwner.Display + " · " + address) : null;
                 Status.Text = moved?.Record.Key == selectedOwner.Record.Key
-                    ? $"{selectedOwner.Display}: {origin} → {destination}. Подтверждено чтением базы."
+                    ? $"{selectedOwner.Display}: {origin} → {destination}. Подтверждено при обновлении карты."
                     : $"Запись сохранена, текущее назначение не подтверждено при перечитывании: {context}.";
             }
             SessionTestLog.Trace("КАРТА PLC", $"{Status.Text} · всего {timer.ElapsedMilliseconds} мс");

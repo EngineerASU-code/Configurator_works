@@ -35,6 +35,10 @@ public static class ProjectKeyCodec
         switch (dataType.ToLowerInvariant())
         {
             case "tinyint": case "smallint": case "int": case "bigint":
+                // Offline journal snapshots can represent an integral SQL value as 9.0.
+                var point = raw.IndexOf('.');
+                if (point > 0 && point < raw.Length - 1 && raw.AsSpan(point + 1).IndexOfAnyExcept('0') < 0)
+                    raw = raw[..point];
                 return decimal.Parse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture).ToString(CultureInfo.InvariantCulture);
             case "decimal": case "numeric": case "money": case "smallmoney":
                 return decimal.Parse(raw, NumberStyles.Float, CultureInfo.InvariantCulture).ToString("G29", CultureInfo.InvariantCulture);

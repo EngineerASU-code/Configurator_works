@@ -643,7 +643,7 @@ public sealed class ProjectPackageService
         // Connection strings and credentials are deliberately not modeled in this format.
     }
 
-    private static ConfiguratorProject CloneProject(ConfiguratorProject source)
+    internal static ConfiguratorProject CloneProject(ConfiguratorProject source)
     {
         // JSON round-trip creates a deep, detached snapshot without changing the on-disk schema.
         var bytes = JsonSerializer.SerializeToUtf8Bytes(source, JsonOptions);

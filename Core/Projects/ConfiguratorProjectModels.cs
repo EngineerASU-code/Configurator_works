@@ -51,6 +51,7 @@ public sealed class ConfiguratorProjectManifest
 public sealed class ProjectSettings
 {
     public string DisplayName { get; set; } = "Новый проект";
+    public bool UnifiedLanguage { get; set; }
     public string PreferredMode { get; set; } = "Online";
     public string DatabaseProvider { get; set; } = "SqlServer";
     public string DatabaseLabel { get; set; } = string.Empty;

@@ -79,6 +79,13 @@ public partial class DependencyReplacementWindow : Window
         var sourceLabel = string.IsNullOrWhiteSpace(sourceName) ? DependencyRecordLabel.Format("", option.Hit.SourceKey) : sourceName;
         var targetLabel = string.IsNullOrWhiteSpace(option.Hit.TargetName) ? DependencyRecordLabel.Format("", option.Hit.TargetKey) : option.Hit.TargetName;
         if (targetLabel.Length == 0) targetLabel = Convert.ToString(option.CurrentValue);
+        var sourceFields = option.Hit.Relation.SourceColumns;
+        var fieldLabel = sourceFields.Count switch
+        {
+            0 => "",
+            1 => $" в поле {sourceFields[0]}",
+            _ => $" в полях {string.Join(", ", sourceFields)}"
+        };
         details.Children.Add(new TextBlock
         {
             Text = $"{sourceType} {sourceLabel} ссылается на:", FontWeight = FontWeights.SemiBold,
@@ -86,7 +93,7 @@ public partial class DependencyReplacementWindow : Window
         });
         details.Children.Add(new TextBlock
         {
-            Text = $"{ShortTableName(option.Hit.TargetTable)} {targetLabel}",
+            Text = $"{ShortTableName(option.Hit.TargetTable)} {targetLabel}{fieldLabel}",
             Margin = new Thickness(0, 3, 0, 6), TextWrapping = TextWrapping.Wrap, Foreground = (Brush)FindResource("BrushText")
         });
         Grid.SetRowSpan(details, 3);
@@ -150,8 +157,7 @@ public partial class DependencyReplacementWindow : Window
             var root = new Grid();
             root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(190) });
-            root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(190) });
+            root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(3, GridUnitType.Star) });
             root.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
             var label = new TextBlock
@@ -166,7 +172,7 @@ public partial class DependencyReplacementWindow : Window
             root.Children.Add(label);
 
             var choices = new List<GroupParameterChoice>();
-            for (var i = 0; i < Math.Min(columns.Count, 2); i++)
+            for (var i = 0; i < columns.Count; i++)
             {
                 var column = columns[i];
                 var combo = CreateParameterCombo(rows, i);
@@ -181,36 +187,11 @@ public partial class DependencyReplacementWindow : Window
                     Margin = new Thickness(0, 0, 0, 3)
                 });
                 wrapper.Children.Add(combo);
-                Grid.SetColumn(wrapper, Math.Min(i + 1, 2));
+                if (i > 0) root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                Grid.SetRow(wrapper, i);
+                Grid.SetColumn(wrapper, 1);
                 root.Children.Add(wrapper);
 
-            }
-
-            // If there are more than two linked columns, put the remaining editors on a second line.
-            // This keeps the common two-column case compact while still supporting arbitrary relations.
-            if (columns.Count > 2)
-            {
-                root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-                var extra = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
-                for (var i = 2; i < columns.Count; i++)
-                {
-                    var choice = new GroupParameterChoice(columns[i], CreateParameterCombo(rows, i));
-                    choices.Add(choice);
-                    var wrapper = new StackPanel { Width = 180, Margin = new Thickness(0, 0, 8, 0) };
-                    wrapper.Children.Add(new TextBlock
-                    {
-                        Text = choice.Column,
-                        Foreground = (Brush)FindResource("BrushTextSecondary"),
-                        FontSize = 11,
-                        Margin = new Thickness(0, 0, 0, 3)
-                    });
-                    wrapper.Children.Add(choice.Combo);
-                    extra.Children.Add(wrapper);
-                }
-                Grid.SetRow(extra, 1);
-                Grid.SetColumn(extra, 0);
-                Grid.SetColumnSpan(extra, 3);
-                root.Children.Add(extra);
             }
 
             var button = new Button
@@ -223,7 +204,7 @@ public partial class DependencyReplacementWindow : Window
                 VerticalAlignment = VerticalAlignment.Bottom
             };
             button.Click += (_, _) => ApplyParameterGroup(rows, columns, choices);
-            Grid.SetColumn(button, 3);
+            Grid.SetColumn(button, 2);
             root.Children.Add(button);
 
             panel.Child = root;
@@ -251,8 +232,7 @@ public partial class DependencyReplacementWindow : Window
         var combo = new ComboBox
         {
             ItemsSource = choices,
-            Height = 32,
-            MinWidth = 165,
+            MinHeight = 32,
             VerticalAlignment = VerticalAlignment.Center,
             ToolTip = "Новое значение"
         };
@@ -317,7 +297,10 @@ public partial class DependencyReplacementWindow : Window
     {
         var template = new DataTemplate(typeof(ParameterChoice));
         var factory = new FrameworkElementFactory(typeof(TextBlock));
-        factory.SetBinding(TextBlock.TextProperty, new Binding(nameof(ParameterChoice.Display)));
+        var display = new Binding(nameof(ParameterChoice.Display));
+        factory.SetBinding(TextBlock.TextProperty, display);
+        factory.SetBinding(ToolTipService.ToolTipProperty, display);
+        factory.SetValue(TextBlock.TextWrappingProperty, TextWrapping.Wrap);
         template.VisualTree = factory;
         return template;
     }

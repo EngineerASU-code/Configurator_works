@@ -549,6 +549,12 @@ public sealed partial class ProgramManagementRepository
         if (!UniqueKeyColumns.TryGetValue(tableName, out var uniqueKey))
             throw new InvalidOperationException("Редактирование этой таблицы не поддерживается.");
         var columns = await _database.GetTableColumnsAsync(tableName, ct);
+        if (_database.UsesUnifiedLanguage)
+        {
+            var copy = changes.ToDictionary(p => p.Key, p => p.Value, StringComparer.OrdinalIgnoreCase);
+            Core.Projects.UnifiedLanguage.Mirror(copy, columns.Select(c => c.Name));
+            changes = copy;
+        }
         RequireColumns(columns, original.Keys.Concat(changes.Keys).Concat(uniqueKey), tableName);
         foreach (var field in changes.Keys)
         {
@@ -640,6 +646,7 @@ public sealed partial class ProgramManagementRepository
             values[pair.Key] = pair.Value ?? DBNull.Value;
         }
 
+        if (_database.UsesUnifiedLanguage) Core.Projects.UnifiedLanguage.Mirror(values, columns.Select(c => c.Name));
         var missing = columns.Where(column => !column.IsNullable && !column.HasDefault && !column.IsIdentity &&
                 !column.IsReadOnly && !values.ContainsKey(column.Name))
             .Select(column => column.Name).ToList();

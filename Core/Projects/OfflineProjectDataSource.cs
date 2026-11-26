@@ -105,6 +105,7 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
         var keyColumns = schema.KeyColumns;
         if (!schema.HasStableKey || keyColumns.Count == 0) throw new InvalidOperationException($"В локальном снимке для таблицы «{resolved}» не сохранены стабильные ключевые столбцы.");
         var normalizedValues = values.ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
+        if (_project.Settings.UnifiedLanguage) UnifiedLanguage.Mirror(normalizedValues, schema.Columns.Select(c => c.Name));
         var generatedIdentityColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var name in normalizedValues.Keys)
             if (FindColumn(schema, name).IsIdentity)
@@ -204,6 +205,7 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
         var record = matches[0];
         var candidate = (System.Text.Json.Nodes.JsonObject)record.Values.DeepClone();
         var normalizedValues = values.ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
+        if (_project.Settings.UnifiedLanguage) UnifiedLanguage.Mirror(normalizedValues, schema.Columns.Select(c => c.Name));
         ValidateValues(schema, normalizedValues, isCreate: false, null);
         foreach (var pair in normalizedValues)
         {
@@ -215,7 +217,7 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
         if (keyChanged && FindByKey(newKey).Any())
             throw new InvalidOperationException("Запись с таким ключом уже существует в локальном проекте.");
         record.Values = candidate;
-        record.Key = newKey;
+        if (keyChanged) record.Key = newKey;
         if (keyChanged && _transactionKeyIndexes != null &&
             _transactionKeyIndexes.TryGetValue(resolved, out var indexed))
         {
@@ -366,6 +368,13 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
         var existing = _recordsByTable!.TryGetValue(resolvedTable, out var tableRecords)
             ? tableRecords.FirstOrDefault(x => x.Key.Equals(record.Key, StringComparison.Ordinal))
             : null;
+        if (_project.Settings.UnifiedLanguage)
+        {
+            var names = (GetSchema(resolvedTable)?.Columns.Select(c => c.Name) ?? Enumerable.Empty<string>())
+                .Concat(record.Values.Select(p => p.Key));
+            foreach (var (first, second) in UnifiedLanguage.Pairs(names))
+                record.Values[second] = record.Values[first]?.DeepClone();
+        }
         if (existing == null) _project.LocalRecords.Add(record);
         else
         {

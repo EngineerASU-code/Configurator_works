@@ -75,6 +75,11 @@ internal static class LookupOptionRules
             && (string.IsNullOrWhiteSpace(requested) || Stem(Leaf(requested)) == "PLC"))
             return ResolveAliases(tableNames, "PLCType", "PLC_Types", "PLCTypes");
 
+        if (automaticDiscovery && field.Equals("Type", StringComparison.OrdinalIgnoreCase)
+            && Leaf(sourceTable).Equals("Reglers", StringComparison.OrdinalIgnoreCase)
+            && new[] { "dbo.ReglerType", "dbo.Reglers_Types" }.Contains(requested, StringComparer.OrdinalIgnoreCase))
+            return UniqueTable(tableNames, name => name.StartsWith("dbo.", StringComparison.OrdinalIgnoreCase)
+                && new[] { "REGLERTYPE", "REGLERTYPES", "REGLERSTYPE", "REGLERSTYPES" }.Contains(Leaf(name).Replace("_", "").ToUpperInvariant()));
         if (explicitTable) return null;
         if (field.Equals("PLC", StringComparison.OrdinalIgnoreCase))
             return ResolveAliases(tableNames, "PLC", "PLCs");

@@ -14,10 +14,11 @@ public class TableClipboardTests
     {
         object[][] rows = { new object[] { 1, "a\tb\r\nc\"d", DBNull.Value }, new object[] { 2, "x", "" } };
 
-        var result = TableClipboard.Read(TableClipboard.Write(rows));
+        var result = TableClipboard.Read(TableClipboard.Write(new[] { "Record", "Field\tName", "Value" }, rows));
 
-        Assert.Equal(new[] { "1", "a\tb\r\nc\"d", "" }, result[0]);
-        Assert.Equal(new[] { "2", "x", "" }, result[1]);
+        Assert.Equal(new[] { "Record", "Field\tName", "Value" }, result[0]);
+        Assert.Equal(new[] { "1", "a\tb\r\nc\"d", "" }, result[1]);
+        Assert.Equal(new[] { "2", "x", "" }, result[2]);
     }
 
     [CompareLocalDbFact]

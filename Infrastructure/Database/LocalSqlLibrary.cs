@@ -25,8 +25,7 @@ internal class LocalSqlLibrary(string libraryPath)
         if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(sql))
             throw new InvalidOperationException("Ð—Ð°Ð´Ð°Ð¹Ñ‚Ðµ Ð¸Ð¼Ñ Ð·Ð°Ð¿Ñ€Ð¾ÑÐ° Ð¸ Ð²Ð²ÐµÐ´Ð¸Ñ‚Ðµ SQL.");
 
-        using var writerLock = new FileStream(libraryPath + ".lock", FileMode.OpenOrCreate,
-            FileAccess.Write, FileShare.None, 1, FileOptions.DeleteOnClose);
+        using var writerLock = LockLibrary();
         var queries = Read();
         if (queries.Any(q => q.Id != original?.Id && string.Equals(q.Name, name, StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException("Ð—Ð°Ð¿Ñ€Ð¾Ñ Ñ Ñ‚Ð°ÐºÐ¸Ð¼ Ð¸Ð¼ÐµÐ½ÐµÐ¼ ÑƒÐ¶Ðµ ÑÑƒÑ‰ÐµÑÑ‚Ð²ÑƒÐµÑ‚.");
@@ -40,6 +39,23 @@ internal class LocalSqlLibrary(string libraryPath)
             queries[index] = saved;
         }
 
+        Write(queries);
+        return saved;
+    }
+
+    public void Delete(LocalQuery original)
+    {
+        using var writerLock = LockLibrary();
+        var queries = Read();
+        if (!queries.Remove(original)) throw new InvalidOperationException("Çàïðîñ èçìåíèëñÿ. Îáíîâèòå ñïèñîê.");
+        Write(queries);
+    }
+
+    private FileStream LockLibrary() => new FileStream(libraryPath + ".lock", FileMode.OpenOrCreate,
+            FileAccess.Write, FileShare.None, 1, FileOptions.DeleteOnClose);
+
+    private void Write(List<LocalQuery> queries)
+    {
         var temporary = libraryPath + ".tmp";
         try
         {
@@ -47,6 +63,5 @@ internal class LocalSqlLibrary(string libraryPath)
             File.Move(temporary, libraryPath, true);
         }
         finally { File.Delete(temporary); }
-        return saved;
     }
 }

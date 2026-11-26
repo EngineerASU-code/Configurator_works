@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -24,12 +24,26 @@ namespace Configurator
         private CancellationTokenSource _recordSuggestion;
 
         public Dictionary<string, object> Values { get; private set; }
+        internal Func<Task<bool>> SaveChangesAsync { get; set; }
+        private bool _saving;
+        internal void MarkConflict(string field)
+        {
+            Control input = _fieldInputs.GetValueOrDefault(field);
+            input ??= _lookupInputs.GetValueOrDefault(field);
+            if (input == null) return;
+            input.Background = System.Windows.Media.Brushes.MistyRose;
+            input.Focus();
+            input.BringIntoView();
+        }
+
+        internal Func<bool> CanApply { get; set; }
         public bool Confirmed { get; private set; } = false;
 
         public EditRowWindow(string tableName, List<ColumnInfo> columns,
             Dictionary<string, string> currentValues, string keyColumn,
             string classNumberColumn = null, int? forcedClassNumber = null, Dictionary<string, List<LookupOption>> lookupOptions = null,
-            Func<string, CancellationToken, Task<int>> suggestScopedRecord = null)
+            Func<string, CancellationToken, Task<int>> suggestScopedRecord = null,
+            Func<string, Task<Dictionary<string, List<LookupOption>>>> addresses = null)
         {
             InitializeComponent();
             _classNumberColumn = classNumberColumn ?? "";
@@ -37,7 +51,7 @@ namespace Configurator
             _lookupOptions = lookupOptions ?? new Dictionary<string, List<LookupOption>>(StringComparer.OrdinalIgnoreCase);
             _suggestScopedRecord = suggestScopedRecord;
             WindowTitle.Text = $"Изменить строку — {tableName}";
-            _columns = columns;
+            _columns = columns.Where(c => !MainWindow.HideLanguageField(c.Name)).ToList();
             _currentValues = currentValues;
             _keyColumn = keyColumn;
             var screen = SystemParameters.WorkArea;
@@ -45,14 +59,15 @@ namespace Configurator
             Width = Math.Min(screen.Width, columns.Count(c => !c.IsReadOnly) > 12 ? 1080 : 700);
             FieldsPanel.Columns = Width >= 900 ? 4 : 3;
             SizeChanged += (_, e) => FieldsPanel.Columns = e.NewSize.Width >= 900 ? 4 : 3;
-            GenerateFields();
+            GenerateFields(addresses);
             ValidateFields();
+            Closing += (_, e) => e.Cancel = _saving;
             Closed += (_, _) => _recordSuggestion?.Cancel();
         }
 
-        private void GenerateFields()
+        private void GenerateFields(Func<string, Task<Dictionary<string, List<LookupOption>>>> addresses)
         {
-            foreach (var col in _columns)
+            foreach (var col in _columns.OrderBy(c => InputPlaceholder.FieldOrder(c.Name)))
             {
                 if (col.IsReadOnly)
                     continue;
@@ -87,8 +102,8 @@ namespace Configurator
                 {
                     // Keep the existing key selectable even when it is missing from a
                     // populated lookup; otherwise saving another field would erase it.
-                    var description = hasLookupOptions ? "значение отсутствует в справочнике" : "справочник недоступен";
-                    options.Insert(0, new LookupOption { Key = existingLookupValue, Display = $"{existingLookupValue} · текущее значение, {description}" });
+                    options = options.ToList();
+                    options.Insert(0, new LookupOption { Key = existingLookupValue, Display = hasLookupOptions ? $"{existingLookupValue} · отсутствует в справочнике" : existingLookupValue });
                 }
                 Control input;
                 TextBox textBox = null;
@@ -96,7 +111,12 @@ namespace Configurator
                 {
                     var combo = new ComboBox { Height = 32, FontSize = 13, MinWidth = 0, HorizontalAlignment = HorizontalAlignment.Stretch, ItemsSource = options, DisplayMemberPath = nameof(LookupOption.Display), SelectedValuePath = nameof(LookupOption.Key) };
                     _lookupInputs[col.Name] = combo;
-                    if (!hasLookupOptions) { combo.IsEnabled = false; combo.ToolTip = "Для связанного поля не удалось загрузить справочник. Значение нельзя вводить вручную; проверьте подключение и наличие таблицы-справочника."; }
+                    if (!hasLookupOptions)
+                    {
+                        combo.IsEnabled = false;
+                        combo.ToolTip = "Нет вариантов из справочника. При сохранении строки текущее значение сохранится.";
+                        ToolTipService.SetShowOnDisabled(combo, true);
+                    }
                     input = combo;
                     if (_currentValues != null && _currentValues.TryGetValue(col.Name, out string currentLookup)) combo.SelectedValue = currentLookup ?? "";
                 }
@@ -111,11 +131,19 @@ namespace Configurator
                 if (isKey && textBox != null && !isClassNumber) textBox.ToolTip = "Ключевое поле можно изменить. Уникальность проверяется при сохранении.";
 
                 fieldPanel.Children.Add(label);
-                fieldPanel.Children.Add(input);
+                if (addresses != null && textBox != null && PlcAddressCatalog.IsSuggestedField(col.Name))
+                    fieldPanel.Children.Add(InputPlaceholder.WithAddressList(textBox, textBox, async () =>
+                    {
+                        string plc = _lookupInputs.GetValueOrDefault("PLC")?.SelectedValue?.ToString();
+                        if (string.IsNullOrWhiteSpace(plc)) return null;
+                        var choices = await addresses(plc);
+                        return plc == _lookupInputs.GetValueOrDefault("PLC")?.SelectedValue?.ToString() ? choices.GetValueOrDefault(col.Name) : null;
+                    }));
+                else fieldPanel.Children.Add(input);
                 if (textBox != null) _fieldInputs[col.Name] = textBox;
 
-                if (textBox != null) textBox.TextChanged += (s, e) => ValidateFields();
-                if (input is ComboBox comboInput) comboInput.SelectionChanged += (s, e) => ValidateFields();
+                if (textBox != null) textBox.TextChanged += (s, e) => { textBox.ClearValue(Control.BackgroundProperty); ValidateFields(); };
+                if (input is ComboBox comboInput) comboInput.SelectionChanged += (s, e) => { comboInput.ClearValue(Control.BackgroundProperty); ValidateFields(); };
 
                 FieldsPanel.Children.Add(fieldPanel);
             }
@@ -175,7 +203,7 @@ namespace Configurator
 
         private async void BtnSave_Click(object sender, RoutedEventArgs e)
         {
-            if (!BtnSave.IsEnabled) return;
+            if (_saving || !BtnSave.IsEnabled) return;
             Values = new Dictionary<string, object>();
             var errors = new List<string>();
 
@@ -216,6 +244,25 @@ namespace Configurator
             }
 
             if (_suggestScopedRecord != null && !await ApplyScopedRecordSuggestionAsync()) return;
+            if (CanApply != null && !CanApply())
+            {
+                Infrastructure.ModernDialog.Show(this, "Исходная таблица или запись изменилась. Вернитесь к ней или откройте редактор заново.", "Сохранение строки", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            if (SaveChangesAsync != null && Values.Count > 0)
+            {
+                _saving = true;
+                IsEnabled = false;
+                try
+                {
+                    if (!await SaveChangesAsync()) return;
+                }
+                finally
+                {
+                    IsEnabled = true;
+                    _saving = false;
+                }
+            }
             Confirmed = true;
             Close();
         }

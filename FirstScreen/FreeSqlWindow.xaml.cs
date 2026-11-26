@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Windows.Input;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Threading;
@@ -22,6 +23,15 @@ namespace Configurator
         public FreeSqlWindow(Func<string, string> connectionString, IReadOnlyList<string> databases, string preferredDatabase = null)
         {
             InitializeComponent();
+            Width = Math.Min(Width, SystemParameters.WorkArea.Width * 0.94);
+            Height = Math.Min(Height, SystemParameters.WorkArea.Height * 0.92);
+            UpdateEditor();
+            PreviewKeyDown += (_, e) =>
+            {
+                if (e.Key != Key.S || Keyboard.Modifiers != ModifierKeys.Control) return;
+                e.Handled = true;
+                if (BtnSaveQuery.IsEnabled) BtnSaveQuery_Click(this, e);
+            };
             KeyDown += Configurator.Infrastructure.ModernDialog.CloseToolOnEnter;
             Closed += (_, _) => _lifetime.Cancel();
             _connectionString = connectionString;
@@ -50,7 +60,7 @@ namespace Configurator
         private void CmbDatabase_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (ResultGrid == null || BtnExecute == null) return;
-            ResultGrid.ItemsSource = null;
+            SetResult(null);
             UpdateDatabaseContext();
         }
 
@@ -95,7 +105,7 @@ namespace Configurator
                     DatabaseService.FreeSqlConfirmationTimeout, changes => Dispatcher.Invoke(() => ChangesCommitted?.Invoke(database, changes)));
 
                 if (database != SelectedDatabase) return;
-                ResultGrid.ItemsSource = result.Result?.DefaultView;
+                SetResult(result.Result?.DefaultView);
                 bool truncated = result.Result?.ExtendedProperties["Truncated"] is true;
                 TxtStatus.Text = result.Result != null
                     ? $"База: {database} · Получено строк: {result.Result.Rows.Count}" +
@@ -105,12 +115,12 @@ namespace Configurator
             catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
             catch (FreeSqlRolledBackException rollback)
             {
-                ResultGrid.ItemsSource = null;
+                SetResult(null);
                 TxtStatus.Text = $"Изменения отменены · строк было бы затронуто: {rollback.AffectedRows}";
             }
             catch (Exception ex)
             {
-                ResultGrid.ItemsSource = null;
+                SetResult(null);
                 TxtStatus.Text = UserErrorMessage.Format(ex);
                 Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "SQL ошибка",
                     MessageBoxButton.OK, MessageBoxImage.Error);
@@ -159,6 +169,17 @@ namespace Configurator
             return completion.Task;
         }
 
+        private GridLength _resultHeight = new(1, GridUnitType.Star);
+
+        private void SetResult(System.Data.DataView rows)
+        {
+            if (OutputSplitter.Visibility == Visibility.Visible) _resultHeight = OutputRow.Height;
+            ResultGrid.ItemsSource = rows;
+            OutputRow.MinHeight = rows == null ? 0 : 90;
+            OutputRow.Height = rows == null ? new GridLength(0) : _resultHeight;
+            OutputSplitter.Visibility = rows == null ? Visibility.Collapsed : Visibility.Visible;
+        }
+
         private void SetBusy(bool busy)
         {
             CmbDatabase.IsEnabled = !busy;
@@ -166,9 +187,15 @@ namespace Configurator
             BtnExecute.IsEnabled = !busy && SelectedDatabase != null;
             QueryActions.IsEnabled = !busy;
             QueryLibrary.IsEnabled = !busy;
+            UpdateEditor();
         }
 
-        private void BtnRefresh_Click(object sender, RoutedEventArgs e) => RefreshQueries();
+        private void BtnRefresh_Click(object sender, RoutedEventArgs e) {
+            if (!ConfirmReplaceDraft()) return;
+            RefreshQueries();
+            if (SavedQueries.SelectedItem is LocalQuery query) OpenQuery(query);
+            else if (_openedQuery != null) SetOpenedQuery(null, "");
+        }
 
         private void RefreshQueries()
         {
@@ -181,20 +208,81 @@ namespace Configurator
 
         private void ShowQueries(List<LocalQuery> queries, Guid? selectedId)
         {
+            _syncSelection = true;
             SavedQueries.ItemsSource = queries;
             SavedQueries.SelectedItem = queries.FirstOrDefault(query => query.Id == selectedId);
+            _syncSelection = false;
             TxtLibraryState.Text = queries.Count == 0 ? "В локальной библиотеке пока нет сохранённых запросов." : "";
             TxtLibraryState.ToolTip = null;
         }
 
-        private void SavedQueries_SelectionChanged(object sender, SelectionChangedEventArgs e) =>
-            BtnOpenQuery.IsEnabled = SavedQueries.SelectedItem is LocalQuery;
+        private bool _syncSelection;
+        private LocalQuery _menuQuery;
+        private void LibraryMenuOpening(object sender, ContextMenuEventArgs e)
+        {
+            _menuQuery = e.CursorLeft < 0 ? SavedQueries.SelectedItem as LocalQuery :
+                ItemsControl.ContainerFromElement(SavedQueries, e.OriginalSource as DependencyObject) is ListBoxItem item
+                    ? item.Content as LocalQuery : null;
+            DeleteQuery.IsEnabled = _menuQuery != null;
+        }
+
+        private void DeleteQuery_Click(object sender, RoutedEventArgs e)
+        {
+            var query = _menuQuery;
+            if (query == null || ModernDialog.Show(this, $"Удалить локальный запрос «{query.Name}»?", Title,
+                MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+            try
+            {
+                _library.Delete(query);
+                if (_openedQuery?.Id == query.Id)
+                {
+                    if (!HasDraftChanges())
+                    {
+                        TxtSql.Clear();
+                        TxtQueryName.Clear();
+                    }
+                    SetOpenedQuery(null, "");
+                    SetResult(null);
+                }
+                TxtStatus.Text = "Запрос удалён из локальной библиотеки.";
+                RefreshQueries();
+            }
+            catch (Exception ex) { TxtStatus.Text = UserErrorMessage.Format(ex); }
+        }
+
+        private void EditorChanged(object sender, TextChangedEventArgs e) => UpdateEditor();
+        private void EditorScrolled(object sender, ScrollChangedEventArgs e) => UpdateEditor();
+
+        private void UpdateEditor()
+        {
+            if (BtnSaveQuery == null) return;
+            BtnSaveQuery.IsEnabled = TxtSql.IsEnabled && !string.IsNullOrWhiteSpace(TxtSql.Text)
+                && !string.IsNullOrWhiteSpace(TxtQueryName.Text);
+            string[] hints = { "SELECT column1, column2", "FROM dbo.TableName", "WHERE condition" };
+            string[] lines = TxtSql.Text.Split('\n');
+            SqlHint.Text = string.Join("\n", hints.Select((hint, i) =>
+                i >= lines.Length || lines[i].TrimEnd('\r').Length == 0 ? hint : ""));
+            SqlHint.RenderTransform = new System.Windows.Media.TranslateTransform(-TxtSql.HorizontalOffset, -TxtSql.VerticalOffset);
+        }
+
+        private void SavedQueries_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_syncSelection || SavedQueries.SelectedItem is not LocalQuery query) return;
+            if (!ConfirmReplaceDraft())
+            {
+                _syncSelection = true;
+                SavedQueries.SelectedItem = _openedQuery;
+                _syncSelection = false;
+                return;
+            }
+            OpenQuery(query);
+        }
 
         private void BtnSaveQuery_Click(object sender, RoutedEventArgs e)
         {
             try
             {
-                var saved = _library.Save(sender == BtnUpdateQuery ? _openedQuery : null,
+                var saved = _library.Save(_openedQuery,
                     TxtQueryName.Text.Trim(), TxtSql.Text);
                 TxtQueryName.Text = saved.Name;
                 SetOpenedQuery(saved, saved.Sql);
@@ -208,13 +296,12 @@ namespace Configurator
             }
         }
 
-        private void BtnOpenQuery_Click(object sender, RoutedEventArgs e)
+        private void OpenQuery(LocalQuery query)
         {
-            if (SavedQueries.SelectedItem is not LocalQuery query || !ConfirmReplaceDraft()) return;
             TxtSql.Text = query.Sql;
             TxtQueryName.Text = query.Name;
             SetOpenedQuery(query, query.Sql);
-            ResultGrid.ItemsSource = null;
+            SetResult(null);
             TxtStatus.Text = "Запрос открыт из локальной библиотеки.";
             TxtSql.Focus();
         }
@@ -224,12 +311,15 @@ namespace Configurator
             _openedQuery = query;
             _openedSql = sql;
             TxtCurrentQuery.Text = query == null ? "Новый запрос" : $"Открыт запрос «{query.Name}»";
-            BtnUpdateQuery.IsEnabled = query != null;
+
         }
+
+        private bool HasDraftChanges() =>
+            TxtSql.Text != _openedSql || TxtQueryName.Text != (_openedQuery?.Name ?? "");
 
         private bool ConfirmReplaceDraft()
         {
-            if (TxtSql.Text == _openedSql && TxtQueryName.Text == (_openedQuery?.Name ?? ""))
+            if (!HasDraftChanges())
                 return true;
             return ModernDialog.Show(this, "Заменить несохранённые изменения?", Title,
                 MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
@@ -242,7 +332,7 @@ namespace Configurator
             TxtQueryName.Clear();
             SetOpenedQuery(null, "");
             SavedQueries.SelectedItem = null;
-            ResultGrid.ItemsSource = null;
+            SetResult(null);
             UpdateDatabaseContext();
             TxtSql.Focus();
         }

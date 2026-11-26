@@ -47,7 +47,7 @@ public partial class MainWindow
     private bool _offlineAutoSaveInProgress;
     private readonly SemaphoreSlim _offlineSaveGate = new(1, 1);
 
-    private async void ChooseOfflineProject_Click(object sender, RoutedEventArgs e)
+    private async void ChooseOfflineProject_Click(object sender, EventArgs e)
     {
         // Do not change workspace state before the user has picked a file. Cancel is a no-op:
         // the active project, current mode and mode buttons must remain usable.
@@ -61,7 +61,7 @@ public partial class MainWindow
         }
     }
 
-    private async void ReturnOnlineFromSelection_Click(object sender, RoutedEventArgs e)
+    private async void ReturnOnlineFromSelection_Click(object sender, EventArgs e)
     {
         await SwitchToOnlineWorkspaceAsync();
     }
@@ -524,7 +524,7 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
             NavFbEditor.IsEnabled = !_offlineSelectionRequired;
             // The active editor is bound below, after the workspace UI state is stable.
             // Do not configure both editors: that would duplicate metadata/object loads.
-            MenuDatabase.IsEnabled = false;
+            MenuDatabaseExcel.IsEnabled = false;
             CurrentProjectText.IsEnabled = true;
             CurrentProjectText.Content = _openedLocalProject.Manifest.Name + " · Offline";
             _activeVm = null;
@@ -586,19 +586,8 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
                         var parts = fullName.Split('.', 2);
                         var schema = parts.Length == 2 ? parts[0] : "dbo";
                         var tableName = parts.Length == 2 ? parts[1] : parts[0];
-                        var item = new System.Windows.Controls.TreeViewItem
-                        {
-                            Header = CreateTreeHeader(fullName, "ТАБЛИЦА", false),
-                            Tag = new TableNodeInfo { DatabaseName = project.Manifest.Name, Schema = schema, TableName = tableName },
-                            Padding = new Thickness(5, 4, 5, 4),
-                            ToolTip = fullName
-                        };
-                        item.Selected += (sender, args) =>
-                        {
-                            args.Handled = true;
-                            OpenOfflineTable(fullName);
-                        };
-                        projectNode.Items.Add(item);
+                        projectNode.Items.Add(CreateTableNode(fullName, project.Manifest.Name, schema, tableName,
+                            () => OpenOfflineTable(fullName)));
                     }
                 }
                 else
@@ -666,7 +655,7 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
                 {
                     var row = table.NewRow();
                     foreach (var name in columnNames)
-                        row[name] = record.Values.TryGetPropertyValue(name, out var node) && node is not null ? node.ToString() : DBNull.Value;
+                        row[name] = ProjectClassCatalog.ReadNode(record, name) is { } node ? node.ToString() : DBNull.Value;
                     table.Rows.Add(row);
                     _offlineRowRecordKeys[row] = record.Key;
                 }
@@ -756,6 +745,9 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
                     else if (columnSchema is not null && columnSchema.DataType.Equals("bit", StringComparison.OrdinalIgnoreCase) && bool.TryParse(raw, out var flag)) values[column.ColumnName] = JsonValue.Create(flag);
                     else values[column.ColumnName] = JsonValue.Create(raw);
                 }
+                if (_openedLocalProject.Settings.UnifiedLanguage)
+                    foreach (var (source, target) in UnifiedLanguage.Pairs(_offlineCurrentDataTable.Columns.Cast<DataColumn>().Select(c => c.ColumnName)))
+                        values[target] = values[source]?.DeepClone();
                 record.Values = values;
             }
             var removedKeys = _offlineCurrentRecordIndex.Keys.Where(key => !currentKeys.Contains(key)).ToList();
@@ -856,15 +848,17 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
                 row[column] = selected.Row[column] == DBNull.Value ? DBNull.Value : Convert.ToString(selected.Row[column], CultureInfo.InvariantCulture) ?? string.Empty;
             }
             var suggestRecord = GetOfflineScopedRecordSuggestion(_offlineCurrentDataTable);
-            if (suggestRecord != null)
+            if (suggestRecord != null || (ScopedRecordSuggestion.IsAreasTable(_offlineCurrentTableName) && _offlineCurrentColumns.Any(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase) && !c.IsIdentity && !c.IsReadOnly)))
             {
                 try
                 {
-                    var plc = row["PLC"] as string;
+                    var plc = row.Table.Columns.Contains("PLC") ? row["PLC"] as string : null;
                     var classColumn = ProjectClassCatalog.FindRecordClassColumn(schema?.KeyColumns ?? new List<string>());
                     int record = SuggestOfflineScopedRecord(_offlineCurrentDataTable, plc, classColumn: classColumn,
                         classValue: classColumn == null ? null : row[classColumn]);
                     row["Record"] = record.ToString(CultureInfo.InvariantCulture);
+                    if (ScopedRecordSuggestion.IsAreasTable(_offlineCurrentTableName) && _offlineCurrentColumns.Any(c => c.Name.Equals("AreaName", StringComparison.OrdinalIgnoreCase) && !c.IsComputed && !c.IsReadOnly))
+                        row["AreaName"] = ScopedRecordSuggestion.AreaNameForRecord(record);
                 }
                 catch (InvalidOperationException ex)
                 {
@@ -872,47 +866,60 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
                     return;
                 }
             }
-            _offlineCurrentDataTable.Rows.Add(row);
+            _offlineCurrentDataTable.Rows.InsertAt(row, _offlineCurrentDataTable.Rows.IndexOf(selected.Row) + 1);
             _offlineRowRecordKeys[row] = "offline:" + Guid.NewGuid().ToString("N");
             _offlineRowRecordKeys.TryGetValue(selected.Row, out var sourceKey);
             CommitOfflineGridToProject(_offlineRowRecordKeys[row], sourceKey);
-            _rightPanel.DataTableGrid.SelectedItem = row;
-            _rightPanel.DataTableGrid.ScrollIntoView(row);
+            var grid = _rightPanel.DataTableGrid;
+            var copy = grid.Items.OfType<DataRowView>().FirstOrDefault(item => item.Row == row);
+            if (copy != null)
+            {
+                grid.SelectedItem = copy;
+                grid.ScrollIntoView(copy);
+            }
             UpdateOfflineTableCount();
             SetOfflineEditorButtons();
             StatusText.Text = "Копия строки добавлена в локальный проект. SQL Server не изменялся.";
         }
 
-        private void AddOfflineRow()
+        private async Task AddOfflineRow()
         {
             if (!ProjectWriteGuard.IsDataTableWritable(_offlineCurrentTableName)) return;
             if (!UserAuthorizationService.Require(Permission.Mode1Add)) return;
             if (_offlineCurrentDataTable is null || _offlineCurrentTableName is null || _openedLocalProject is null) return;
+            var table = _offlineCurrentDataTable;
             var classNumber = ResolveSystemClassNumber(_offlineCurrentTableName);
             var classNumberColumn = classNumber.HasValue ? ResolveClassNumberColumn(_offlineCurrentColumns) : null;
             var recordColumn = _offlineCurrentColumns.FirstOrDefault(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase))?.Name ?? "";
             var lookupOptions = OfflineLookupOptionsService.Build(_openedLocalProject, _offlineCurrentTableName, _offlineCurrentColumns);
-            var suggestRecord = GetOfflineScopedRecordSuggestion(_offlineCurrentDataTable);
+            var suggestRecord = GetOfflineScopedRecordSuggestion(table);
             var schema = _openedLocalProject.TableSchemas.FirstOrDefault(x => x.TableName.Equals(_offlineCurrentTableName, StringComparison.OrdinalIgnoreCase));
             var recordScopeClass = ProjectClassCatalog.FindRecordClassColumn(schema?.KeyColumns ?? new List<string>());
-            var window = new AddRowWindow(_offlineCurrentTableName, _offlineCurrentColumns, 0, recordColumn, null, null,
+            using var addressWorkspace = OfflineMapWorkspace(_openedLocalProject);
+            var tableName = _offlineCurrentTableName;
+            int nextRecord = recordColumn.Length > 0 && !table.Columns.Contains("PLC")
+                ? SuggestOfflineScopedRecord(table, null) : 0;
+            var window = new AddRowWindow(_offlineCurrentTableName, _offlineCurrentColumns, nextRecord, recordColumn, null, null,
                 classNumber, classNumberColumn, lookupOptions,
+                initialValues: InitialPlcForNewRow(),
                 scopedRecordProvider: suggestRecord == null ? null : (plc, cls, ct) =>
-                    Task.FromResult(SuggestOfflineScopedRecord(_offlineCurrentDataTable, plc, ct, recordScopeClass, cls)),
+                    Task.FromResult(SuggestOfflineScopedRecord(table, plc, ct, recordScopeClass, cls)),
                 recordExistsProvider: (plc, cls, record, ct) => Task.FromResult(
-                    _offlineCurrentDataTable.Columns.Contains("PLC") && _offlineCurrentDataTable.Columns.Contains("Record") &&
-                    _offlineCurrentDataTable.AsEnumerable().Any(row => row.RowState != DataRowState.Deleted &&
+                    table.Columns.Contains("PLC") && table.Columns.Contains("Record") &&
+                    table.AsEnumerable().Any(row => row.RowState != DataRowState.Deleted &&
                         OfflineKeyEquals(Convert.ToString(row["PLC"], CultureInfo.InvariantCulture), plc) &&
                         (recordScopeClass == null || Mode3DuplicateValues.SameScopeValue(row[recordScopeClass], cls)) &&
                         OfflineKeyEquals(Convert.ToString(row["Record"], CultureInfo.InvariantCulture), record))),
                 preferFreeScopedRecord: suggestRecord != null,
-                recordScopeClassColumn: recordScopeClass) { Owner = this };
-            window.ShowDialog();
+                recordScopeClassColumn: recordScopeClass,
+                freeAddressProvider: _offlineGridDirty ? null : (plc, cls, ct) => PlcAddressCatalog.SuggestAddressesAsync(addressWorkspace, tableName, plc, cls, ct)) { Owner = this };
+            window.CanApply = () => _isOfflineWorkspace && ReferenceEquals(table, _offlineCurrentDataTable);
+            await window.ShowRowEditorAsync();
             if (!window.Confirmed || window.Values is null || window.Values.Count == 0) return;
-            var row = _offlineCurrentDataTable.NewRow();
+            var row = table.NewRow();
             foreach (var pair in window.Values)
-                if (_offlineCurrentDataTable.Columns.Contains(pair.Key)) row[pair.Key] = pair.Value is null ? DBNull.Value : Convert.ToString(pair.Value, CultureInfo.InvariantCulture) ?? string.Empty;
-            _offlineCurrentDataTable.Rows.Add(row);
+                if (table.Columns.Contains(pair.Key)) row[pair.Key] = pair.Value is null ? DBNull.Value : Convert.ToString(pair.Value, CultureInfo.InvariantCulture) ?? string.Empty;
+            table.Rows.Add(row);
             _offlineRowRecordKeys[row] = "offline:" + Guid.NewGuid().ToString("N");
             CommitOfflineGridToProject();
             if (_rightPanel.DataTableGrid.ItemsSource is DataView view)
@@ -945,32 +952,38 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
             foreach (DataRow row in table.Rows)
             {
                 ct.ThrowIfCancellationRequested();
-                if (row.RowState != DataRowState.Deleted && Mode3DuplicateValues.SameScopeValue(row["PLC"], plc) &&
+                if (row.RowState != DataRowState.Deleted && (!table.Columns.Contains("PLC") || Mode3DuplicateValues.SameScopeValue(row["PLC"], plc)) &&
                     (classColumn == null || Mode3DuplicateValues.SameScopeValue(row[classColumn], classValue)))
                     suggestion.Add(row["Record"]);
             }
             return suggestion.GetValue();
         }
 
-        private void EditOfflineRow()
+        private async Task EditOfflineRow()
         {
             if (!ProjectWriteGuard.IsDataTableWritable(_offlineCurrentTableName)) return;
             if (!UserAuthorizationService.Require(Permission.Mode1Edit)) return;
-            if (_offlineCurrentDataTable is null || _offlineCurrentTableName is null || _rightPanel.DataTableGrid.SelectedItem is not DataRowView selected) return;
+            if (_openedLocalProject is null || _offlineCurrentDataTable is null || _offlineCurrentTableName is null || _rightPanel.DataTableGrid.SelectedItem is not DataRowView selected) return;
+            var table = _offlineCurrentDataTable;
             var oldValues = selected.Row.Table.Columns.Cast<DataColumn>().ToDictionary(c => c.ColumnName, c => selected[c.ColumnName] == DBNull.Value ? "" : Convert.ToString(selected[c.ColumnName], CultureInfo.InvariantCulture) ?? "", StringComparer.OrdinalIgnoreCase);
-            var schema = _openedLocalProject?.TableSchemas.FirstOrDefault(x => x.TableName.Equals(_offlineCurrentTableName, StringComparison.OrdinalIgnoreCase));
+            var schema = _openedLocalProject.TableSchemas.FirstOrDefault(x => x.TableName.Equals(_offlineCurrentTableName, StringComparison.OrdinalIgnoreCase));
             var keyColumn = schema?.KeyColumns.FirstOrDefault() ?? "";
             var lookupOptions = OfflineLookupOptionsService.Build(_openedLocalProject, _offlineCurrentTableName, _offlineCurrentColumns);
             var classNumber = ResolveSystemClassNumber(_offlineCurrentTableName);
             var classNumberColumn = classNumber.HasValue ? ResolveClassNumberColumn(_offlineCurrentColumns) : null;
-            var suggestRecord = GetOfflineScopedRecordSuggestion(_offlineCurrentDataTable);
+            var suggestRecord = GetOfflineScopedRecordSuggestion(table);
+            var editTable = _offlineCurrentTableName;
+            using var addressWorkspace = OfflineMapWorkspace(_openedLocalProject);
             var window = new EditRowWindow(_offlineCurrentTableName, _offlineCurrentColumns, oldValues, keyColumn,
                 classNumberColumn, classNumber, lookupOptions,
-                suggestRecord == null ? null : (plc, ct) => Task.FromResult(suggestRecord(plc, ct))) { Owner = this };
-            window.ShowDialog();
+                suggestRecord == null ? null : (plc, ct) => Task.FromResult(suggestRecord(plc, ct)),
+                _offlineGridDirty ? null : plc => PlcAddressCatalog.SuggestAddressesAsync(addressWorkspace, editTable, plc, classNumber?.ToString(), default)) { Owner = this };
+            window.CanApply = () => _isOfflineWorkspace && ReferenceEquals(table, _offlineCurrentDataTable) && selected.Row.RowState is not (DataRowState.Detached or DataRowState.Deleted) &&
+                oldValues.All(pair => pair.Value == (Convert.ToString(selected.Row[pair.Key], CultureInfo.InvariantCulture) ?? ""));
+            await window.ShowRowEditorAsync();
             if (!window.Confirmed || window.Values is null) return;
             foreach (var pair in window.Values)
-                if (_offlineCurrentDataTable.Columns.Contains(pair.Key)) selected.Row[pair.Key] = pair.Value is null ? DBNull.Value : Convert.ToString(pair.Value, CultureInfo.InvariantCulture) ?? string.Empty;
+                if (table.Columns.Contains(pair.Key)) selected.Row[pair.Key] = pair.Value is null ? DBNull.Value : Convert.ToString(pair.Value, CultureInfo.InvariantCulture) ?? string.Empty;
             CommitOfflineGridToProject();
             _rightPanel.DataTableGrid.Items.Refresh();
             StatusText.Text = "Изменения применены к локальной копии. SQL Server не изменялся.";
@@ -1282,7 +1295,7 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
             Mode4View.Visibility = modeToRestore == 4 ? Visibility.Visible : Visibility.Collapsed;
             UpdateModeNavigation(modeToRestore);
             NavDatabase.IsEnabled = NavTemplates.IsEnabled = NavProject.IsEnabled = NavFbEditor.IsEnabled = !_offlineSelectionRequired;
-            MenuDatabase.IsEnabled = !_offlineSelectionRequired && _currentMode == 1;
+            MenuDatabaseExcel.IsEnabled = !_offlineSelectionRequired && _currentMode == 1;
             CurrentProjectText.IsEnabled = true;
             CurrentProjectText.Content = string.IsNullOrWhiteSpace(_selectedDbName) ? "не выбран" : _selectedDbName;
             _offlineCurrentDataTable = null;

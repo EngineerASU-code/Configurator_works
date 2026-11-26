@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
 using Configurator.Core.Projects;
+using Configurator.Core.Workspace;
 using Configurator.Infrastructure;
 using Configurator.Infrastructure.Projects;
 
@@ -10,14 +11,27 @@ namespace Configurator;
 
 public partial class FreeRecordCheckWindow : Window
 {
-    private readonly Func<string, string> _getConnectionString;
+    private readonly Func<string, string>? _getConnectionString;
+    private readonly ConfiguratorProject? _project;
     private readonly CancellationTokenSource _lifetime = new();
     private bool _busy;
-    private DatabaseService? _database;
+    private Func<RecordCheckScope, CancellationToken, Task<RecordCheckResult>>? _check;
 
     internal FreeRecordCheckWindow(Func<string, string> getConnectionString, IEnumerable<string> databases, string selectedDatabase)
     {
         _getConnectionString = getConnectionString;
+        SetUp(databases, selectedDatabase);
+    }
+
+    internal FreeRecordCheckWindow(ConfiguratorProject project)
+    {
+        _project = project;
+        SetUp([project.Manifest.Name], project.Manifest.Name);
+        DatabaseLabel.Content = "Проект";
+    }
+
+    private void SetUp(IEnumerable<string> databases, string selectedDatabase)
+    {
         InitializeComponent();
         var names = databases.ToList();
         CmbDatabase.ItemsSource = names;
@@ -25,6 +39,8 @@ public partial class FreeRecordCheckWindow : Window
             ?? names.FirstOrDefault();
         Loaded += LoadWindow;
     }
+
+    private void Close_Click(object sender, RoutedEventArgs e) => Close();
 
     protected override void OnClosed(EventArgs e)
     {
@@ -50,22 +66,35 @@ public partial class FreeRecordCheckWindow : Window
         ResetResult();
         await RunAsync("Загружаем PLC…", async ct =>
         {
-            _database = null;
+            _check = null;
             CmbPlc.ItemsSource = null;
             CmbClass.ItemsSource = null;
-            var connectionString = _getConnectionString(name);
-            var source = new OnlineProjectDataSource(connectionString, name);
-            using var workspace = new ProjectWorkspace(source,
-                architecture: new ProjectArchitectureDataSource(source.Server, source.Database), allowWrite: false);
-            var classes = await RecordCheckCatalog.LoadAsync(workspace, ct);
-            var database = new DatabaseService(connectionString);
-            var scopes = await database.GetRecordCheckScopesAsync(classes, ct);
+            IReadOnlyList<RecordCheckScope> scopes;
+            if (_project != null)
+            {
+                var source = new OfflineProjectDataSource(_project);
+                using var workspace = new ProjectWorkspace(source,
+                    architecture: new ProjectArchitectureDataSource(_project), allowWrite: false);
+                var classes = await RecordCheckCatalog.LoadAsync(workspace, ct);
+                scopes = RecordCheckCatalog.LocalScopes(source, classes, ct);
+                _check = (scope, token) => Task.FromResult(RecordCheckCatalog.CheckLocal(source, scope, token));
+            }
+            else
+            {
+                var connection = _getConnectionString!(name);
+                var source = new OnlineProjectDataSource(connection, name);
+                using var workspace = new ProjectWorkspace(source,
+                    architecture: new ProjectArchitectureDataSource(source.Server, source.Database), allowWrite: false);
+                var classes = await RecordCheckCatalog.LoadAsync(workspace, ct);
+                var database = new DatabaseService(connection);
+                scopes = await database.GetRecordCheckScopesAsync(classes, ct);
+                _check = database.CheckRecordsAsync;
+            }
             ct.ThrowIfCancellationRequested();
             var controllers = scopes.GroupBy(scope => Convert.ToString(scope.Plc, CultureInfo.InvariantCulture) ?? "")
                 .Where(group => !string.IsNullOrWhiteSpace(group.Key))
                 .OrderBy(group => group.Key, StringComparer.CurrentCulture)
                 .Select(group => new PlcChoice(group.Key, group.ToList())).ToList();
-            _database = database;
             CmbPlc.ItemsSource = controllers;
             TxtStatus.Text = controllers.Count == 0 ? "PLC с записями для проверки не найдены." : "Выберите PLC.";
         });
@@ -94,7 +123,7 @@ public partial class FreeRecordCheckWindow : Window
         ResetResult();
         await RunAsync("Проверяем Record…", async ct =>
         {
-            var result = await _database!.CheckRecordsAsync(scope, ct);
+            var result = await _check!(scope, ct);
             ct.ThrowIfCancellationRequested();
             TxtResultHeader.Text = $"{scope.Class.Title} · PLC {plc.Label}";
             if (result.MinRecord == null)
@@ -149,7 +178,7 @@ public partial class FreeRecordCheckWindow : Window
         CmbDatabase.IsEnabled = !_busy;
         CmbClass.IsEnabled = !_busy && CmbClass.HasItems;
         CmbPlc.IsEnabled = !_busy && CmbPlc.HasItems;
-        BtnCheck.IsEnabled = !_busy && _database != null && CmbClass.SelectedItem != null;
+        BtnCheck.IsEnabled = !_busy && _check != null && CmbClass.SelectedItem != null;
     }
 
     private sealed record PlcChoice(string Label, IReadOnlyList<RecordCheckScope> Classes);

@@ -72,6 +72,32 @@ public sealed class RecordCheckTests(WpfDialogHost host)
         Assert.Contains(new RecordCheckClass("Actuator", "controls.Actuators", "Plc", "RECord"), classes);
     }
 
+    [Fact]
+    public void LocalRecordsAreScopedByPlcAndClassAndUseLegacyTableNames()
+    {
+        var project = new ConfiguratorProject();
+        project.TableSchemas.Add(Schema("dbo.Devices", "PLC", "Record", "Class"));
+        void Add(int plc, int group, JsonNode? record) => project.LocalRecords.Add(new ProjectRecord
+        {
+            TableName = "Devices", Values = new JsonObject { ["plc"] = plc, ["recORD"] = record, ["Class"] = group }
+        });
+        Add(1, 10, 0);
+        Add(1, 10, 4);
+        Add(1, 10, 4);
+        Add(1, 20, 1);
+        Add(2, 10, 2);
+        Add(3, 10, null);
+        var source = new OfflineProjectDataSource(project);
+        var group = new RecordCheckClass("Pump", "dbo.Devices", "PLC", "Record", "Class", "10");
+        var scopes = RecordCheckCatalog.LocalScopes(source, [group], default);
+        Assert.Equal(2, scopes.Count);
+        var first = Assert.Single(scopes, s => Equals(s.Plc, "1"));
+        Assert.Equal(new RecordGap(1, 3), Assert.Single(RecordCheckCatalog.CheckLocal(source, first, default).Gaps));
+        Add(1, 10, "invalid");
+        source.InvalidateIndex();
+        Assert.Throws<InvalidOperationException>(() => RecordCheckCatalog.CheckLocal(source, first, default));
+    }
+
     [CompareLocalDbFact]
     public async Task SqlUsesNamedClassesAndIgnoresPlcClassNumbers()
     {

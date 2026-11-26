@@ -152,7 +152,7 @@ public sealed class DeletionProtectionService
             throw new InvalidOperationException("Карта зависимостей неполна. Удаление отменено.");
         await EnsureSnapshotAsync(connection, transaction, tableName, identity, expected, ct);
         var request = new DeletionRequest { TableName = tableName, Key = expected, ExpectedValues = expected };
-        await EnsureNoCurrentDependentsAsync(connection, transaction, request, ct);
+        await EnsureNoCurrentDependentsAsync(connection, transaction, request, ct, identity);
         await DeleteTargetAsync(connection, transaction, new DeletionRequest { TableName = tableName, Key = identity }, ct);
     }
 
@@ -193,7 +193,7 @@ public sealed class DeletionProtectionService
         return Equals(a, b);
     }
 
-    private async Task EnsureNoCurrentDependentsAsync(SqlConnection connection, SqlTransaction transaction, DeletionRequest request, CancellationToken ct)
+    private async Task EnsureNoCurrentDependentsAsync(SqlConnection connection, SqlTransaction transaction, DeletionRequest request, CancellationToken ct, IReadOnlyDictionary<string, object> deletedIdentity = null)
     {
         foreach (var relation in _schema.Relations.Where(r => r != null && r.TargetTable.Equals(request.TableName, StringComparison.OrdinalIgnoreCase)))
         {
@@ -211,9 +211,27 @@ public sealed class DeletionProtectionService
                 cmd.Parameters.AddWithValue(p, value);
             }
             if (where.Count == 0) continue;
+            // A self-reference disappears together with the inserted row.
+            if (deletedIdentity != null && relation.SourceTable.Equals(request.TableName, StringComparison.OrdinalIgnoreCase))
+            {
+                var sameRow = new List<string>();
+                foreach (var pair in deletedIdentity)
+                {
+                    var column = QuoteColumn(request.TableName, pair.Key);
+                    if (pair.Value == null || pair.Value == DBNull.Value)
+                        sameRow.Add(column + " IS NULL");
+                    else
+                    {
+                        var parameter = "@self" + sameRow.Count;
+                        sameRow.Add($"({column} IS NOT NULL AND {column} = {parameter})");
+                        cmd.Parameters.AddWithValue(parameter, pair.Value);
+                    }
+                }
+                where.Add("NOT (" + string.Join(" AND ", sameRow) + ")");
+            }
             cmd.CommandText = $"SELECT TOP (1) 1 FROM {QuoteTable(relation.SourceTable)} WITH (UPDLOCK, HOLDLOCK) WHERE {string.Join(" AND ", where)}";
             if (await cmd.ExecuteScalarAsync(ct) != null)
-                throw new InvalidOperationException("Зависимости изменились после подготовки удаления. Обновите данные и повторите операцию.");
+                throw new InvalidOperationException($"На строку {request.TableName} ссылается запись в {relation.SourceTable} (поля {string.Join(", ", relation.SourceColumns)}). Сначала измените или удалите эту ссылку.");
         }
     }
 

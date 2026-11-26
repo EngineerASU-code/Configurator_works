@@ -17,7 +17,7 @@
 
         <UniformGrid Grid.Row="1" Rows="1" Margin="0,14,0,16">
             <StackPanel Margin="0,0,8,0">
-                <Label Content="База" Target="{Binding ElementName=CmbDatabase}" Foreground="{DynamicResource BrushText}"/>
+                <Label x:Name="DatabaseLabel" Content="База" Target="{Binding ElementName=CmbDatabase}" Foreground="{DynamicResource BrushText}"/>
                 <ComboBox x:Name="CmbDatabase" Height="34" SelectionChanged="CmbDatabase_SelectionChanged"/>
             </StackPanel>
             <StackPanel Margin="0,0,8,0">
@@ -59,7 +59,7 @@
             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Top">
                 <Button x:Name="BtnCheck" Content="Проверить" Style="{StaticResource BtnPrimary}" Width="120" Margin="8,0,0,0"
                         Click="Check_Click" IsEnabled="False" IsDefault="True"/>
-                <Button Content="Закрыть" Width="100" Margin="8,0,0,0" IsCancel="True"/>
+                <Button Content="Закрыть" Width="100" Margin="8,0,0,0" IsCancel="True" Click="Close_Click"/>
             </StackPanel>
             <TextBlock x:Name="TxtStatus" VerticalAlignment="Center" TextWrapping="Wrap"
                        Foreground="{DynamicResource BrushTextSecondary}"/>

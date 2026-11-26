@@ -18,6 +18,12 @@ public class LocalSqlLibraryTests
                 {
                     window.Show();
                     window.TxtSql.Text = "SELECT 1";
+                    window.UpdateLayout();
+                    Assert.True(window.TxtSql.ActualHeight > window.ActualHeight / 3);
+                    window.CmbDatabase.SelectedItem = "B";
+                    Assert.Equal("SELECT 1", window.TxtSql.Text);
+                    Assert.True(window.BtnExecute.IsEnabled);
+                    window.CmbDatabase.SelectedItem = "A";
                     window.SetDatabaseAvailable("A", false);
                     Assert.DoesNotContain("A", window.CmbDatabase.Items.Cast<string>());
                     Assert.Null(window.CmbDatabase.SelectedItem);
@@ -51,7 +57,10 @@ public class LocalSqlLibraryTests
             Assert.Equal(first.Id, updated.Id);
             Assert.Throws<InvalidOperationException>(() => store.Save(first, "Замер", "SELECT 3"));
             Assert.Throws<InvalidOperationException>(() => store.Save(null, "повтор", "SELECT 4"));
+            Assert.Throws<InvalidOperationException>(() => store.Delete(first));
             Assert.Equal(updated, Assert.Single(store.Read()));
+            store.Delete(updated);
+            Assert.Empty(other.Read());
         }
         finally { File.Delete(path); }
     }

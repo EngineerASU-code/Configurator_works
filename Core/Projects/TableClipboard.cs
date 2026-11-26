@@ -27,8 +27,8 @@ internal static class TableClipboard
         return rows;
     }
 
-    internal static string Write(IEnumerable<IEnumerable<object>> rows) =>
-        string.Join("\r\n", rows.Select(row => string.Join("\t", row.Select(value =>
+    internal static string Write(IEnumerable<string> headers, IEnumerable<IEnumerable<object>> rows) =>
+        string.Join("\r\n", rows.Prepend(headers).Select(row => string.Join("\t", row.Select(value =>
         {
             var text = value switch
             {

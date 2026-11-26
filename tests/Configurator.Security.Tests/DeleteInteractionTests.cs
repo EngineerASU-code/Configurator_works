@@ -69,6 +69,7 @@ public sealed class DeleteInteractionTests(WpfDialogHost host)
     [Fact]
     public Task ReplacementShowsOnlyNamesAndKeepsSameNameCandidatesSelectable() => host.RunAsync(() =>
     {
+        var longName = string.Join(" ", Enumerable.Repeat("DANFOSS FC (Type PPO4)", 8));
         var relation = new DatabaseRelation();
         relation.SourceColumns.Add("ParentId");
         relation.TargetColumns.Add("Id");
@@ -86,7 +87,7 @@ public sealed class DeleteInteractionTests(WpfDialogHost host)
                 new() { Display = "Цех", Values = [2] },
                 new() { Display = "Цех", Values = [3] },
                 new() { Values = [4] },
-                new() { Display = "Офис", Values = [5] }
+                new() { Display = longName, Values = [5] }
             ]
         };
         var window = new DependencyReplacementWindow([option], requireExistingCandidates: true);
@@ -95,11 +96,22 @@ public sealed class DeleteInteractionTests(WpfDialogHost host)
             var grid = (Grid)((Border)window.ItemsHost.Children[0]).Child;
             var details = grid.Children.OfType<StackPanel>().Single().Children.OfType<TextBlock>();
             Assert.Contains(details, text => text.Text == "Reglers Насос ссылается на:");
-            Assert.Contains(details, text => text.Text == "Parents Старый цех");
+            Assert.Contains(details, text => text.Text == "Parents Старый цех в поле ParentId");
+
+            window.Show();
+            var group = (Grid)((Border)window.GlobalGroupsHost.Children[0]).Child;
+            var parameter = group.Children.OfType<StackPanel>().Single().Children.OfType<ComboBox>().Single();
+            parameter.SelectedIndex = parameter.Items.Count - 1;
+            window.UpdateLayout();
+            var selection = (ContentPresenter)parameter.Template.FindName("SelectionPresenter", parameter);
+            var selectedText = (TextBlock)System.Windows.Media.VisualTreeHelper.GetChild(selection, 0);
+            Assert.Contains(longName, selectedText.Text);
+            Assert.True(selectedText.ActualHeight > selectedText.FontSize * 2);
+            Assert.True(parameter.ActualHeight >= selectedText.ActualHeight);
 
             var combo = grid.Children.OfType<ComboBox>().Single();
             Assert.Equal("Заменить на", grid.Children.OfType<Label>().Single(label => label.Target == combo).Content);
-            var expected = new[] { "Цех", "Цех", "Id = 4", "Офис" };
+            var expected = new[] { "Цех", "Цех", "Id = 4", longName };
             for (var i = 0; i < expected.Length; i++)
             {
                 var presenter = new ContentPresenter { Content = combo.Items[i], ContentTemplate = combo.ItemTemplate };
@@ -153,13 +165,18 @@ public sealed class DeleteInteractionTests(WpfDialogHost host)
             window.Show();
             int calls = 0;
             action.Click += (_, _) => calls++;
-            panel.PreviewKeyDown += (_, e) => Mode3DeleteShortcut.Handle(e, action);
+            var modifiers = ModifierKeys.None;
+            panel.PreviewKeyDown += (_, e) => Mode3DeleteShortcut.Handle(e, action, modifiers);
             void Delete(UIElement target) => target.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice,
                 PresentationSource.FromVisual(window), 0, Key.Delete) { RoutedEvent = Keyboard.PreviewKeyDownEvent });
             Delete(editor);
             Assert.Equal(0, calls);
             Delete(list);
             Assert.Equal(1, calls);
+            modifiers = ModifierKeys.Shift;
+            Delete(list);
+            Assert.Equal(1, calls);
+            modifiers = ModifierKeys.None;
             action.IsEnabled = false;
             Delete(list);
             Assert.Equal(1, calls);

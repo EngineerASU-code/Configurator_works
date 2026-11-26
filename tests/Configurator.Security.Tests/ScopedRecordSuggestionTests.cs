@@ -52,6 +52,31 @@ public sealed class ScopedRecordSuggestionTests
     }
 
     [CompareLocalDbFact]
+    public async Task DuplicateAreaUsesNewRecordAndUndoPreservesReferencedOriginal()
+    {
+        await using var db = await CompareLocalDb.CreateAsync();
+        await db.ExecuteAsync("""
+            CREATE TABLE dbo.Areas (Record int PRIMARY KEY, AreaName nvarchar(20) NOT NULL, AreaNameL1 nvarchar(40));
+            CREATE TABLE dbo.AnaIN (Id int PRIMARY KEY, Area nvarchar(20));
+            INSERT dbo.Areas VALUES (4,N'004',N'Pasteuriser');
+            INSERT dbo.AnaIN VALUES (1,N'004');
+            """);
+        var vm = new TableViewModel(db.ConnectionString);
+        await vm.SelectTableAsync("dbo.Areas");
+        vm.SetCurrentRow((await vm.LoadPageAsync()).DefaultView[0]);
+        var copy = await vm.DuplicateCurrentRowAsync(returnSnapshot: true);
+        Assert.Equal(5, copy["Record"]);
+        Assert.Equal("005", copy["AreaName"]);
+        Assert.Equal("Pasteuriser", copy["AreaNameL1"]);
+        var change = new ChangeJournalRowChange { TableName = "dbo.Areas", Kind = ChangeJournalOperationKind.Duplicate,
+            After = copy.ToDictionary(p => p.Key, p => ChangeJournalValue.FromObject(p.Value)),
+            IdentityAfter = new() { ["Record"] = ChangeJournalValue.FromObject(5) } };
+        await new ChangeJournalService().RestoreAsync(new ChangeJournalEntry { Changes = new() { change } }, db.ConnectionString);
+        Assert.Equal(0, await db.DecimalAsync("SELECT COUNT(*) FROM dbo.Areas WHERE Record=5"));
+        Assert.Equal(1, await db.DecimalAsync("SELECT COUNT(*) FROM dbo.Areas a JOIN dbo.AnaIN i ON i.Area=a.AreaName WHERE a.Record=4"));
+    }
+
+    [CompareLocalDbFact]
     public async Task OnlineUsesOnlyTheSelectedTableAndPlc()
     {
         await using var db = await CompareLocalDb.CreateAsync();

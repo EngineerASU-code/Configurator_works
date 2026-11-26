@@ -667,6 +667,7 @@ public partial class ProgramSupportControl : UserControl
 
     private void RowsGrid_AutoGeneratingColumn(object sender, DataGridAutoGeneratingColumnEventArgs e)
     {
+        if (Configurator.MainWindow.HideLanguageField(e.PropertyName)) { e.Cancel = true; return; }
         if (_tableData == null) { e.Column.IsReadOnly = true; return; }
         string name = e.PropertyName;
         if (e.Column is DataGridTextColumn text)

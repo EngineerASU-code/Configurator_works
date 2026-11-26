@@ -85,7 +85,7 @@ public partial class MainWindow
             {
                 var selected = grid.SelectedItems.OfType<DataRowView>().ToHashSet();
                 if (selected.Count > 0)
-                    Clipboard.SetText(TableClipboard.Write(grid.Items.OfType<DataRowView>()
+                    Clipboard.SetText(TableClipboard.Write(names, grid.Items.OfType<DataRowView>()
                         .Where(selected.Contains).Select(row => names.Select(name => row[name]))));
                 return;
             }
@@ -97,7 +97,11 @@ public partial class MainWindow
             int start = cells[0].Length == names.Length ? 0 : Math.Max(0, visible.IndexOf(grid.CurrentColumn));
             if (cells[0].Length > names.Length - start)
                 throw new FormatException("Блок из буфера не помещается. Выберите первый столбец диапазона.");
-            await PasteTableRowsAsync(view.Table, names.Skip(start).Take(cells[0].Length).ToArray(), cells);
+            var targetColumns = names.Skip(start).Take(cells[0].Length).ToArray();
+            if (cells[0].SequenceEqual(targetColumns, StringComparer.OrdinalIgnoreCase))
+                cells.RemoveAt(0);
+            if (cells.Count > 0)
+                await PasteTableRowsAsync(view.Table, targetColumns, cells);
         }
         catch (Exception ex)
         {
@@ -128,7 +132,7 @@ public partial class MainWindow
             : vm.KeyColumns.ToArray();
         var record = columns.FirstOrDefault(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase));
         if (record == null || !names.Contains(record.Name, StringComparer.OrdinalIgnoreCase))
-            throw new FormatException("Диапазон для вставки должен включать столбец Record. Заголовки копировать не нужно.");
+            throw new FormatException("Диапазон для вставки должен включать столбец Record.");
 
         var scope = columns.Where(c => c == record ||
             ((c.Name.Equals("PLC", StringComparison.OrdinalIgnoreCase) || c.Name.Equals("Class", StringComparison.OrdinalIgnoreCase) ||

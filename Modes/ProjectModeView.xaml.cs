@@ -54,6 +54,10 @@ public partial class ProjectModeView : UserControl
     public event Action<ChangeJournalEntry> ChangeJournalRequested;
     public IProjectWorkspace ActiveWorkspace => _workspace;
 
+    private readonly MenuItem SaveItem = new() { Header = "Сохранить", IsEnabled = false };
+    private readonly MenuItem DeleteObjectItem = new() { Header = "Удалить", IsEnabled = false };
+    private readonly MenuItem DeleteConfigurationItem = new() { Header = "Удалить", IsEnabled = false };
+
     public ProjectModeView()
     {
         InitializeComponent();
@@ -67,12 +71,15 @@ public partial class ProjectModeView : UserControl
             e.Handled = true;
             if (!e.IsRepeat) NewObject_Click(this, e);
         };
+        SaveItem.Click += SaveObject_Click;
+        DeleteObjectItem.Click += DeleteSelection_Click;
+        DeleteConfigurationItem.Click += DeleteSelection_Click;
         ObjectList.ContextMenu = BuildObjectContextMenu();
         ObjectList.PreviewMouseRightButtonDown += ObjectList_PreviewMouseRightButtonDown;
         ObjectList.MouseDoubleClick += ObjectList_MouseDoubleClick;
         ObjectList.PreviewKeyDown += ObjectList_PreviewKeyDown;
-        BtnDelete.IsEnabled = false;
-        BtnSave.IsEnabled = false;
+        DeleteObjectItem.IsEnabled = false;
+        SaveItem.IsEnabled = false;
         InitializeEmptyFilterLists();
         RefreshClasses();
     }
@@ -144,8 +151,8 @@ public partial class ProjectModeView : UserControl
         TxtObjectCount.Text = string.Empty;
         TxtStatus.Text = "Проект не выбран";
         ClearObjectEditor();
-        BtnNewObject.IsEnabled = BtnConfigDelete.IsEnabled = false;
-        BtnDelete.IsEnabled = BtnSave.IsEnabled = false;
+        BtnNewObject.IsEnabled = DeleteConfigurationItem.IsEnabled = false;
+        DeleteObjectItem.IsEnabled = SaveItem.IsEnabled = false;
     }
 
     private void ClearProjectViewForSourceChange()
@@ -159,8 +166,8 @@ public partial class ProjectModeView : UserControl
         ObjectList.ItemsSource = Array.Empty<ObjectItem>();
         TxtObjectCount.Text = string.Empty;
         ClearObjectEditor();
-        BtnNewObject.IsEnabled = BtnConfigDelete.IsEnabled = false;
-        BtnDelete.IsEnabled = BtnSave.IsEnabled = false;
+        BtnNewObject.IsEnabled = DeleteConfigurationItem.IsEnabled = false;
+        DeleteObjectItem.IsEnabled = SaveItem.IsEnabled = false;
     }
 
     private void EnsureOfflineClassesMapToSnapshotTables(ConfiguratorProject project)
@@ -432,7 +439,7 @@ public partial class ProjectModeView : UserControl
             SessionTestLog.Trace("РЕЖИМ3-ЗАГРУЗКА", $"EARLY RETURN: no connection/database; connectionPresent={_connection != null}, database='{_selectedDatabase}'");
             configureTimer.Stop();
             SessionTestLog.Trace("РЕЖИМ3-ПРОИЗВОДИТЕЛЬНОСТЬ", $"online configure-total-ms={configureTimer.ElapsedMilliseconds}; result=no-project");
-            BtnNewObject.IsEnabled = BtnConfigDelete.IsEnabled = false;
+            BtnNewObject.IsEnabled = DeleteConfigurationItem.IsEnabled = false;
             return;
         }
         SessionTestLog.Trace("БД-ПОДКЛЮЧЕНИЕ", $"Testing database connection for '{_selectedDatabase}'");
@@ -456,7 +463,7 @@ public partial class ProjectModeView : UserControl
             SessionTestLog.Trace("РЕЖИМ3-ПРОИЗВОДИТЕЛЬНОСТЬ", $"online connection-test-ms={connectionTimer.ElapsedMilliseconds}; result=unavailable");
             configureTimer.Stop();
             SessionTestLog.Trace("РЕЖИМ3-ПРОИЗВОДИТЕЛЬНОСТЬ", $"online configure-total-ms={configureTimer.ElapsedMilliseconds}; result=unavailable");
-            BtnNewObject.IsEnabled = BtnConfigDelete.IsEnabled = false;
+            BtnNewObject.IsEnabled = DeleteConfigurationItem.IsEnabled = false;
             return;
         }
         connectionTimer.Stop();
@@ -585,7 +592,7 @@ public partial class ProjectModeView : UserControl
             var candidates = kind == ConfigurationKind.Plc ? new[] { "dbo.PLC", "dbo.PLCs", "PLC", "PLCs" } : kind == ConfigurationKind.Area ? new[] { "dbo.Area", "dbo.Areas", "Area", "Areas" } : Array.Empty<string>();
             var localTable = _offlineProject.TableSchemas.FirstOrDefault(x => candidates.Any(t => x.TableName.Equals(t, StringComparison.OrdinalIgnoreCase)))?.TableName
                 ?? _offlineProject.LocalRecords.Select(x => x.TableName).FirstOrDefault(t => candidates.Any(c => t.Equals(c, StringComparison.OrdinalIgnoreCase)));
-            if (string.IsNullOrWhiteSpace(localTable)) { _objects = _configurationRows = new DataTable(); ObjectList.ItemsSource = Array.Empty<ObjectItem>(); BtnNewObject.IsEnabled = false; BtnConfigDelete.IsEnabled = false; TxtStatus.Text = $"В снимке нет справочника {kind}. Пересоздай снапшот из Online."; return; }
+            if (string.IsNullOrWhiteSpace(localTable)) { _objects = _configurationRows = new DataTable(); ObjectList.ItemsSource = Array.Empty<ObjectItem>(); BtnNewObject.IsEnabled = false; DeleteConfigurationItem.IsEnabled = false; TxtStatus.Text = $"В снимке нет справочника {kind}. Пересоздай снапшот из Online."; return; }
             _configurationTableName = localTable;
             var schema = _offlineProject.TableSchemas.FirstOrDefault(x => x.TableName.Equals(localTable, StringComparison.OrdinalIgnoreCase));
             _configurationKeyColumn = kind == ConfigurationKind.Area
@@ -635,10 +642,10 @@ public partial class ProjectModeView : UserControl
             TxtClassTitle.Text = "Элементы проекта";
             TxtObjectCount.Text = $"{items.Count} значений";
             BtnNewObject.Content = "＋  Добавить"; BtnNewObject.IsEnabled = UserAuthorizationService.Has(Permission.ManageObjects);
-            BtnConfigDelete.Visibility = Visibility.Visible;
-            BtnConfigDelete.IsEnabled = false;
-            BtnDelete.Visibility = Visibility.Collapsed;
-            BtnSave.Visibility = Visibility.Visible;
+            DeleteConfigurationItem.Visibility = Visibility.Visible;
+            DeleteConfigurationItem.IsEnabled = false;
+            DeleteObjectItem.Visibility = Visibility.Collapsed;
+            SaveItem.Visibility = Visibility.Visible;
             BtnObjectSearch.IsEnabled = BtnObjectFilter.IsEnabled = false;
             TxtStatus.Text = $"Offline · справочник {kind}: {items.Count} значений";
             ApplyAuthorizationUi();
@@ -655,13 +662,13 @@ public partial class ProjectModeView : UserControl
         ObjectList.ItemsSource = null;
         ClearObjectEditor();
         BtnNewObject.Content = "＋  Добавить";
-        BtnConfigDelete.Visibility = Visibility.Visible;
-        BtnConfigDelete.IsEnabled = false;
+        DeleteConfigurationItem.Visibility = Visibility.Visible;
+        DeleteConfigurationItem.IsEnabled = false;
         TxtClassTitle.Text = "Элементы проекта";
         TxtObjectCount.Text = "";
         BtnNewObject.IsEnabled = UserAuthorizationService.Has(Permission.ManageObjects);
-        BtnDelete.Visibility = Visibility.Collapsed;
-        BtnSave.Visibility = Visibility.Visible;
+        DeleteObjectItem.Visibility = Visibility.Collapsed;
+        SaveItem.Visibility = Visibility.Visible;
         BtnObjectSearch.IsEnabled = BtnObjectFilter.IsEnabled = false;
 
         if (_connection == null || string.IsNullOrWhiteSpace(_selectedDatabase)) return;
@@ -824,7 +831,7 @@ public partial class ProjectModeView : UserControl
             TxtObjectCount.Text = string.Empty;
             TxtClassTitle.Text = string.Empty;
             TxtStatus.Text = "Выберите конфигурацию";
-            BtnNewObject.IsEnabled = BtnDelete.IsEnabled = BtnSave.IsEnabled = false;
+            BtnNewObject.IsEnabled = DeleteObjectItem.IsEnabled = SaveItem.IsEnabled = false;
             BtnObjectSearch.IsEnabled = BtnObjectFilter.IsEnabled = false;
             return;
         }
@@ -839,11 +846,11 @@ public partial class ProjectModeView : UserControl
         SessionTestLog.Trace("РЕЖИМ3-КЛАСС", $"Selected class='{cls.Name}', classNumber={cls.ClassNumber}, primaryStorage='{cls.PrimaryStorage?.TableName ?? "<null>"}', fieldCount={cls.Fields?.Count ?? 0}, database='{_selectedDatabase}'");
         _configurationKind = ConfigurationKind.Class;
         UpdateObjectFilterIndicator();
-        BtnDelete.Visibility = BtnSave.Visibility = Visibility.Visible;
+        DeleteObjectItem.Visibility = SaveItem.Visibility = Visibility.Visible;
         BtnObjectSearch.IsEnabled = BtnObjectFilter.IsEnabled = true;
         _selectedConfigurationItem = new ConfigurationItem(ConfigurationKind.Class, cls.Name, cls.Name, false, false, cls);
-        BtnConfigDelete.IsEnabled = false;
-        BtnConfigDelete.Visibility = Visibility.Collapsed;
+        DeleteConfigurationItem.IsEnabled = false;
+        DeleteConfigurationItem.Visibility = Visibility.Collapsed;
         await LoadActualClassFieldsAsync();
         TxtClassTitle.Text = cls.Name;
         BtnNewObject.IsEnabled = !string.IsNullOrWhiteSpace(cls.PrimaryStorage?.TableName) && !string.IsNullOrWhiteSpace(_selectedDatabase);
@@ -1038,8 +1045,8 @@ public partial class ProjectModeView : UserControl
             else PasteCopiedObject();
             return;
         }
-        var deleteButton = _configurationKind == ConfigurationKind.Class ? BtnDelete : BtnConfigDelete;
-        Mode3DeleteShortcut.Handle(e, deleteButton);
+        var deleteButton = _configurationKind == ConfigurationKind.Class ? DeleteObjectItem : DeleteConfigurationItem;
+        Mode3DeleteShortcut.Handle(e, deleteButton.IsEnabled && deleteButton.Visibility == Visibility.Visible, () => DeleteSelection_Click(deleteButton, e));
     }
 
     private void ObjectList_PreviewMouseRightButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
@@ -1072,8 +1079,9 @@ public partial class ProjectModeView : UserControl
             Add("Дублировать", single && BtnNewObject.IsEnabled, async (_, _) => await DuplicateObjectAsync(_selectedRow));
             Add("Копировать", single, (_, _) => CopySelectedObject());
             Add("Вставить", classMode && BtnNewObject.IsEnabled && _copiedObject.HasValue, (_, _) => PasteCopiedObject());
-            var delete = classMode ? BtnDelete : BtnConfigDelete;
-            Add("Удалить", delete.IsVisible && delete.IsEnabled, (_, e) => DeleteSelection_Click(delete, e));
+            var delete = classMode ? DeleteObjectItem : DeleteConfigurationItem;
+            menu.Items.Add(SaveItem);
+            menu.Items.Add(delete);
             menu.Items.Add(edit);
         };
         return menu;
@@ -1083,12 +1091,15 @@ public partial class ProjectModeView : UserControl
     {
         if (_offlineProject == null || _configurationKind == ConfigurationKind.Class || _selectedRow == null) return;
         if (!UserAuthorizationService.Require(Permission.ManageObjects)) return;
+        var generation = _workspaceGeneration;
+        var selected = _selectedRow;
         var schema = _offlineProject.TableSchemas.FirstOrDefault(x => x.TableName.Equals(_configurationTableName, StringComparison.OrdinalIgnoreCase));
         if (schema == null) { Configurator.Infrastructure.ModernDialog.Show("В локальном проекте отсутствует схема справочника.", "Редактирование", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
         var columns = schema.Columns.Select(c => new ColumnInfo { Name = c.Name, DataType = c.DataType, IsIdentity = c.IsIdentity, IsNullable = c.IsNullable, IsComputed = c.IsComputed, MaxLength = c.MaxLength, Precision = c.Precision, Scale = c.Scale, HasDefault = c.HasDefault }).ToList();
         var initial = _selectedRow.Table.Columns.Cast<DataColumn>().ToDictionary(c => c.ColumnName, c => _selectedRow[c], StringComparer.OrdinalIgnoreCase);
         var dialog = new AddRowWindow(_configurationTableName, columns, 0, _configurationKeyColumn, null, null, null, null, new Dictionary<string, List<LookupOption>>(), initial, true) { Owner = Window.GetWindow(this) };
-        dialog.ShowDialog();
+        dialog.CanApply = () => generation == _workspaceGeneration && ReferenceEquals(selected, _selectedRow);
+        await dialog.ShowRowEditorAsync();
         if (!dialog.Confirmed || dialog.Values == null) return;
         var keyColumns = schema.KeyColumns;
         if (keyColumns.Count == 0) throw new InvalidOperationException("В локальном снимке не сохранён ключ справочника.");
@@ -1128,9 +1139,9 @@ public partial class ProjectModeView : UserControl
         if (_configurationKind != ConfigurationKind.Class)
         {
             ClearObjectEditor();
-            BtnConfigDelete.IsEnabled = selected.Count == 1 && UserAuthorizationService.Has(Permission.ManageObjects);
-            BtnDelete.Visibility = Visibility.Collapsed;
-            BtnSave.Visibility = Visibility.Visible;
+            DeleteConfigurationItem.IsEnabled = selected.Count == 1 && UserAuthorizationService.Has(Permission.ManageObjects);
+            DeleteObjectItem.Visibility = Visibility.Collapsed;
+            SaveItem.Visibility = Visibility.Visible;
             if (selected.Count == 1)
             {
                 var configItem = selected[0];
@@ -1160,8 +1171,8 @@ public partial class ProjectModeView : UserControl
         if (item.RowIndex < 0 || item.RowIndex >= _objects.Rows.Count) return;
         _selectedRow = _objects.Rows[item.RowIndex];
         BuildObjectEditor();
-        BtnDelete.IsEnabled = true;
-        BtnSave.IsEnabled = selected.Count == 1;
+        DeleteObjectItem.IsEnabled = true;
+        SaveItem.IsEnabled = selected.Count == 1;
         if (_selectedRow != null)
         {
             var plc = GetText("PLC");
@@ -1183,15 +1194,19 @@ public partial class ProjectModeView : UserControl
     {
         bool configuration = ReferenceEquals(sender, ConfigurationHeader) || ReferenceEquals(sender, ConfigurationRestore);
         var panel = configuration ? (FrameworkElement)ConfigurationPanel : ElementsPanel;
-        var column = configuration ? ConfigurationColumn : ElementsColumn;
-        var gap = configuration ? ConfigurationGap : ElementsGap;
         var button = configuration ? ConfigurationRestore : ElementsRestore;
-
         bool show = panel.Visibility == Visibility.Collapsed;
         panel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-        column.Width = new GridLength(show ? (configuration ? 330 : 390) : 28);
-        gap.Width = new GridLength(show ? 10 : 0);
         button.Visibility = show ? Visibility.Collapsed : Visibility.Visible;
+
+        bool configOpen = ConfigurationPanel.Visibility == Visibility.Visible;
+        bool elementsOpen = ElementsPanel.Visibility == Visibility.Visible;
+        Grid.SetColumn(RestoreTabs, configOpen ? 2 : 0);
+        RestoreTabs.Visibility = configOpen && elementsOpen ? Visibility.Collapsed : Visibility.Visible;
+        ConfigurationColumn.Width = new GridLength(configOpen ? 330 : 32);
+        ConfigurationGap.Width = new GridLength(configOpen ? 10 : 5);
+        ElementsColumn.Width = new GridLength(elementsOpen ? 390 : configOpen ? 32 : 0);
+        ElementsGap.Width = new GridLength(elementsOpen ? 10 : configOpen ? 5 : 0);
         (show ? (configuration ? ConfigurationHeader : ElementsHeader) : button).Focus();
     }
 
@@ -1215,31 +1230,31 @@ public partial class ProjectModeView : UserControl
         bool hasSelection = _selectedRow != null;
         bool matrixCatalog = classMode && _selectedClass?.Name.Equals("Matrix", StringComparison.OrdinalIgnoreCase) == true;
         if (BtnNewObject != null) BtnNewObject.IsEnabled = (classMode ? UserAuthorizationService.Has(Permission.AddData) : UserAuthorizationService.Has(Permission.ManageObjects));
-        if (BtnConfigDelete != null)
+        if (DeleteConfigurationItem != null)
         {
-            BtnConfigDelete.Visibility = configMode ? Visibility.Visible : Visibility.Collapsed;
-            BtnConfigDelete.IsEnabled = configMode && UserAuthorizationService.Has(Permission.ManageObjects) && ObjectList.SelectedItems.Count == 1;
+            DeleteConfigurationItem.Visibility = configMode ? Visibility.Visible : Visibility.Collapsed;
+            DeleteConfigurationItem.IsEnabled = configMode && UserAuthorizationService.Has(Permission.ManageObjects) && ObjectList.SelectedItems.Count == 1;
         }
         if (BtnObjectSearch != null) BtnObjectSearch.IsEnabled = classMode && _selectedClass != null;
         if (BtnObjectFilter != null) BtnObjectFilter.IsEnabled = classMode && _selectedClass != null;
-        if (BtnDelete != null) BtnDelete.Visibility = classMode ? Visibility.Visible : Visibility.Collapsed;
-        if (BtnSave != null)
+        if (DeleteObjectItem != null) DeleteObjectItem.Visibility = classMode ? Visibility.Visible : Visibility.Collapsed;
+        if (SaveItem != null)
         {
-            BtnSave.Visibility = classMode || configMode ? Visibility.Visible : Visibility.Collapsed;
-            BtnSave.IsEnabled = classMode
+            SaveItem.Visibility = classMode || configMode ? Visibility.Visible : Visibility.Collapsed;
+            SaveItem.IsEnabled = classMode
                 ? hasSelection && UserAuthorizationService.Has(Permission.EditData)
                 : configMode && hasSelection && UserAuthorizationService.Has(Permission.ManageObjects);
         }
         if (classMode && _selectedClass?.PrimaryStorage?.TableName is string table &&
             !ProjectWriteGuard.IsDataTableWritable(table))
         {
-            BtnNewObject.IsEnabled = BtnSave.IsEnabled =
-                BtnDelete.IsEnabled = false;
+            BtnNewObject.IsEnabled = SaveItem.IsEnabled =
+                DeleteObjectItem.IsEnabled = false;
             return;
         }
         if (matrixCatalog && BtnNewObject != null) BtnNewObject.IsEnabled = false;
-        if (matrixCatalog && BtnSave != null) BtnSave.IsEnabled = false;
-        if (BtnDelete != null) BtnDelete.IsEnabled = !matrixCatalog && UserAuthorizationService.Has(Permission.DeleteData) && BtnDelete.IsEnabled;
+        if (matrixCatalog && SaveItem != null) SaveItem.IsEnabled = false;
+        if (DeleteObjectItem != null) DeleteObjectItem.IsEnabled = !matrixCatalog && UserAuthorizationService.Has(Permission.DeleteData) && DeleteObjectItem.IsEnabled;
     }
 
     private static Dictionary<string, object> SnapshotRow(DataRow row)
@@ -1435,7 +1450,7 @@ public partial class ProjectModeView : UserControl
                 SessionTestLog.Trace("РЕЖИМ3-СОХРАНЕНИЕ", $"No changes detected; table='{_configurationTableName}'");
                 TxtStatus.Text = "Изменений нет";
                 ShowActionFeedback(TxtStatus.Text);
-                BtnSave.IsEnabled = false;
+                SaveItem.IsEnabled = false;
                 return;
             }
 
@@ -1524,8 +1539,8 @@ public partial class ProjectModeView : UserControl
     {
         if (e.Key != System.Windows.Input.Key.S ||
             System.Windows.Input.Keyboard.Modifiers != System.Windows.Input.ModifierKeys.Control ||
-            !BtnSave.IsVisible || !BtnSave.IsEnabled || e.IsRepeat) return;
-        BtnSave.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            !ObjectActionsToolbar.IsVisible || SaveItem.Visibility != Visibility.Visible || !SaveItem.IsEnabled || e.IsRepeat) return;
+        SaveObject_Click(SaveItem, e);
         e.Handled = true;
     }
 
@@ -1583,11 +1598,11 @@ public partial class ProjectModeView : UserControl
 
     private async void DeleteSelection_Click(object sender, RoutedEventArgs e)
     {
-        if (_deletingSelection || sender is not Button { IsVisible: true, IsEnabled: true }) return;
+        if (_deletingSelection || sender is not MenuItem { Visibility: Visibility.Visible, IsEnabled: true }) return;
         _deletingSelection = true;
         try
         {
-            if (ReferenceEquals(sender, BtnConfigDelete)) await DeleteConfigurationValueAsync();
+            if (ReferenceEquals(sender, DeleteConfigurationItem)) await DeleteConfigurationValueAsync();
             else await DeleteObjectAsync();
         }
         finally { _deletingSelection = false; }
@@ -1854,6 +1869,9 @@ public partial class ProjectModeView : UserControl
     private async Task AddConfigurationValueAsync()
     {
         if (!UserAuthorizationService.Require(Permission.ManageObjects)) return;
+        var generation = _workspaceGeneration;
+        var table = _configurationTableName;
+        bool CanAdd() => generation == _workspaceGeneration && table == _configurationTableName;
         if (_offlineProject != null)
         {
             try
@@ -1863,11 +1881,19 @@ public partial class ProjectModeView : UserControl
                 var columns = schema.Columns.Select(c => new ColumnInfo { Name = c.Name, DataType = c.DataType, IsIdentity = c.IsIdentity, IsNullable = c.IsNullable, IsComputed = c.IsComputed, MaxLength = c.MaxLength, Precision = c.Precision, Scale = c.Scale, HasDefault = c.HasDefault }).ToList();
                 var recordColumn = columns.FirstOrDefault(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase))?.Name ?? "";
                 int nextRecord = 1;
-                if (!string.IsNullOrWhiteSpace(recordColumn) && _configurationRows.Columns.Contains(recordColumn)) nextRecord = _configurationRows.Rows.Cast<DataRow>().Select(r => r[recordColumn] == DBNull.Value ? 0 : int.TryParse(Convert.ToString(r[recordColumn]), out var n) ? n : 0).DefaultIfEmpty(0).Max() + 1;
+                if (!string.IsNullOrWhiteSpace(recordColumn))
+                {
+                    var suggestion = new ScopedRecordSuggestion();
+                    foreach (var record in _offlineSource.GetRecords(_configurationTableName))
+                        suggestion.Add(ProjectClassCatalog.Read(record, recordColumn));
+                    nextRecord = suggestion.GetValue();
+                }
                 var lookups = OfflineLookupOptionsService.Build(_offlineProject, _configurationTableName, columns);
                 var dialog = new AddRowWindow(_configurationTableName, columns, nextRecord, recordColumn, lookupOptions: lookups)
                 { Owner = Window.GetWindow(this) };
-                dialog.ShowDialog();
+                if (!CanAdd()) return;
+                dialog.CanApply = CanAdd;
+                await dialog.ShowRowEditorAsync();
                 if (!dialog.Confirmed || dialog.Values == null || dialog.Values.Count == 0) return;
                 RequireExplicitOfflineDefaults(columns, dialog.Values.Keys);
                 await CreateConfigurationAndJournalAsync(_configurationTableName, dialog.Values);
@@ -1899,8 +1925,7 @@ public partial class ProjectModeView : UserControl
             int nextRecord = 1;
             if (!string.IsNullOrWhiteSpace(recordColumn) && columns.First(c => c.Name.Equals(recordColumn, StringComparison.OrdinalIgnoreCase)).DataType.Contains("int", StringComparison.OrdinalIgnoreCase))
             {
-                var data = await db.GetTableDataPageAsync(_configurationTableName, 1, 5000, new[] { recordColumn }, null);
-                nextRecord = data.Rows.Cast<DataRow>().Select(r => r[recordColumn] == DBNull.Value ? 0 : Convert.ToInt32(r[recordColumn])).DefaultIfEmpty(0).Max() + 1;
+                nextRecord = await db.GetFreeScopedRecordValueAsync(_configurationTableName, recordColumn, null, null, default);
             }
             var lookups = new Dictionary<string, List<LookupOption>>(StringComparer.OrdinalIgnoreCase);
             // Configuration entries such as PLC/Area also have reference fields (e.g. Type -> PLC Types).
@@ -1917,7 +1942,9 @@ public partial class ProjectModeView : UserControl
             }
             var dialog = new AddRowWindow(_configurationTableName, columns, nextRecord, recordColumn, _connection.ToConnectionString(_selectedDatabase), null, null, null, lookups)
             { Owner = Window.GetWindow(this) };
-            dialog.ShowDialog();
+            if (!CanAdd()) return;
+            dialog.CanApply = CanAdd;
+            await dialog.ShowRowEditorAsync();
             if (!dialog.Confirmed || dialog.Values == null || dialog.Values.Count == 0) return;
             await CreateConfigurationAndJournalAsync(_configurationTableName, dialog.Values);
             string insertedKey = dialog.Values
@@ -2090,6 +2117,7 @@ public partial class ProjectModeView : UserControl
                     nextRecord = await db.GetFreeScopedRecordValueAsync(tableName, recordColumn, null, null, default, recordScopeClass, selectedClass.ClassNumber);
             }
 
+            var addressWorkspace = RequireWorkspace();
             var dialog = new AddRowWindow(tableName, columns, nextRecord, recordColumn, connectionString,
                 plcColumn, classNumberColumn == null ? null : selectedClass.ClassNumber, classNumberColumn, lookupOptions,
                 initialValues: initialValues,
@@ -2104,11 +2132,14 @@ public partial class ProjectModeView : UserControl
                     return Task.FromResult(LocalRecordNumbers(plc).Any(value => Mode3DuplicateValues.SameScopeValue(value, record)));
                 },
                 preferFreeScopedRecord: plcColumn != null && recordColumn.Length != 0,
-                recordScopeClassColumn: recordScopeClass)
+                recordScopeClassColumn: recordScopeClass,
+                freeAddressProvider: (plc, cls, ct) => PlcAddressCatalog.SuggestAddressesAsync(addressWorkspace, tableName, plc,
+                    cls ?? selectedClass.ClassNumber.ToString(System.Globalization.CultureInfo.InvariantCulture), ct))
             { Owner = Window.GetWindow(this) };
 
             if (mutationGeneration != _workspaceGeneration || !ReferenceEquals(selectedClass, _selectedClass)) return;
-            dialog.ShowDialog();
+            dialog.CanApply = () => mutationGeneration == _workspaceGeneration && ReferenceEquals(selectedClass, _selectedClass);
+            await dialog.ShowRowEditorAsync();
             if (!dialog.Confirmed || dialog.Values == null || dialog.Values.Count == 0) return;
 
             if (offlineSource != null) RequireExplicitOfflineDefaults(columns, dialog.Values.Keys);
@@ -2220,8 +2251,8 @@ public partial class ProjectModeView : UserControl
         TxtPreviewGlyph.Visibility = Visibility.Visible;
         ImgObjectTypePreview.Source = null;
         ImgObjectTypePreview.Visibility = Visibility.Collapsed;
-        BtnDelete.IsEnabled = false;
-        BtnSave.IsEnabled = false;
+        DeleteObjectItem.IsEnabled = false;
+        SaveItem.IsEnabled = false;
     }
 
     private void CancelLoad()

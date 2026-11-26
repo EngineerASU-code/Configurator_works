@@ -600,6 +600,7 @@ public sealed partial class ChangeJournalService
         var table = ResolveOfflineTable(records, schemas, change.TableName);
         ProjectWriteGuard.EnsureDataTableWritable(table);
         var tableRows = records.Where(r => r.TableName.Equals(table, StringComparison.OrdinalIgnoreCase)).ToList();
+        var schema = schemas.FirstOrDefault(x => x.TableName.Equals(table, StringComparison.OrdinalIgnoreCase));
         var identityAfter = Deserialize(change.IdentityAfter ?? new());
         var identityBefore = Deserialize(change.IdentityBefore ?? new());
         var before = Deserialize(change.Before ?? new());
@@ -610,12 +611,12 @@ public sealed partial class ChangeJournalService
             case ChangeJournalOperationKind.Insert:
             case ChangeJournalOperationKind.Duplicate:
             {
-                var matches = FindOfflineRows(tableRows, identityAfter, after);
+                var matches = FindOfflineRows(tableRows, identityAfter, after, schema);
                 if (matches.Count != 1)
                     throw new InvalidOperationException(matches.Count == 0
                         ? $"Созданная запись в {table} не найдена. Возможно, она уже изменена или удалена."
                         : $"В {table} найдено несколько подходящих записей; безопасное восстановление невозможно.");
-                EnsureOfflineValuesMatch(matches[0], after, table, "Созданная запись изменилась после исходной операции");
+                EnsureOfflineValuesMatch(matches[0], after, table, "Созданная запись изменилась после исходной операции", schema);
                 if (change.AfterIsCompleteOfflineRecord &&
                     !matches[0].Values.Select(pair => pair.Key).ToHashSet(StringComparer.OrdinalIgnoreCase)
                         .SetEquals(after.Keys))
@@ -630,16 +631,18 @@ public sealed partial class ChangeJournalService
             {
                 if (before.Count == 0)
                     throw new InvalidOperationException($"В журнале нет снимка удалённой строки {table}.");
-                var matches = FindOfflineRows(tableRows, identityBefore, before);
+                var matches = FindOfflineRows(tableRows, identityBefore, before, schema);
                 if (matches.Count > 0)
                     throw new InvalidOperationException($"В {table} уже существует запись с исходным идентификатором. Возможен конфликт восстановления.");
-                var schema = schemas.FirstOrDefault(x => x.TableName.Equals(table, StringComparison.OrdinalIgnoreCase));
+
                 var keyColumns = schema?.KeyColumns ?? new List<string>();
                 var key = identityBefore.TryGetValue("__ProjectRecordKey", out var projectKey)
                     ? Convert.ToString(projectKey, System.Globalization.CultureInfo.InvariantCulture) ?? ""
                     : BuildOfflineRecordKey(schema, keyColumns, before);
                 if (string.IsNullOrWhiteSpace(key))
                     throw new InvalidOperationException($"Не удалось восстановить устойчивый ключ строки {table}.");
+                if (tableRows.Any(row => string.Equals(row.Key, key, StringComparison.Ordinal)))
+                    throw new InvalidOperationException($"В {table} уже существует запись с исходным ключом. Восстановление отменено.");
                 var values = new JsonObject();
                 foreach (var pair in before)
                     values[pair.Key] = pair.Value == null || pair.Value == DBNull.Value
@@ -650,7 +653,7 @@ public sealed partial class ChangeJournalService
             case ChangeJournalOperationKind.Update:
             {
                 var lookup = identityAfter.Count > 0 ? identityAfter : identityBefore;
-                var matches = FindOfflineRows(tableRows, lookup, after);
+                var matches = FindOfflineRows(tableRows, lookup, after, schema);
                 if (matches.Count != 1)
                     throw new InvalidOperationException(matches.Count == 0
                         ? $"Изменённая запись в {table} не найдена. Восстановление отменено."
@@ -664,7 +667,7 @@ public sealed partial class ChangeJournalService
                     var expected = after.TryGetValue(field, out var value) ? value : null;
                     var actual = row.Values[field]?.ToString();
                     if ((change.AfterIsCompleteOfflineRecord && row.Values.ContainsKey(field) != after.ContainsKey(field)) ||
-                        !OfflineValueEquals(actual, expected))
+                        !OfflineValueEquals(actual, expected, schema, field))
                         throw new InvalidOperationException($"Конфликт восстановления: поле «{field}» записи {table} изменилось после исходной операции.");
                 }
                 foreach (var field in changedFields)
@@ -679,8 +682,9 @@ public sealed partial class ChangeJournalService
                     row.Values[field] = oldValue == null || oldValue == DBNull.Value
                         ? null : System.Text.Json.JsonSerializer.SerializeToNode(oldValue);
                 }
-                var schema = schemas.FirstOrDefault(x => x.TableName.Equals(table, StringComparison.OrdinalIgnoreCase));
-                if (!identityAfter.ContainsKey("__ProjectRecordKey") && !identityBefore.ContainsKey("__ProjectRecordKey"))
+
+                if (schema?.KeyColumns.Any(key => changedFields.Contains(key, StringComparer.OrdinalIgnoreCase)) == true &&
+                    !identityAfter.ContainsKey("__ProjectRecordKey") && !identityBefore.ContainsKey("__ProjectRecordKey"))
                 {
                     row.Key = BuildOfflineRecordKey(schema,
                         schema?.KeyColumns ?? new List<string>(),
@@ -713,7 +717,7 @@ public sealed partial class ChangeJournalService
     private static List<Configurator.Core.Projects.ProjectRecord> FindOfflineRows(
         List<Configurator.Core.Projects.ProjectRecord> rows,
         Dictionary<string, object> identity,
-        Dictionary<string, object> snapshot)
+        Dictionary<string, object> snapshot, ProjectTableSchema? schema = null)
     {
         if (identity.TryGetValue("__ProjectRecordKey", out var key))
         {
@@ -723,29 +727,37 @@ public sealed partial class ChangeJournalService
             // captured row values, which are still checked before any restore commit.
             if (snapshot.Count == 0) return new();
             return rows.Where(row => snapshot.All(pair => row.Values.TryGetPropertyValue(pair.Key, out var node) &&
-                OfflineValueEquals(node?.ToString(), pair.Value))).ToList();
+                OfflineValueEquals(node?.ToString(), pair.Value, schema, pair.Key))).ToList();
         }
         var criteria = identity.Count > 0 ? identity : snapshot;
         if (criteria.Count == 0) return new();
         return rows.Where(row => criteria.All(pair => row.Values.TryGetPropertyValue(pair.Key, out var node) &&
-            OfflineValueEquals(node?.ToString(), pair.Value))).ToList();
+            OfflineValueEquals(node?.ToString(), pair.Value, schema, pair.Key))).ToList();
     }
 
     private static void EnsureOfflineValuesMatch(
-        Configurator.Core.Projects.ProjectRecord row, Dictionary<string, object> expected, string table, string message)
+        Configurator.Core.Projects.ProjectRecord row, Dictionary<string, object> expected, string table, string message, ProjectTableSchema? schema = null)
     {
         foreach (var pair in expected)
-            if (!row.Values.TryGetPropertyValue(pair.Key, out var node) || !OfflineValueEquals(node?.ToString(), pair.Value))
+            if (!row.Values.TryGetPropertyValue(pair.Key, out var node) || !OfflineValueEquals(node?.ToString(), pair.Value, schema, pair.Key))
                 throw new InvalidOperationException($"{message}: {table}.{pair.Key}. Восстановление отменено.");
     }
 
-    private static bool OfflineValueEquals(string actual, object expected)
+    private static bool OfflineValueEquals(string actual, object expected, ProjectTableSchema? schema = null, string field = null)
     {
         var expectedText = expected == null || expected == DBNull.Value ? null : Convert.ToString(expected, System.Globalization.CultureInfo.InvariantCulture);
         if (actual == null || expectedText == null) return actual == null && expectedText == null;
         if (expected is bool expectedBoolean && bool.TryParse(actual, out var actualBoolean))
             return actualBoolean == expectedBoolean;
-        return string.Equals(actual, expectedText, StringComparison.Ordinal);
+        if (string.Equals(actual, expectedText, StringComparison.Ordinal)) return true;
+        var type = schema?.Columns.FirstOrDefault(c => c.Name.Equals(field, StringComparison.OrdinalIgnoreCase))?.DataType.ToLowerInvariant();
+        if (type is "tinyint" or "smallint" or "int" or "bigint" or "numeric" or "decimal" or "money" or "smallmoney" or "real" or "float")
+        {
+            // Ignore only redundant fractional zeros. Keep all significant digits, including SQL decimal(38).
+            static string Normalize(string value) => value.Contains('.') && !value.Contains('e', StringComparison.OrdinalIgnoreCase) ? value.TrimEnd('0').TrimEnd('.') : value;
+            return string.Equals(Normalize(actual), Normalize(expectedText), StringComparison.Ordinal);
+        }
+        return false;
     }
 
     private static string BuildOfflineRecordKey(Configurator.Core.Projects.ProjectTableSchema? schema,

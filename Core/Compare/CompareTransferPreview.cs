@@ -38,7 +38,7 @@ public sealed class CompareTransferPreview
     internal IReadOnlyDictionary<string, object?> KeyValues { get; private init; } = new Dictionary<string, object?>();
     internal IReadOnlyDictionary<string, object?> Values { get; private init; } = new Dictionary<string, object?>();
     internal bool CopiesComputedArea => ExpectedRecord is null && TargetSchema is { } schema &&
-        CopiesOfflineEquipmentArea(Source, Target, schema) &&
+        Target.Workspace.IsOffline && IsEquipmentTable(schema) && FindColumn(schema, "Area")?.IsComputed == true &&
         SourceSchema is { } sourceSchema && FindColumn(sourceSchema, "Area")?.IsComputed == true;
 
     public static CompareTransferPreview Evaluate(
@@ -71,9 +71,9 @@ public sealed class CompareTransferPreview
             return Block("Класс недоступен в одном из источников.");
         if (fromTable.MappingRole == "ambiguous" || toTable.MappingRole == "ambiguous")
             return Block("Не удалось подтвердить логические зависимости.");
-        if (string.IsNullOrEmpty(source.ProjectId) || !Names.Equals(source.ProjectId, target.ProjectId))
+        if (!IsEquipmentTable(fromTable.Schema) || !IsEquipmentTable(toTable.Schema))
         {
-            if (string.IsNullOrEmpty(source.Origin) || !Names.Equals(source.Origin, target.Origin))
+            if (!CompareEngine.SameLineage(source, target))
                 return Block("Происхождение и соответствие ключей проектов не подтверждены.");
         }
 
@@ -159,7 +159,7 @@ public sealed class CompareTransferPreview
                 foreach (var column in schema.Columns)
                 {
                     var fromColumn = FindColumn(fromTable.Schema, column.Name);
-                    if (CopiesOfflineEquipmentArea(source, target, schema) && column.Name.Equals("Area", StringComparison.OrdinalIgnoreCase) &&
+                    if (IsEquipmentTable(schema) && column.Name.Equals("Area", StringComparison.OrdinalIgnoreCase) &&
                         column.IsComputed && fromColumn?.IsComputed == true && Compatible(column, fromColumn) &&
                         from.Values.TryGetPropertyValue(fromColumn.Name, out var area))
                     {
@@ -257,10 +257,6 @@ public sealed class CompareTransferPreview
         (Names.Equals(schema.TableName, "dbo.Valves") || Names.Equals(schema.TableName, "dbo.Reglers")) && schema.KeyColumns.Count == 3 &&
         schema.KeyColumns.Contains("Record", Names) && schema.KeyColumns.Contains("PLC", Names) &&
         schema.KeyColumns.Contains("PLC_Class_Number", Names);
-
-    private static bool CopiesOfflineEquipmentArea(CompareSource source, CompareSource target, ProjectTableSchema schema) =>
-        source.Workspace.IsOffline && target.Workspace.IsOffline &&
-        IsEquipmentTable(schema) && FindColumn(schema, "Area")?.IsComputed == true;
 
     internal static IEnumerable<(string Table, string[] Columns, object?[] Values)> EquipmentLookups(
         ProjectTableSchema schema,

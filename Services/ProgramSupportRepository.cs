@@ -230,8 +230,14 @@ public sealed partial class ProgramSupportRepository
             EnsureWriteKey(definition, metadata.UniqueKeys);
             ValidateScope(definition, scope, metadata.Columns);
 
+            var pairs = new DatabaseService(_connectionString).UsesUnifiedLanguage
+                ? Core.Projects.UnifiedLanguage.Pairs(tableData.Rows.Columns.Cast<DataColumn>().Select(c => c.ColumnName)).ToArray()
+                : Array.Empty<(string Source, string Target)>();
             foreach (DataRow row in tableData.Rows.Rows)
             {
+                if (row.RowState is DataRowState.Added or DataRowState.Modified)
+                    foreach (var (first, second) in pairs)
+                        if (!Equals(row[first], row[second])) row[second] = row[first];
                 if (row.RowState == DataRowState.Unchanged || row.RowState == DataRowState.Detached) continue;
                 switch (row.RowState)
                 {

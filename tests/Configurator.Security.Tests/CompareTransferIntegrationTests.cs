@@ -14,6 +14,86 @@ namespace Configurator.Security.Tests;
 
 public sealed class CompareTransferIntegrationTests
 {
+    [CompareLocalDbFact]
+    public async Task EquipmentTransferMatrixUsesCompositeKeyAndComputedArea()
+    {
+        using var files = new CompareTestDirectory();
+        await using var dbA = await CompareLocalDb.CreateAsync();
+        await using var dbB = await CompareLocalDb.CreateAsync();
+        foreach (var db in new[] { dbA, dbB })
+            await db.ExecuteAsync("""
+                CREATE TABLE dbo.PLC (Record int PRIMARY KEY);
+                INSERT dbo.PLC VALUES (1),(8);
+                CREATE TABLE dbo.PLC_CFG (PLC_Number int, PLC_Class_Number int, PRIMARY KEY(PLC_Number,PLC_Class_Number));
+                INSERT dbo.PLC_CFG VALUES (1,1),(8,1);
+                CREATE TABLE dbo.Areas (AreaName varchar(3) PRIMARY KEY);
+                INSERT dbo.Areas VALUES ('091');
+                CREATE TABLE dbo.Valves (Record int NOT NULL, PLC int NOT NULL, PLC_Class_Number int NOT NULL,
+                    Name varchar(20) NOT NULL, Type int NOT NULL, Delay int NOT NULL, Area AS LEFT(Name,3),
+                    PRIMARY KEY(Record,PLC,PLC_Class_Number));
+                INSERT dbo.Valves VALUES (1,8,1,'091AV1310',0,0);
+                """);
+
+        async Task<CompareSource> Open(CompareLocalDb db, string path, bool offline)
+        {
+            if (offline) return await CompareSourceReader.OpenOfflineAsync(path, true);
+            var source = await CompareSourceReader.OpenOnlineAsync(db.ConnectionString, "SQL", true);
+            using var original = (IDisposable)source.Workspace;
+            return source with { Workspace = new ProjectWorkspace(new OnlineProjectDataSource(db.ConnectionString, "SQL"),
+                new OnlineProjectCrudDataSource(db.ConnectionString), new ProjectArchitectureDataSource(new ConfiguratorProject(), strictReads: true)) };
+        }
+
+        foreach (bool offlineA in new[] { false, true })
+        foreach (bool offlineB in new[] { false, true })
+        foreach (bool forward in new[] { true, false })
+        foreach (string operation in new[] { "create", "delete", "field", "object" })
+        {
+            foreach (var (db, path, present, offline) in new[] { (dbA, files.A, forward, offlineA), (dbB, files.B, !forward, offlineB) })
+            {
+                await db.ExecuteAsync("DELETE dbo.Valves WHERE PLC=1");
+                if (operation is "field" or "object" || (operation == "create" ? present : !present))
+                    await db.ExecuteAsync(present
+                        ? "INSERT dbo.Valves VALUES (1,1,1,'091AV1310',0,3)"
+                        : "INSERT dbo.Valves VALUES (1,1,1,'091AV1310',1,2)");
+                if (!offline) continue;
+                var sql = await Open(db, path, false);
+                using var workspace = (IDisposable)sql.Workspace;
+                var snapshot = new ConfiguratorProject { TableSchemas = (await sql.Workspace.GetTablesAsync()).ToList() };
+                foreach (var table in snapshot.TableSchemas)
+                    snapshot.LocalRecords.AddRange((await sql.Workspace.ReadPageAsync(new ProjectReadQuery { TableName = table.TableName })).Items);
+                snapshot.Architecture["physicalSchema"] = JsonSerializer.SerializeToNode(sql.PhysicalSchema);
+                await new ProjectPackageService().SaveAsync(path, snapshot);
+            }
+
+            var a = await Open(dbA, files.A, offlineA);
+            var b = await Open(dbB, files.B, offlineB);
+            using var workspaceA = (IDisposable)a.Workspace;
+            using var workspaceB = (IDisposable)b.Workspace;
+            var result = await CompareEngine.CompareAsync(a, b);
+            var valve = Assert.Single(result.Objects, row =>
+                (row.Pair?.RecordA ?? row.Pair?.RecordB)?.Values is { } values &&
+                values["PLC"]?.ToString() == "1" && values["Record"]?.ToString() == "1" &&
+                values["PLC_Class_Number"]?.ToString() == "1" && values["Name"]?.ToString() == "091AV1310");
+            var selection = operation == "field" ? Assert.Single(valve.Children!, child => child.Column == "Delay") : valve;
+            await ApplyAsync(a, b, selection, forward);
+            var target = await Open(forward ? dbB : dbA, forward ? files.B : files.A, forward ? offlineB : offlineA);
+            using var targetWorkspace = (IDisposable)target.Workspace;
+            var rows = (await target.Workspace.ReadPageAsync(new ProjectReadQuery { TableName = "dbo.Valves" })).Items;
+            Assert.Single(rows, row => row.Values["PLC"]?.ToString() == "8" && row.Values["Name"]?.ToString() == "091AV1310");
+            if (operation == "delete")
+            {
+                Assert.Single(rows);
+                continue;
+            }
+            Assert.Equal(2, rows.Count);
+            var inserted = Assert.Single(rows, row => row.Values["PLC"]?.ToString() == "1" && row.Values["Name"]?.ToString() == "091AV1310");
+            Assert.Equal("3", inserted.Values["Delay"]?.ToString());
+            Assert.Equal(operation == "field" ? "1" : "0", inserted.Values["Type"]?.ToString());
+            Assert.Equal("091", inserted.Values["Area"]?.ToString());
+            Assert.Equal("1", inserted.Values["PLC"]?.ToString());
+        }
+    }
+
     [Theory]
     [InlineData(true, false)]
     [InlineData(false, false)]
@@ -123,11 +203,20 @@ public sealed class CompareTransferIntegrationTests
         var edited = original.WithEdits(new Dictionary<string, string?> { ["Pressure"] = "24,75" });
         var target = aToB ? files.B : files.A;
         var source = aToB ? files.A : files.B;
+        var originalRow = Assert.Single((await new ProjectPackageService().OpenAsync(target)).LocalRecords);
         var beforeSource = File.ReadAllBytes(source);
         await CompareTransfer.ApplyToTargetAsync(edited);
         var record = Assert.Single((await new ProjectPackageService().OpenAsync(target)).LocalRecords);
         Assert.Equal(24.75m, record.Values["Pressure"]!.GetValue<decimal>());
         Assert.Equal(51, record.Values["Neighbour"]!.GetValue<int>());
+        Assert.Equal(originalRow.Key, record.Key);
+        var project = await new ProjectPackageService().OpenAsync(target);
+        var journal = new ChangeJournalService();
+        journal.BindOfflineProject(project, () => { }, 3);
+        journal.RestoreOffline(Assert.IsType<ChangeJournalEntry>(journal.LoadLatestPending()), project, () => { });
+        var restored = Assert.Single(project.LocalRecords);
+        Assert.Equal(originalRow.Key, restored.Key);
+        Assert.Equal(originalRow.Values.ToJsonString(), restored.Values.ToJsonString());
         var saved = File.ReadAllBytes(target);
         await Assert.ThrowsAsync<CompareTransferException>(() => CompareTransfer.ApplyToTargetAsync(original));
         Assert.Equal(saved, File.ReadAllBytes(target));

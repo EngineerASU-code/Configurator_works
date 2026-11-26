@@ -1,5 +1,7 @@
 #nullable enable
 using System.Data;
+using System.IO;
+using Configurator.Infrastructure.Projects;
 using System.Globalization;
 using System.Text.Json.Nodes;
 using System.Text.Json;
@@ -11,7 +13,7 @@ using Microsoft.Data.SqlClient;
 
 namespace Configurator;
 
-/// <summary>Rebuilds the address map while holding SQL locks through the update.</summary>
+/// <summary>Rechecks the address map before committing a reassignment.</summary>
 internal static class PlcAddressReassignment
 {
     internal static async Task<ChangeJournalRowChange> ExecuteAsync(string connectionString, IProjectArchitectureDataSource architecture,
@@ -140,6 +142,109 @@ internal static class PlcAddressReassignment
             throw;
         }
     }
+
+    internal static async Task<ChangeJournalEntry> ExecuteOfflineAsync(ConfiguratorProject project, string path,
+        FileStream reservedFile, ProjectPackageService packages, AddressOwner expected, string newAddress, CancellationToken ct)
+    {
+        ProjectWriteGuard.EnsureDataTableWritable(expected.TableName);
+        var staged = ProjectPackageService.CloneProject(project);
+        var source = new OfflineProjectDataSource(staged);
+        using var workspace = new ProjectWorkspace(source, architecture: new ProjectArchitectureDataSource(staged), allowWrite: false);
+        var labels = await ProjectClassCatalog.ReadTablesAsync(workspace, staged.TableSchemas, ct);
+        foreach (var table in staged.TableSchemas.Where(t => IsRelevant(t) && !labels.ContainsKey(t.TableName)))
+        {
+            var fields = table.Columns.Where(c => PlcAddressCatalog.IsAddressField(c.Name)).Select(c => c.Name).ToList();
+            if (source.GetRecords(table.TableName).Any(r => ProjectClassCatalog.Read(r, "PLC") == expected.Plc &&
+                fields.Any(f => ProjectClassCatalog.Read(r, f) != null)))
+                throw new InvalidOperationException($"Таблица «{table.TableName}» содержит адреса PLC, но её класс не определён. Переназначение остановлено.");
+        }
+
+        var maps = await PlcAddressCatalog.LoadAsync(workspace, ct);
+        if (!maps.TryGetValue(expected.Plc, out var map) || map.Issues.Count != 0)
+            throw new InvalidOperationException("Карта PLC неполная или изменилась. Обновите карту и устраните нераспознанные адреса.");
+        var schema = source.GetSchema(expected.TableName);
+        if (schema == null || !schema.HasStableKey || schema.KeyColumns.Count == 0 ||
+            JsonSerializer.Serialize(schema) != JsonSerializer.Serialize(expected.Schema))
+            throw new InvalidOperationException("Структура таблицы или стабильный ключ изменились. Обновите карту.");
+        var column = schema.Columns.SingleOrDefault(c => c.Name.Equals(expected.Field, StringComparison.OrdinalIgnoreCase));
+        if (column == null || schema.KeyColumns.Contains(column.Name, StringComparer.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Поле адреса недоступно для безопасного изменения.");
+
+        string Key(ProjectRecord record) => ProjectKeyCodec.Encode(schema, schema.KeyColumns, name =>
+            ProjectClassCatalog.ReadNode(record, name) ?? throw new InvalidOperationException("Ключ записи содержит NULL."));
+        var expectedKey = Key(expected.Record);
+        var matches = source.GetRecords(schema.TableName)
+            .Where(r => schema.KeyColumns.All(name => ProjectClassCatalog.ReadNode(r, name) != null) && Key(r) == expectedKey).Take(2).ToList();
+        if (matches.Count != 1 || matches[0].Key != expected.Record.Key ||
+            ProjectClassCatalog.Read(matches[0], "PLC") != expected.Plc ||
+            ProjectClassCatalog.Read(matches[0], column.Name) != expected.Raw)
+            throw new InvalidOperationException("Исходная запись изменилась. Обновите карту.");
+
+        var address = newAddress.Trim();
+        if (!PlcAddressMap.IsSingleAddress(expected.Raw) || !PlcAddressMap.IsSingleAddress(address))
+            throw new InvalidOperationException("Укажите один совместимый адрес.");
+        ValidateMove(map, expected, address);
+        var type = column.DataType.ToLowerInvariant();
+        object stored = address;
+        if (type is "tinyint" or "smallint" or "int" or "bigint")
+        {
+            var numeric = Regex.Match(address, @"^%?[IQ]?\s*W?\s*(\d+)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            if (!expected.Analog || !numeric.Success || !int.TryParse(numeric.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var offset))
+                throw new InvalidOperationException("Для числового аналогового адреса требуется смещение слова.");
+            stored = offset;
+            ValidateMove(map, expected, offset.ToString(CultureInfo.InvariantCulture));
+        }
+        else if (type is not ("varchar" or "nvarchar" or "char" or "nchar"))
+            throw new InvalidOperationException("Тип поля адреса недоступен для безопасного изменения.");
+        OfflineProjectDataSource.ValidateValues(schema, new Dictionary<string, object?> { [column.Name] = stored }, false, null);
+
+        var record = matches[0];
+        string PropertyName(string name) => record.Values.ContainsKey(name) ? name :
+            record.Values.Single(pair => pair.Key.Equals(name, StringComparison.OrdinalIgnoreCase)).Key;
+        var fieldName = PropertyName(column.Name);
+        var identity = schema.KeyColumns.Select(PropertyName).ToDictionary(name => name,
+            name => CaptureValue(record.Values[name]!), StringComparer.OrdinalIgnoreCase);
+        var change = new ChangeJournalRowChange
+        {
+            TableName = record.TableName,
+            Kind = ChangeJournalOperationKind.Update,
+            Before = new(StringComparer.OrdinalIgnoreCase) { [fieldName] = CaptureValue(record.Values[fieldName]!) },
+            After = new(StringComparer.OrdinalIgnoreCase) { [fieldName] = ChangeJournalValue.FromObject(stored) },
+            IdentityBefore = identity,
+            IdentityAfter = new(identity, StringComparer.OrdinalIgnoreCase)
+        };
+        record.Values[fieldName] = ProjectKeyCodec.ToNode(stored);
+        var entry = new ChangeJournalEntry
+        {
+            Mode = 1,
+            Category = "Переназначение адреса",
+            UserRole = UserAuthorizationService.CurrentRole?.Name ?? string.Empty,
+            Source = change.TableName,
+            Description = $"Адрес PLC {expected.Display}: {expected.Raw} → {address}",
+            Details = $"Поле: {expected.Field} · PLC: {expected.Plc}",
+            EntityType = "Назначение PLC",
+            EntityIdentity = string.Join(", ", identity.Select(pair => $"{pair.Key}={pair.Value.ToObject()}")),
+            OperationKind = ChangeJournalOperationKind.Update,
+            Changes = new() { change }
+        };
+        var journal = new ChangeJournalService();
+        journal.BindOfflineProject(staged, () => { }, mode: 1);
+        if (!journal.Record(entry))
+            throw new InvalidOperationException("Не удалось записать изменение в журнал Offline-проекта.");
+
+        var liveRecord = project.LocalRecords[staged.LocalRecords.IndexOf(record)];
+        await packages.SaveAsync(path, staged, ct, requireExisting: true, reservedFile: reservedFile);
+        liveRecord.Values = record.Values;
+        project.Architecture = staged.Architecture;
+        project.Manifest.ModifiedUtc = DateTimeOffset.UtcNow;
+        return entry;
+    }
+
+    private static ChangeJournalValue CaptureValue(JsonNode node) => new()
+    {
+        TypeName = node.GetValueKind() == JsonValueKind.String ? typeof(string).FullName! : "",
+        Json = node.ToJsonString()
+    };
 
     private static async Task<object> ReadUpdatedValueAsync(SqlConnection connection, SqlTransaction transaction,
         string table, string field, IReadOnlyList<string> keyColumns, JsonObject snapshot,

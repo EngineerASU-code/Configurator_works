@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 
 namespace Configurator
 {
@@ -11,6 +12,20 @@ namespace Configurator
         public LeftPanel()
         {
             InitializeComponent();
+        }
+
+        private void ServerTree_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ChangedButton != MouseButton.Left || e.OriginalSource is not DependencyObject source ||
+                ItemsControl.ContainerFromElement(null, source) is not TreeViewItem item ||
+                ItemsControl.ItemsControlFromItemContainer(item) != ServerTree || !item.HasItems)
+                return;
+
+            e.Handled = true;
+            if (e.ClickCount != 1) return;
+            item.IsExpanded = !item.IsExpanded;
+            item.Focus();
+            item.IsSelected = true;
         }
 
         private void BtnAddDb_Click(object sender, RoutedEventArgs e)

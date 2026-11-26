@@ -4,6 +4,12 @@ namespace Configurator.Core.Workspace;
 
 internal sealed class ScopedRecordSuggestion
 {
+    internal static bool IsAreasTable(string table) =>
+        string.Equals(table, "dbo.Areas", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(table, "Areas", StringComparison.OrdinalIgnoreCase);
+
+    internal static string AreaNameForRecord(int record) => record.ToString("D3", CultureInfo.InvariantCulture);
+
     private readonly SortedSet<decimal> _occupied = new();
 
     internal void Add(object value)

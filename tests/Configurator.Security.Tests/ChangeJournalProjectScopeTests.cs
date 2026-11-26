@@ -1,4 +1,4 @@
-﻿using Configurator.Core.Projects;
+using Configurator.Core.Projects;
 using Xunit;
 
 namespace Configurator.Security.Tests;
@@ -112,14 +112,14 @@ public sealed class ChangeJournalProjectScopeTests
         {
             TableName = "dbo.Objects", Kind = ChangeJournalOperationKind.Delete,
             IdentityBefore = Values(("Record", 9)),
-            Before = Values(("Record", 9), ("Name", "removed"))
+            Before = Values(("Record", 9.0m), ("Name", "removed"))
         });
 
         service.RestoreOffline(entry, project, () => { });
 
         var restored = Assert.Single(project.LocalRecords);
         Assert.Equal(
-            ProjectKeyCodec.Encode(project.TableSchemas.Single(), new[] { "Record" }, name => restored.Values[name]),
+            ProjectKeyCodec.Encode(project.TableSchemas.Single(), new[] { "Record" }, name => ProjectKeyCodec.ToNode(9)),
             restored.Key);
         Assert.Equal("removed", restored.Values["Name"]?.ToString());
     }

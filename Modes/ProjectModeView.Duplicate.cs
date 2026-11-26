@@ -105,13 +105,25 @@ public partial class ProjectModeView
             if (values.TryGetValue("Record", out var suggested))
             {
                 var dialog = new TextInputWindow("Вставка объекта", "Record нового объекта",
-                    Convert.ToString(suggested, CultureInfo.InvariantCulture) ?? "") { Owner = Window.GetWindow(this) };
-                if (dialog.ShowDialog() != true) return;
+                    placeholder: Convert.ToString(suggested, CultureInfo.InvariantCulture) ?? "") { Owner = Window.GetWindow(this) };
+                if (values.TryGetValue("PLC", out var plc))
+                {
+                    var addresses = await PlcAddressCatalog.SuggestAddressesAsync(workspace, tableName,
+                        Convert.ToString(plc, CultureInfo.InvariantCulture) ?? "", selectedClass.ClassNumber.ToString(CultureInfo.InvariantCulture), default);
+                    foreach (var column in columns.Where(c => !c.IsReadOnly))
+                        if (addresses.TryGetValue(column.Name, out var addressHint))
+                            dialog.OfferAddress(column.Name, addressHint);
+                }
+                if (generation != _workspaceGeneration || _selectedClass != selectedClass || dialog.ShowDialog() != true) return;
+                foreach (var address in dialog.AddressResults)
+                    values[address.Key] = Convert.ChangeType(address.Value, sourceRow.Table.Columns[address.Key]!.DataType, CultureInfo.InvariantCulture);
                 if (!int.TryParse(dialog.Result, NumberStyles.None, CultureInfo.InvariantCulture, out var record))
                 {
                     ShowActionFeedback("Record должен быть целым неотрицательным числом", isError: true);
                     return;
                 }
+                if (ScopedRecordSuggestion.IsAreasTable(tableName) && values.ContainsKey("AreaName"))
+                    values["AreaName"] = ScopedRecordSuggestion.AreaNameForRecord(record);
                 values["Record"] = Convert.ChangeType(record, sourceRow.Table.Columns["Record"]!.DataType, CultureInfo.InvariantCulture);
             }
             if (generation != _workspaceGeneration || _configurationKind != ConfigurationKind.Class || _selectedClass != selectedClass) return;

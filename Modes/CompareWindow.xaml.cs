@@ -799,7 +799,8 @@ public partial class CompareWindow : Window
     internal void RefreshAfterUndo()
     {
         if (_isBusy) _compareCancellation?.Cancel();
-        MarkResultStale("Действие отменено. Повторите сравнение.");
+        MarkResultStale("Действие отменено. Обновление сравнения…");
+        if (!_closed && !_isBusy && !_isApplying && _result is not null) _ = CompareAsync();
     }
 
     private void MarkResultStale(string message)

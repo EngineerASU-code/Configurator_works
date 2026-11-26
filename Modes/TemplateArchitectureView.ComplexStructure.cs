@@ -138,9 +138,10 @@ public partial class TemplateArchitectureView
             expander.SetResourceReference(Control.ForegroundProperty, "BrushText");
 
             var stack = new StackPanel();
+            var visibleFields = table.Fields.Where(f => !MainWindow.HideLanguageField(f.Name)).ToList();
             var caption = new TextBlock
             {
-                Text = $"Фактическая структура · полей: {table.Fields.Count}",
+                Text = $"Фактическая структура · полей: {visibleFields.Count}",
                 FontSize = 10,
                 Margin = new Thickness(0, 0, 0, 5),
                 TextWrapping = TextWrapping.Wrap
@@ -152,7 +153,7 @@ public partial class TemplateArchitectureView
             stack.Children.Add(header);
             var list = new ListBox
             {
-                ItemsSource = table.Fields,
+                ItemsSource = visibleFields,
                 ItemTemplate = (DataTemplate)FindResource("FieldRowTemplate"),
                 BorderThickness = new Thickness(0),
                 Background = System.Windows.Media.Brushes.Transparent,
