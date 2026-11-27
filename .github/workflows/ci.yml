@@ -43,7 +43,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Build application
+      - name: Build Release
         shell: pwsh
         run: |
           dotnet build .\Configurator.csproj --configuration Release --no-restore
