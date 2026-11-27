@@ -206,74 +206,108 @@ public sealed partial class ProgramSupportRepository
 
     public event Action<ChangeJournalEntry>? ChangeJournalRequested;
 
-    public async Task SaveAsync(ProgramSupportTableData tableData, IReadOnlyDictionary<string, object> scope)
+    public Task SaveAsync(ProgramSupportTableData tableData, IReadOnlyDictionary<string, object> scope)
+        => SaveTogetherAsync(scope, tableData);
+
+    internal async Task SaveTogetherAsync(IReadOnlyDictionary<string, object> scope, params ProgramSupportTableData[] tables)
     {
-        var definition = tableData?.Definition ?? throw new ArgumentNullException(nameof(tableData));
-        if (!tableData.CanWrite || definition.ReadOnly)
-            throw new InvalidOperationException(tableData.WriteBlockReason ?? definition.ReadOnlyReason ?? "Запись для этой таблицы заблокирована.");
+        foreach (var table in tables)
+            if (!table.CanWrite || table.Definition.ReadOnly)
+                throw new InvalidOperationException(table.WriteBlockReason ?? table.Definition.ReadOnlyReason ?? "Запись для этой таблицы заблокирована.");
 
-        var replacements = new List<ChangeJournalRowChange>();
-        if (_offline != null)
+        var journal = new List<Action>();
+        async Task WriteTablesAsync(SqlConnection? connection, SqlTransaction? transaction)
         {
-            var insertSnapshots = await SaveOfflineAsync(tableData, scope, replacements);
-            PublishJournal(tableData, insertSnapshots, replacements);
-            return;
-        }
-
-        await using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
-        await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection);
-        using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable);
-        var onlineInsertSnapshots = new Dictionary<DataRow, IReadOnlyDictionary<string, object?>>();
-        try
-        {
-            var metadata = await GetMetadataAsync(connection, transaction, definition);
-            EnsureWriteKey(definition, metadata.UniqueKeys);
-            ValidateScope(definition, scope, metadata.Columns);
-
-            var pairs = new DatabaseService(_connectionString).UsesUnifiedLanguage
-                ? Core.Projects.UnifiedLanguage.Pairs(tableData.Rows.Columns.Cast<DataColumn>().Select(c => c.ColumnName)).ToArray()
-                : Array.Empty<(string Source, string Target)>();
-            foreach (DataRow row in tableData.Rows.Rows)
+            foreach (var table in tables)
             {
-                if (row.RowState is DataRowState.Added or DataRowState.Modified)
-                    foreach (var (first, second) in pairs)
-                        if (!Equals(row[first], row[second])) row[second] = row[first];
-                if (row.RowState == DataRowState.Unchanged || row.RowState == DataRowState.Detached) continue;
-                switch (row.RowState)
-                {
-                    case DataRowState.Added:
-                        if (definition.Id == "queue-selections")
-                        {
-                            using var parent = new SqlCommand("""
-                                SELECT TOP (1) 1 FROM dbo.Prog_Queue WITH (UPDLOCK,HOLDLOCK)
-                                WHERE PLC=@plc AND PLC_Class_Prog_Number=@class AND Prog_Record=@program AND Record=@queue;
-                                """, connection, transaction);
-                            parent.Parameters.AddWithValue("@plc", scope["PLC"]);
-                            parent.Parameters.AddWithValue("@class", scope["PLC_Class_Prog_Number"]);
-                            parent.Parameters.AddWithValue("@program", scope["Prog_Record"]);
-                            parent.Parameters.AddWithValue("@queue", row["Queue_Record"]);
-                            if (await parent.ExecuteScalarAsync() == null)
-                                throw new InvalidOperationException("Выбранная очередь отсутствует в текущей программе.");
-                        }
-                        onlineInsertSnapshots[row] = await InsertAsync(connection, transaction, tableData, row, scope, metadata);
-                        break;
-                    case DataRowState.Modified:
-                        await UpdateAsync(connection, transaction, tableData, row, scope, metadata);
-                        break;
-                    case DataRowState.Deleted:
-                        await ApplyStagedDeletionReplacementAsync(tableData, row, replacements, connection, transaction);
-                        await DeleteAsync(connection, transaction, tableData, row, scope, metadata);
-                        break;
-                }
+                var replacements = new List<ChangeJournalRowChange>();
+                var inserted = connection == null
+                    ? await SaveOfflineAsync(table, scope, replacements)
+                    : await SaveOnlineAsync(connection, transaction!, table, scope, replacements);
+                journal.Add(() => PublishJournal(table, inserted, replacements));
             }
-            await transaction.CommitAsync();
         }
-        catch
+
+        if (_offline != null)
+            await _offline.ExecuteMutationTransactionAsync(() => WriteTablesAsync(null, null));
+        else
         {
-            try { await transaction.RollbackAsync(); } catch { }
-            throw;
+            await using var connection = SqlProviderGuard.CreateConnection(_connectionString);
+            await SqlProviderGuard.OpenConnectionAsync(connection);
+            using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable);
+            try
+            {
+                await WriteTablesAsync(connection, transaction);
+                await transaction.CommitAsync();
+            }
+            catch
+            {
+                try { await transaction.RollbackAsync(); } catch { }
+                throw;
+            }
         }
-        PublishJournal(tableData, onlineInsertSnapshots, replacements);
+        foreach (var publish in journal) publish();
+    }
+
+    private async Task<IReadOnlyDictionary<DataRow, IReadOnlyDictionary<string, object?>>> SaveOnlineAsync(
+        SqlConnection connection, SqlTransaction transaction, ProgramSupportTableData tableData,
+        IReadOnlyDictionary<string, object> scope, List<ChangeJournalRowChange> replacements)
+    {
+        var definition = tableData.Definition;
+        var onlineInsertSnapshots = new Dictionary<DataRow, IReadOnlyDictionary<string, object?>>();
+        var metadata = await GetMetadataAsync(connection, transaction, definition);
+        bool logical = definition.Id == "messages" && !metadata.UniqueKeys.Any(k => SameColumns(k, definition.KeyColumns));
+        if (!logical) EnsureWriteKey(definition, metadata.UniqueKeys);
+        else RequireMessageUpdates(tableData);
+        ValidateScope(definition, scope, metadata.Columns);
+
+        var pairs = new DatabaseService(_connectionString).UsesUnifiedLanguage
+            ? Core.Projects.UnifiedLanguage.Pairs(tableData.Rows.Columns.Cast<DataColumn>().Select(c => c.ColumnName)).ToArray()
+            : Array.Empty<(string Source, string Target)>();
+        foreach (DataRow row in tableData.Rows.Rows)
+        {
+            if (row.RowState is DataRowState.Added or DataRowState.Modified)
+                foreach (var (first, second) in pairs)
+                    if (!Equals(row[first], row[second])) row[second] = row[first];
+            if (row.RowState == DataRowState.Unchanged || row.RowState == DataRowState.Detached) continue;
+            switch (row.RowState)
+            {
+                case DataRowState.Added:
+                    if (definition.Id == "queue-selections")
+                    {
+                        using var parent = new SqlCommand("""
+                            SELECT TOP (1) 1 FROM dbo.Prog_Queue WITH (UPDLOCK,HOLDLOCK)
+                            WHERE PLC=@plc AND PLC_Class_Prog_Number=@class AND Prog_Record=@program AND Record=@queue;
+                            """, connection, transaction);
+                        parent.Parameters.AddWithValue("@plc", scope["PLC"]);
+                        parent.Parameters.AddWithValue("@class", scope["PLC_Class_Prog_Number"]);
+                        parent.Parameters.AddWithValue("@program", scope["Prog_Record"]);
+                        parent.Parameters.AddWithValue("@queue", row["Queue_Record"]);
+                        if (await parent.ExecuteScalarAsync() == null)
+                            throw new InvalidOperationException("Выбранная очередь отсутствует в текущей программе.");
+                    }
+                    onlineInsertSnapshots[row] = await InsertAsync(connection, transaction, tableData, row, scope, metadata);
+                    break;
+                case DataRowState.Modified:
+                    if (logical)
+                    {
+                        using var check = new SqlCommand { Connection = connection, Transaction = transaction };
+                        var identity = AddKeyAndOriginalPredicates(check, definition, row, scope, Array.Empty<string>(), DataRowVersion.Original);
+                        check.CommandText = $"SELECT COUNT_BIG(*) FROM {QuoteTable(definition.TableName)} WITH (UPDLOCK,HOLDLOCK) WHERE {identity}";
+                        var matchCount = Convert.ToInt64(await check.ExecuteScalarAsync());
+                        if (matchCount > 1) throw DuplicateMessage(row);
+                        if (matchCount == 0)
+                            throw new InvalidOperationException("Сообщение удалено после открытия редактора.");
+                    }
+                    await UpdateAsync(connection, transaction, tableData, row, scope, metadata);
+                    break;
+                case DataRowState.Deleted:
+                    await ApplyStagedDeletionReplacementAsync(tableData, row, replacements, connection, transaction);
+                    await DeleteAsync(connection, transaction, tableData, row, scope, metadata);
+                    break;
+            }
+        }
+        return onlineInsertSnapshots;
     }
 
     private void PublishJournal(ProgramSupportTableData tableData,
@@ -363,11 +397,17 @@ public sealed partial class ProgramSupportRepository
         }
 
         bool keyMatches = definition.KeyColumns.Count > 0 && metadata.UniqueKeys.Any(key => SameColumns(key, definition.KeyColumns));
+        bool messageTextOnly = !keyMatches && CanEditMessageTexts(definition, rows);
+        if (messageTextOnly)
+        {
+            definition = definition with { AllowInsert = false, AllowDelete = false };
+            keyMatches = true;
+        }
         bool canWrite = !definition.ReadOnly && keyMatches;
         string? blockReason = definition.ReadOnlyReason;
         if (!definition.ReadOnly && !keyMatches)
             blockReason = "Запись отключена: текущий уникальный ключ таблицы не совпадает с проверенной схемой.";
-        if (keyMatches)
+        if (keyMatches && !messageTextOnly)
             rows.PrimaryKey = definition.KeyColumns.Select(name => rows.Columns[name] ?? throw new InvalidOperationException($"В таблице отсутствует ключевое поле {name}." )).ToArray();
 
         return new ProgramSupportTableData
@@ -406,7 +446,13 @@ public sealed partial class ProgramSupportRepository
             rows.Rows.Add(row);
         }
         bool keyMatches = schema.HasStableKey && definition.KeyColumns.Count > 0 && SameColumns(schema.KeyColumns, definition.KeyColumns);
-        if (keyMatches) rows.PrimaryKey = definition.KeyColumns.Select(name => rows.Columns[name]!).ToArray();
+        bool messageTextOnly = !keyMatches && CanEditMessageTexts(definition, rows);
+        if (messageTextOnly)
+        {
+            definition = definition with { AllowInsert = false, AllowDelete = false };
+            keyMatches = true;
+        }
+        if (keyMatches && !messageTextOnly) rows.PrimaryKey = definition.KeyColumns.Select(name => rows.Columns[name]!).ToArray();
         rows.AcceptChanges();
         return new ProgramSupportTableData
         {
@@ -427,83 +473,99 @@ public sealed partial class ProgramSupportRepository
         var definition = tableData.Definition;
         var schema = _offline!.GetSchema(definition.TableName)
             ?? throw new InvalidOperationException($"В локальном проекте отсутствует схема «{definition.TableName}».");
-        if (!schema.HasStableKey || !SameColumns(schema.KeyColumns, definition.KeyColumns))
+        bool logical = definition.Id == "messages" && (!schema.HasStableKey || !SameColumns(schema.KeyColumns, definition.KeyColumns));
+        if (logical) RequireMessageUpdates(tableData);
+        else if (!schema.HasStableKey || !SameColumns(schema.KeyColumns, definition.KeyColumns))
             throw new InvalidOperationException("Изменение отменено: ключ таблицы в локальном снимке отличается от проверенного ключа редактора.");
         var crud = (IProjectCrudDataSource)_offline;
         var insertSnapshots = new Dictionary<DataRow, IReadOnlyDictionary<string, object?>>();
-        await _offline.ExecuteMutationTransactionAsync(async () =>
+        foreach (DataRow row in tableData.Rows.Rows)
         {
-            foreach (DataRow row in tableData.Rows.Rows)
+            if (row.RowState is DataRowState.Unchanged or DataRowState.Detached) continue;
+            if (row.RowState == DataRowState.Added)
             {
-                if (row.RowState is DataRowState.Unchanged or DataRowState.Detached) continue;
-                if (row.RowState == DataRowState.Added)
+                if (definition.Id == "queue-selections" && !_offline.GetRecords("dbo.Prog_Queue").Any(parent =>
+                    OfflineEquals(parent.Values["Record"], row["Queue_Record"]) &&
+                    new[] { "PLC", "PLC_Class_Prog_Number", "Prog_Record" }.All(field => OfflineEquals(parent.Values[field], scope[field]))))
+                    throw new InvalidOperationException("Выбранная очередь отсутствует в текущей программе.");
+                if (definition.Id == "recipe-values")
                 {
-                    if (definition.Id == "queue-selections" && !_offline.GetRecords("dbo.Prog_Queue").Any(parent =>
-                        OfflineEquals(parent.Values["Record"], row["Queue_Record"]) &&
-                        new[] { "PLC", "PLC_Class_Prog_Number", "Prog_Record" }.All(field => OfflineEquals(parent.Values[field], scope[field]))))
-                        throw new InvalidOperationException("Выбранная очередь отсутствует в текущей программе.");
-                    var values = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var pair in scope) values[pair.Key] = pair.Value;
-                    foreach (DataColumn column in row.Table.Columns)
-                    {
-                        var metadata = schema.Columns.FirstOrDefault(item => item.Name.Equals(column.ColumnName, StringComparison.OrdinalIgnoreCase));
-                        if (metadata == null || metadata.IsIdentity || metadata.IsComputed || metadata.IsReadOnly) continue;
-                        bool included = definition.ScopeColumns.Contains(column.ColumnName, StringComparer.OrdinalIgnoreCase)
-                            || definition.KeyColumns.Contains(column.ColumnName, StringComparer.OrdinalIgnoreCase)
-                            || definition.EditableColumns.Contains(column.ColumnName, StringComparer.OrdinalIgnoreCase)
-                            || definition.ProtectedColumns.Contains(column.ColumnName, StringComparer.OrdinalIgnoreCase);
-                        if (!included || (row[column] == DBNull.Value && metadata.HasDefault)) continue;
-                        values[column.ColumnName] = row[column] == DBNull.Value ? null : row[column];
-                    }
-                    if (UsesScopedMatrixRecord(definition) &&
-                        schema.Columns.FirstOrDefault(column => column.Name.Equals("Record", StringComparison.OrdinalIgnoreCase)) is
-                            { IsIdentity: false, IsComputed: false, IsReadOnly: false })
-                    {
-                        var suggestion = new ScopedRecordSuggestion();
-                        foreach (var record in _offline.GetRecords(schema.TableName))
-                            if (definition.ScopeColumns.All(column => OfflineEquals(record.Values[column], scope[column])))
-                                suggestion.Add(record.Values["Record"]?.ToString());
-                        values["Record"] = Convert.ChangeType(suggestion.GetValue(), row.Table.Columns["Record"]!.DataType);
-                    }
-                    var generatedKey = await ((IProjectCreateWithKeyDataSource)_offline).CreateRecordAndGetKeyAsync(schema.TableName, values);
-                    var created = _offline.GetRecords(schema.TableName).SingleOrDefault(record =>
-                        definition.KeyColumns.All(column => generatedKey.TryGetValue(column, out var expected) &&
-                            record.Values.TryGetPropertyValue(column, out var actual) && OfflineEquals(actual, expected)));
-                    if (created == null)
-                        throw new InvalidOperationException($"Не удалось перечитать созданную запись {definition.TableName} по выданному ключу.");
-                    var actualSnapshot = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var pair in created.Values)
-                    {
-                        var column = schema.Columns.FirstOrDefault(item => item.Name.Equals(pair.Key, StringComparison.OrdinalIgnoreCase));
-                        if (column != null) actualSnapshot[pair.Key] = OfflineValue(pair.Value, column.DataType);
-                    }
-                    insertSnapshots[row] = actualSnapshot;
-                    continue;
+                    bool SameScope(ProjectRecord candidate) => definition.ScopeColumns.All(name => OfflineEquals(candidate.Values[name], scope[name]));
+                    if (Convert.ToInt32(row["Recipe_Record"]) <= 0 || Convert.ToBoolean(row["UseRecipes"]) ||
+                        !_offline.GetRecords("dbo.Prog_Recipe").Any(header => SameScope(header) && OfflineEquals(header.Values["Record"], row["Recipe_Record"])) ||
+                        !_offline.GetRecords(definition.TableName).Any(value => SameScope(value) && OfflineEquals(value.Values["Recipe_Record"], 0) &&
+                            (OfflineEquals(value.Values["UseRecipes"], 1) || OfflineEquals(value.Values["UseRecipes"], true)) && new[] { "Record", "Step_Number", "Type" }.All(name => OfflineEquals(value.Values[name], row[name]))))
+                        throw new InvalidOperationException("Параметр отсутствует в базовом рецепте, выключен или выбранный рецепт удалён.");
                 }
-                var version = row.RowState == DataRowState.Deleted ? DataRowVersion.Original : DataRowVersion.Current;
-                var key = definition.KeyColumns.ToDictionary(name => name, name => (object?)row[name, version], StringComparer.OrdinalIgnoreCase);
-                if (row.RowState == DataRowState.Deleted)
+                var values = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                foreach (var pair in scope) values[pair.Key] = pair.Value;
+                foreach (DataColumn column in row.Table.Columns)
                 {
-                    await ApplyStagedDeletionReplacementAsync(tableData, row, replacements, null, null);
-                    EnsureNoOfflineDependents(definition, row);
-                    int count = await crud.DeleteRecordsAsync(schema.TableName, schema.KeyColumns, new[] { key });
-                    if (count != 1) throw new InvalidOperationException("Состав локального снимка изменился; удаление отменено.");
-                    continue;
+                    var metadata = schema.Columns.FirstOrDefault(item => item.Name.Equals(column.ColumnName, StringComparison.OrdinalIgnoreCase));
+                    if (metadata == null || metadata.IsIdentity || metadata.IsComputed || metadata.IsReadOnly) continue;
+                    bool included = definition.ScopeColumns.Contains(column.ColumnName, StringComparer.OrdinalIgnoreCase)
+                        || definition.KeyColumns.Contains(column.ColumnName, StringComparer.OrdinalIgnoreCase)
+                        || definition.EditableColumns.Contains(column.ColumnName, StringComparer.OrdinalIgnoreCase)
+                        || definition.ProtectedColumns.Contains(column.ColumnName, StringComparer.OrdinalIgnoreCase);
+                    if (!included || (row[column] == DBNull.Value && metadata.HasDefault)) continue;
+                    values[column.ColumnName] = row[column] == DBNull.Value ? null : row[column];
                 }
-                var editable = definition.EditableColumns.Where(name => !definition.KeyColumns.Contains(name, StringComparer.OrdinalIgnoreCase)
-                    && !definition.ScopeColumns.Contains(name, StringComparer.OrdinalIgnoreCase)
-                    && !definition.ProtectedColumns.Contains(name, StringComparer.OrdinalIgnoreCase)).ToHashSet(StringComparer.OrdinalIgnoreCase);
-                var changed = row.Table.Columns.Cast<DataColumn>().Where(column =>
-                    !Equals(row[column, DataRowVersion.Original], row[column, DataRowVersion.Current])).Select(column => column.ColumnName).ToList();
-                var forbidden = changed.Where(name => !editable.Contains(name)).ToList();
-                if (forbidden.Count > 0)
-                    throw new InvalidOperationException($"Изменение ключей, связей или полей без разрешённой записи заблокировано: {string.Join(", ", forbidden)}.");
-                var changes = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-                foreach (string name in changed)
-                    if (row.Table.Columns.Contains(name)) changes[name] = row[name] == DBNull.Value ? null : row[name];
-                if (changes.Count > 0) await crud.UpdateRecordAsync(schema.TableName, schema.KeyColumns, key, changes);
+                if (UsesScopedMatrixRecord(definition) &&
+                    schema.Columns.FirstOrDefault(column => column.Name.Equals("Record", StringComparison.OrdinalIgnoreCase)) is
+                        { IsIdentity: false, IsComputed: false, IsReadOnly: false })
+                {
+                    var suggestion = new ScopedRecordSuggestion();
+                    foreach (var record in _offline.GetRecords(schema.TableName))
+                        if (definition.ScopeColumns.All(column => OfflineEquals(record.Values[column], scope[column])))
+                            suggestion.Add(record.Values["Record"]?.ToString());
+                    values["Record"] = Convert.ChangeType(suggestion.GetValue(), row.Table.Columns["Record"]!.DataType);
+                }
+                var generatedKey = await ((IProjectCreateWithKeyDataSource)_offline).CreateRecordAndGetKeyAsync(schema.TableName, values);
+                var created = _offline.GetRecords(schema.TableName).SingleOrDefault(record =>
+                    definition.KeyColumns.All(column => generatedKey.TryGetValue(column, out var expected) &&
+                        record.Values.TryGetPropertyValue(column, out var actual) && OfflineEquals(actual, expected)));
+                if (created == null)
+                    throw new InvalidOperationException($"Не удалось перечитать созданную запись {definition.TableName} по выданному ключу.");
+                var actualSnapshot = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                foreach (var pair in created.Values)
+                {
+                    var column = schema.Columns.FirstOrDefault(item => item.Name.Equals(pair.Key, StringComparison.OrdinalIgnoreCase));
+                    if (column != null) actualSnapshot[pair.Key] = OfflineValue(pair.Value, column.DataType);
+                }
+                insertSnapshots[row] = actualSnapshot;
+                continue;
             }
-        });
+            var version = row.RowState == DataRowState.Deleted ? DataRowVersion.Original : DataRowVersion.Current;
+            var key = definition.KeyColumns.ToDictionary(name => name, name => (object?)row[name, version], StringComparer.OrdinalIgnoreCase);
+            if (row.RowState == DataRowState.Deleted)
+            {
+                await ApplyStagedDeletionReplacementAsync(tableData, row, replacements, null, null);
+                EnsureNoOfflineDependents(definition, row);
+                int count = await crud.DeleteRecordsAsync(schema.TableName, schema.KeyColumns, new[] { key });
+                if (count != 1) throw new InvalidOperationException("Состав локального снимка изменился; удаление отменено.");
+                continue;
+            }
+            var editable = definition.EditableColumns.Where(name => !definition.KeyColumns.Contains(name, StringComparer.OrdinalIgnoreCase)
+                && !definition.ScopeColumns.Contains(name, StringComparer.OrdinalIgnoreCase)
+                && !definition.ProtectedColumns.Contains(name, StringComparer.OrdinalIgnoreCase)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var changed = row.Table.Columns.Cast<DataColumn>().Where(column =>
+                !Equals(row[column, DataRowVersion.Original], row[column, DataRowVersion.Current])).Select(column => column.ColumnName).ToList();
+            var forbidden = changed.Where(name => !editable.Contains(name)).ToList();
+            if (forbidden.Count > 0)
+                throw new InvalidOperationException($"Изменение ключей, связей или полей без разрешённой записи заблокировано: {string.Join(", ", forbidden)}.");
+            var changes = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            foreach (string name in changed)
+                if (row.Table.Columns.Contains(name)) changes[name] = row[name] == DBNull.Value ? null : row[name];
+            if (logical && changes.Count > 0)
+            {
+                var matches = _offline.GetRecords(schema.TableName).Where(r => key.All(k => OfflineEquals(r.Values[k.Key], k.Value))).Take(2).ToList();
+                if (matches.Count > 1) throw DuplicateMessage(row);
+                if (matches.Count == 0 || definition.EditableColumns.Any(n => !OfflineEquals(matches[0].Values[n], row[n, DataRowVersion.Original])))
+                    throw new InvalidOperationException("Сообщение изменено, удалено или его ключ неоднозначен.");
+                _offline.UpdateMessageTexts(matches[0], changes);
+            }
+            else if (changes.Count > 0) await crud.UpdateRecordAsync(schema.TableName, schema.KeyColumns, key, changes);
+        }
         return insertSnapshots;
     }
 
@@ -585,9 +647,29 @@ public sealed partial class ProgramSupportRepository
         DataRow row, IReadOnlyDictionary<string, object> scope, TableMetadata metadata)
     {
         var definition = tableData.Definition;
-        if (!definition.AllowInsert) throw new InvalidOperationException($"Добавление строк в {definition.Caption} отключено до проверки зависимостей.");
+        bool recipeOverride = definition.Id == "recipe-values";
+        if (recipeOverride)
+        {
+            using var check = new SqlCommand("""
+                SELECT 1 FROM dbo.Prog_Recipes b JOIN dbo.Prog_Recipe h
+                  ON h.PLC=b.PLC AND h.PLC_Class_Prog_Number=b.PLC_Class_Prog_Number AND h.Prog_Record=b.Prog_Record AND h.Seq_Record=b.Seq_Record
+                WHERE b.PLC=@plc AND b.PLC_Class_Prog_Number=@class AND b.Prog_Record=@program AND b.Seq_Record=@sequence
+                  AND b.Recipe_Record=0 AND b.UseRecipes=1 AND b.Record=@parameter AND b.Step_Number=@step AND b.Type=@type AND h.Record=@recipe
+                """, connection, transaction);
+            check.Parameters.AddWithValue("@plc", scope["PLC"]);
+            check.Parameters.AddWithValue("@class", scope["PLC_Class_Prog_Number"]);
+            check.Parameters.AddWithValue("@program", scope["Prog_Record"]);
+            check.Parameters.AddWithValue("@sequence", scope["Seq_Record"]);
+            check.Parameters.AddWithValue("@parameter", row["Record"]);
+            check.Parameters.AddWithValue("@step", row["Step_Number"]);
+            check.Parameters.AddWithValue("@type", row["Type"]);
+            check.Parameters.AddWithValue("@recipe", row["Recipe_Record"]);
+            if (Convert.ToInt32(row["Recipe_Record"]) <= 0 || Convert.ToBoolean(row["UseRecipes"]) || await check.ExecuteScalarAsync() == null)
+                throw new InvalidOperationException("Параметр отсутствует в базовом рецепте, выключен или выбранный рецепт удалён.");
+        }
+        if (!definition.AllowInsert && !recipeOverride) throw new InvalidOperationException($"Добавление строк в {definition.Caption} отключено до проверки зависимостей.");
         foreach (var pair in scope) row[pair.Key] = pair.Value;
-        if (definition.KeyColumns.Contains("Record", StringComparer.OrdinalIgnoreCase) && !definition.ScopeColumns.Contains("Record", StringComparer.OrdinalIgnoreCase)
+        if (!recipeOverride && definition.KeyColumns.Contains("Record", StringComparer.OrdinalIgnoreCase) && !definition.ScopeColumns.Contains("Record", StringComparer.OrdinalIgnoreCase)
             && !metadata.Columns["Record"].Identity)
             row["Record"] = await NextRecordAsync(connection, transaction, definition, scope, metadata.Columns["Record"].Type);
 
@@ -847,6 +929,20 @@ ORDER BY i.index_id, ic.key_ordinal;";
         }
         await keyReader.CloseAsync();
         return new TableMetadata(columns, keyGroups.Values.Select(key => (IReadOnlyList<string>)key).ToArray());
+    }
+
+    private static InvalidOperationException DuplicateMessage(DataRow row) =>
+        new($"В этой программе несколько сообщений с Record={row["Record"]} и Type={row["Type"]}. Невозможно определить, какую строку изменить.");
+
+    private static bool CanEditMessageTexts(ProgramSupportTableDefinition definition, DataTable rows) =>
+        definition.Id == "messages" && definition.KeyColumns.Concat(definition.EditableColumns).All(rows.Columns.Contains)
+        && rows.Rows.Cast<DataRow>().All(r => definition.KeyColumns.All(k => !r.IsNull(k)))
+        ;
+
+    private static void RequireMessageUpdates(ProgramSupportTableData table)
+    {
+        if (table.Rows.Rows.Cast<DataRow>().Any(r => r.RowState is DataRowState.Added or DataRowState.Deleted))
+            throw new InvalidOperationException("Для этой таблицы сообщений доступно только изменение текста.");
     }
 
     private static void EnsureWriteKey(ProgramSupportTableDefinition definition, IReadOnlyList<IReadOnlyList<string>> actualKeys)

@@ -203,7 +203,7 @@ public partial class CompareWindow : Window
     {
         if (sideA) _offlinePathA = path;
         else _offlinePathB = path;
-        UpdatePathDisplay();
+        RefreshScenarioControls();
         MarkResultStale("Файл офлайн-проекта изменился. Запустите сравнение ещё раз.");
     }
 

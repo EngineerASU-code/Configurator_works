@@ -10,7 +10,7 @@ namespace Configurator;
 
 public sealed partial class ProgramManagementRepository
 {
-    internal async Task<string> BuildAwlAsync(ProgramContext context, CancellationToken ct = default)
+    internal async Task<(string Content, int SkippedDefaults)> BuildAwlAsync(ProgramContext context, CancellationToken ct = default)
     {
         var programScope = Context(context.PlcValue, context.ClassNumberValue);
         programScope["Record"] = context.RecordValue;

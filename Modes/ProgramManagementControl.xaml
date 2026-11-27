@@ -3,7 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:local="clr-namespace:Configurator"
              MinWidth="0" MinHeight="0">
 
-    <Grid Margin="12">
+    <Grid>
 
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -54,12 +54,11 @@
 
             <GridSplitter Grid.Column="1" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" ShowsPreview="True" KeyboardIncrement="16" AutomationProperties.Name="Ширина дерева"/>
 
-            <TabControl x:Name="DetailsTabs" Grid.Column="2" Margin="6,0,0,0">
+            <TabControl x:Name="DetailsTabs" Grid.Column="2" Padding="2">
 
 <TabItem x:Name="ProgramDetailsTab" Header="Program">
-<Grid Margin="6">
-<Grid.RowDefinitions><RowDefinition Height="3*" MinHeight="120"/><RowDefinition Height="2*" MinHeight="140"/></Grid.RowDefinitions>
-                        <GroupBox Grid.Row="0" Header="Поля программы" Margin="0,0,0,5">
+<Grid SizeChanged="ProgramLayout_SizeChanged"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                        <GroupBox x:Name="ProgramFieldsGroup" Grid.Row="0" Header="Поля программы" Margin="0,0,0,5">
                             <DockPanel>
                                 <WrapPanel DockPanel.Dock="Bottom" HorizontalAlignment="Right">
                                     <Button Width="190" Height="36" x:Name="ExportProgramAwlButton" Content="Экспорт AWL" Margin="4" Style="{StaticResource BtnSecondary}" Click="ExportProgramAwl_Click"/>
@@ -70,7 +69,7 @@
                                           CanUserAddRows="False" CanUserDeleteRows="False" SelectionMode="Single"
                                           SelectionUnit="FullRow" IsReadOnly="False" SelectionChanged="ProgramsGrid_SelectionChanged"
                                           RowEditEnding="EntityGrid_RowEditEnding" AutoGeneratingColumn="EntityGrid_AutoGeneratingColumn" />
-                            <ScrollViewer x:Name="ProgramFieldsScroll" Margin="8,8,8,8" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" SizeChanged="ProgramFieldsScroll_SizeChanged"><UniformGrid x:Name="ProgramFields" Columns="3" Margin="0,0,4,8"/></ScrollViewer></DockPanel>
+                            <ScrollViewer x:Name="ProgramFieldsScroll" Margin="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" SizeChanged="ProgramFieldsScroll_SizeChanged"><UniformGrid x:Name="ProgramFields" Columns="3" VerticalAlignment="Top"/></ScrollViewer></DockPanel>
                         </GroupBox>
                         <GroupBox Grid.Row="1" Header="Поля последовательности" Margin="0,0,0,5">
                             <DockPanel>
@@ -87,11 +86,8 @@
 </Grid>
 </TabItem>
 <TabItem x:Name="SequenceTab" Header="Sequence">
-<Grid Margin="6">
-
-<TabControl x:Name="SequenceTabs">
+<TabControl x:Name="SequenceTabs" Padding="2">
 <TabItem x:Name="ProgramParamsTab" Header="Параметры программы">
-                        <GroupBox Header="Параметры программы" Margin="0,5,0,0">
                             <DockPanel>
 
                                 <WrapPanel DockPanel.Dock="Bottom"><Button Width="190" Height="36" Padding="4,0" Style="{StaticResource BtnPrimary}" Content="＋ Параметр" Tag="programParams" Margin="4" Click="AddParameter_Click"/><Button Width="190" Height="36" Padding="4,0" x:Name="DeleteProgramParameterButton" Content="Удалить параметр" Tag="programParams" Margin="4" Click="DeleteParameter_Click"/></WrapPanel>
@@ -102,38 +98,31 @@
                                           SelectionUnit="FullRow" IsReadOnly="True" MouseDoubleClick="EditEntityRow_DoubleClick" SelectionChanged="DetailGrid_SelectionChanged"
                                           RowEditEnding="EntityGrid_RowEditEnding" AutoGeneratingColumn="EntityGrid_AutoGeneratingColumn" />
                             </DockPanel>
-                        </GroupBox>
 </TabItem>
 <TabItem x:Name="StepDetailsTab" Header="Параметры шага">
-
-                    <Grid Margin="6">
-
-                        <GroupBox Header="Шаг для просмотра параметров">
                             <DockPanel>
 
                                 <WrapPanel DockPanel.Dock="Bottom"><Button Width="190" Height="36" Padding="4,0" Style="{StaticResource BtnPrimary}" Content="＋ Параметр" Tag="stepParams" Margin="4" Click="AddParameter_Click"/><Button Width="190" Height="36" Padding="4,0" x:Name="DeleteStepParameterButton" Content="Удалить параметр" Tag="stepParams" Margin="4" Click="DeleteParameter_Click"/></WrapPanel>
 <Button Width="190" Height="36" Padding="4,0" x:Name="SaveStepParamsButton" Visibility="Collapsed" Style="{StaticResource BtnSaveObject}" DockPanel.Dock="Bottom" Content="Сохранить параметр"
                                         Tag="stepParams" HorizontalAlignment="Right" Margin="4" Click="SaveEntityButton_Click" />
-                                <ComboBox DockPanel.Dock="Top" Margin="4" AutomationProperties.Name="Вхождение шага" ItemsSource="{Binding ItemsSource, ElementName=TransitionsGrid}" SelectedItem="{Binding SelectedItem, ElementName=TransitionsGrid, Mode=TwoWay}" ><ComboBox.ItemTemplate><DataTemplate><TextBlock><Run Text="{Binding [SeqStep_Number], Mode=OneWay}"/><Run Text=" · "/><Run Text="{Binding [Name_L1], Mode=OneWay}"/></TextBlock></DataTemplate></ComboBox.ItemTemplate></ComboBox><DataGrid x:Name="StepParamsGrid" Tag="stepParams" AutoGenerateColumns="True"
+                                <DataGrid x:Name="StepParamsGrid" Tag="stepParams" AutoGenerateColumns="True"
                                           CanUserAddRows="False" CanUserDeleteRows="False" SelectionMode="Single"
                                           SelectionUnit="FullRow" IsReadOnly="True" MouseDoubleClick="EditEntityRow_DoubleClick" SelectionChanged="DetailGrid_SelectionChanged"
                                           RowEditEnding="EntityGrid_RowEditEnding" AutoGeneratingColumn="EntityGrid_AutoGeneratingColumn" />
                             </DockPanel>
-                        </GroupBox>
-                    </Grid>
                 </TabItem>
 
                 <TabItem x:Name="SequenceDetailsTab" Header="Шаги и переходы"><Grid>
-<Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="*"/></Grid.RowDefinitions>                        <GroupBox Grid.Row="0" Margin="0,5,0,0" Header="Вхождения шагов и переходы">
+<Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="*" MaxHeight="300"/></Grid.RowDefinitions>                        <GroupBox Grid.Row="0" Margin="0,5,0,0" Header="Вхождения шагов и переходы">
                                 <DockPanel>
 
-                                    <WrapPanel DockPanel.Dock="Bottom"><Button Width="190" Height="36" Padding="4,0" Style="{StaticResource BtnPrimary}" Content="＋ Шаг" Margin="4" Click="AddStepButton_Click" IsEnabled="{Binding IsEnabled, ElementName=AddStepButton}"/><Button Width="190" Height="36" Padding="4,0" Content="Удалить вхождение" Margin="4" Click="DeleteStepButton_Click" IsEnabled="{Binding IsEnabled, ElementName=DeleteStepButton}"/>
-                                        <Button Width="190" Height="36" Padding="4,0" x:Name="MoveStepUpButton" Content="Вверх" Margin="4"
-                                                ToolTip="Переместить вхождение и его связанные данные" Tag="-1" Click="MoveStep_Click" />
-                                        <Button Width="190" Height="36" Padding="4,0" x:Name="MoveStepDownButton" Content="Вниз" Margin="4"
-                                                ToolTip="Переместить вхождение и его связанные данные" Tag="1" Click="MoveStep_Click" />
-                                        <Button Width="190" Height="36" Padding="4,0" x:Name="SaveTransitionsButton" Style="{StaticResource BtnSaveObject}" Content="Сохранить переход"
-                                                Tag="transitions" Margin="4" Click="SaveEntityButton_Click" />
+                                    <WrapPanel DockPanel.Dock="Bottom"><Button MinWidth="82" Height="32" Padding="12,0" Style="{StaticResource BtnPrimary}" Content="＋ Шаг" Margin="2" Click="AddStepButton_Click" IsEnabled="{Binding IsEnabled, ElementName=AddStepButton}"/><Button MinWidth="82" Height="32" Padding="12,0" Content="Удалить вхождение" Margin="2" Click="DeleteStepButton_Click" IsEnabled="{Binding IsEnabled, ElementName=DeleteStepButton}"/>
+                                        <Button MinWidth="82" Height="32" Padding="12,0" x:Name="MoveStepUpButton" Content="Вверх" Margin="2"
+                                                ToolTip="Обменять привязку и тексты с соседней позицией" Tag="-1" Click="MoveStep_Click" />
+                                        <Button MinWidth="82" Height="32" Padding="12,0" x:Name="MoveStepDownButton" Content="Вниз" Margin="2"
+                                                ToolTip="Обменять привязку и тексты с соседней позицией" Tag="1" Click="MoveStep_Click" />
+                                        <Button MinWidth="82" Height="32" Padding="12,0" x:Name="SaveTransitionsButton" Style="{StaticResource BtnSaveObject}" Content="Сохранить переход"
+                                                Tag="transitions" Margin="2" Click="SaveEntityButton_Click" />
                                     </WrapPanel>
                                     <DataGrid x:Name="TransitionsGrid" Tag="transitions" AutoGenerateColumns="True"
                                               CanUserAddRows="False" CanUserDeleteRows="False" SelectionMode="Single"
@@ -144,8 +133,6 @@
 
                         <GroupBox Grid.Row="1" Header="Условия переходов выбранного вхождения" Margin="0,5,0,0">
                             <DockPanel>
-                                <TextBlock DockPanel.Dock="Bottom" Margin="4" TextWrapping="Wrap"
-                                           Text="Изменения сохраняются кнопкой «Сохранить переход». Столбцы C00–C15 соответствуют битам маски." />
                                 <DataGrid x:Name="ConditionsGrid" AutoGenerateColumns="True" CanUserReorderColumns="False" CanUserAddRows="False"
                                           CanUserDeleteRows="False" BeginningEdit="ConditionsGrid_BeginningEdit"
                                           AutoGeneratingColumn="ConditionsGrid_AutoGeneratingColumn" RowEditEnding="EntityGrid_RowEditEnding" />
@@ -153,7 +140,7 @@
                         </GroupBox>
 </Grid></TabItem>
                 <TabItem x:Name="RecipesTab" Header="Рецепты"><local:ProgramSupportControl x:Name="RecipesEditor"/></TabItem>
-                </TabControl></Grid></TabItem>
+                </TabControl></TabItem>
 
                 <TabItem x:Name="SoftKeysTab" Header="SoftKeys"><local:ProgramSupportControl x:Name="SoftKeysEditor"/></TabItem>
 
@@ -175,6 +162,15 @@
         </Grid>
 
         <TextBlock Grid.Row="3" x:Name="StatusText" Text=""
-                   TextWrapping="Wrap" Margin="0,8,0,0" />
+                   TextWrapping="Wrap">
+            <TextBlock.Style>
+                <Style TargetType="TextBlock">
+                    <Setter Property="Margin" Value="0,4,0,0"/>
+                    <Style.Triggers>
+                        <Trigger Property="Text" Value=""><Setter Property="Visibility" Value="Collapsed"/></Trigger>
+                    </Style.Triggers>
+                </Style>
+            </TextBlock.Style>
+        </TextBlock>
     </Grid>
 </UserControl>

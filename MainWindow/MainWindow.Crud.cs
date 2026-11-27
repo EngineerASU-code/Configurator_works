@@ -468,7 +468,8 @@ namespace Configurator
                 addLookupOptions, initialValues: InitialPlcForNewRow(),
                 preferFreeScopedRecord: suggestScopedRecord,
                 recordScopeClassColumn: ProjectClassCatalog.FindRecordClassColumn(_activeVm.KeyColumns),
-                freeAddressProvider: (plc, cls, ct) => PlcAddressCatalog.SuggestAddressesAsync(addressWorkspace, tableName, plc, cls, ct))
+                freeAddressProvider: (plc, cls, ct) => PlcAddressCatalog.SuggestAddressesAsync(addressWorkspace, tableName, plc, cls, ct),
+                msTypes: cls => MsTypeCatalog.ReadAsync(addressWorkspace, tableName, cls))
             { Owner = this };
 
             addWindow.CanApply = CanAdd;
@@ -551,9 +552,13 @@ namespace Configurator
                 editClassNumberColumn,
                 editClassNumber,
                 editLookupOptions,
-                suggestRecord, plc => PlcAddressCatalog.SuggestAddressesAsync(addressWorkspace, updateTable, plc, editClassNumber?.ToString(), default))
+                suggestRecord, plc => PlcAddressCatalog.SuggestAddressesAsync(addressWorkspace, updateTable, plc, editClassNumber?.ToString(), default),
+                msTypes: cls => MsTypeCatalog.ReadAsync(addressWorkspace, updateTable, cls))
             { Owner = this };
 
+            var attemptServer = _connection.Server;
+            string attemptPath = null;
+            ChangeJournalEntry attemptEntry = null;
             editWindow.CanApply = () => !_isOfflineWorkspace && _activeVm == editVm && _activeDbName == updateDbName;
             editWindow.SaveChangesAsync = async () =>
             {
@@ -566,13 +571,29 @@ namespace Configurator
                     "Вы изменяете связанные поля. Это может изменить привязки объекта к справочникам или другим объектам:\n\n" + string.Join("\n", relatedChanges) + "\n\nПродолжить изменение?",
                     "Предупреждение о смене связей", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
                     return false;
+                attemptPath = null;
                 try
                 {
+                    var after = new Dictionary<string, object>(oldValues);
+                    foreach (var pair in editWindow.Values) after[pair.Key] = pair.Value;
+                    var keysAfter = usesValueIdentity ? after : keyColumns.ToDictionary(k => k, k => after[k]);
+                    attemptEntry = new ChangeJournalEntry {
+                        Result = LocalRowAttempt.Unknown, Server = attemptServer, Database = updateDbName, ProjectName = updateDbName, Mode = _currentMode,
+                        User = AttemptUser, UserRole = UserAuthorizationService.CurrentUser?.RoleName ?? "",
+                        Category = "Изменение", EntityType = "Строка таблицы", Source = updateTable,
+                        Description = $"Изменена строка · {updateTable}", OperationKind = ChangeJournalOperationKind.Update,
+                        EntityIdentity = string.Join(", ", oldIdentity.Select(p => $"{p.Key}={FormatLogValue(p.Value)}")),
+                        Details = string.Join("\n", editWindow.Values.Select(p => $"{p.Key}: {FormatLogValue(oldValues[p.Key])} → {FormatLogValue(p.Value)}")),
+                        Changes = new() { CreateJournalChange(updateTable, ChangeJournalOperationKind.Update, oldValues, after, oldIdentity, keysAfter) }
+                    };
+                    attemptPath = LocalRowAttempt.Save(LocalRowAttempt.Folder(attemptServer, updateDbName, AttemptUser), attemptEntry);
+                    using var active = System.IO.File.Open(attemptPath, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.None);
                     await editVm.UpdateSnapshotAsync(updateTable, usesValueIdentity, keyColumns, oldIdentity, oldValues, editWindow.Values);
                     return true;
                 }
                 catch (SqlException ex) when (ex.Number is 2601 or 2627)
                 {
+                    LocalRowAttempt.NoteRollback(attemptPath, attemptEntry);
                     Configurator.Infrastructure.ModernDialog.Show(editWindow, "Такая комбинация ключевых полей уже существует. Измените значение и повторите сохранение.", "Конфликт ключа", MessageBoxButton.OK, MessageBoxImage.Warning);
                     foreach (var key in keyColumns.Where(editWindow.Values.ContainsKey))
                         editWindow.MarkConflict(key);
@@ -581,9 +602,11 @@ namespace Configurator
                 catch (Exception ex)
                 {
                     System.Diagnostics.Debug.WriteLine(ex);
-                    Configurator.Infrastructure.ModernDialog.Show(editWindow, "Проверьте введённые значения и повторите сохранение.", "Не удалось изменить запись", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    if (attemptPath != null && ex.Data.Contains("RowUpdateRolledBack")) LocalRowAttempt.NoteRollback(attemptPath, attemptEntry);
+                    Configurator.Infrastructure.ModernDialog.Show(editWindow, attemptEntry?.Result == LocalRowAttempt.Rejected ? LocalRowAttempt.Rejected : attemptPath == null ? "Локальную попытку сохранить не удалось. Запрос не отправлен." : "Подтверждение сохранения не получено. Попытка сохранена на устройстве. Перед повтором сверьте строку на сервере.", "Не удалось изменить запись", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return false;
                 }
+                finally { UpdateCurrentProjectText(); }
             };
             await editWindow.ShowRowEditorAsync();
 
@@ -597,16 +620,11 @@ namespace Configurator
                     if (preferredIdentity.ContainsKey(pair.Key))
                         preferredIdentity[pair.Key] = pair.Value;
 
-                var afterValues = new Dictionary<string, object>(oldValues);
-                foreach (var pair in editWindow.Values) afterValues[pair.Key] = pair.Value;
-                var afterIdentity = usesValueIdentity ? new Dictionary<string, object>(afterValues) :
-                    keyColumns.ToDictionary(key => key, key => afterValues[key]);
-                var changedDetails = string.Join("; ", editWindow.Values.Select(x => $"{x.Key}: {FormatLogValue(oldValues.TryGetValue(x.Key, out var ov) ? ov : null)} → {FormatLogValue(x.Value)}"));
-                LogAction($"Изменена строка · {updateTable}", category: "Изменение", source: updateTable, details: changedDetails,
-                journalChanges: new[]
-                {
-                    CreateJournalChange(updateTable, ChangeJournalOperationKind.Update, oldValues, afterValues, oldIdentity, afterIdentity)
-                }, operationKind: ChangeJournalOperationKind.Update, databaseName: updateDbName);
+                _changeJournal.BindOnlineProject(attemptEntry.Server, updateDbName, updateDbName, attemptEntry.Mode);
+                attemptEntry.Result = "Успешно";
+                ShowLastAction(attemptEntry.DisplayDescription);
+                if (SaveJournalEntry(attemptEntry)) System.IO.File.Delete(attemptPath);
+                UpdateCurrentProjectText();
 
                 // Быстрое обновление: только текущая страница, без COUNT(*).
                 if (ReferenceEquals(_activeVm, editVm) && editVm.CurrentTable == updateTable && _activeDbName == updateDbName &&

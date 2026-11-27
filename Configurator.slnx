@@ -1,4 +1,3 @@
-﻿<Solution>
+<Solution>
   <Project Path="Configurator.csproj" />
-  <Project Path="tests/Configurator.Security.Tests/Configurator.Security.Tests.csproj" />
 </Solution>

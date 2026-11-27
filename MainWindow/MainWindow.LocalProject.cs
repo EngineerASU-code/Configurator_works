@@ -912,7 +912,8 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
                         OfflineKeyEquals(Convert.ToString(row["Record"], CultureInfo.InvariantCulture), record))),
                 preferFreeScopedRecord: suggestRecord != null,
                 recordScopeClassColumn: recordScopeClass,
-                freeAddressProvider: _offlineGridDirty ? null : (plc, cls, ct) => PlcAddressCatalog.SuggestAddressesAsync(addressWorkspace, tableName, plc, cls, ct)) { Owner = this };
+                freeAddressProvider: _offlineGridDirty ? null : (plc, cls, ct) => PlcAddressCatalog.SuggestAddressesAsync(addressWorkspace, tableName, plc, cls, ct),
+                msTypes: cls => MsTypeCatalog.ReadAsync(addressWorkspace, tableName, cls)) { Owner = this };
             window.CanApply = () => _isOfflineWorkspace && ReferenceEquals(table, _offlineCurrentDataTable);
             await window.ShowRowEditorAsync();
             if (!window.Confirmed || window.Values is null || window.Values.Count == 0) return;
@@ -977,7 +978,8 @@ private static string BuildStableRecordKey(JsonObject values, IReadOnlyList<stri
             var window = new EditRowWindow(_offlineCurrentTableName, _offlineCurrentColumns, oldValues, keyColumn,
                 classNumberColumn, classNumber, lookupOptions,
                 suggestRecord == null ? null : (plc, ct) => Task.FromResult(suggestRecord(plc, ct)),
-                _offlineGridDirty ? null : plc => PlcAddressCatalog.SuggestAddressesAsync(addressWorkspace, editTable, plc, classNumber?.ToString(), default)) { Owner = this };
+                _offlineGridDirty ? null : plc => PlcAddressCatalog.SuggestAddressesAsync(addressWorkspace, editTable, plc, classNumber?.ToString(), default),
+                msTypes: cls => MsTypeCatalog.ReadAsync(addressWorkspace, editTable, cls)) { Owner = this };
             window.CanApply = () => _isOfflineWorkspace && ReferenceEquals(table, _offlineCurrentDataTable) && selected.Row.RowState is not (DataRowState.Detached or DataRowState.Deleted) &&
                 oldValues.All(pair => pair.Value == (Convert.ToString(selected.Row[pair.Key], CultureInfo.InvariantCulture) ?? ""));
             await window.ShowRowEditorAsync();

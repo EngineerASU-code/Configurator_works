@@ -86,7 +86,10 @@ public partial class ProgramManagementControl : UserControl
         MessagesEditor.SetSections("messages");
         QueuesEditor.SetSections("queues", "queue-selections");
         foreach (var editor in SupportEditors)
+        {
+            editor.LoadWhenVisible = true;
             editor.ChangeJournalRequested += entry => ChangeJournalRequested?.Invoke(entry);
+        }
         Loaded += ProgramManagementControl_Loaded;
         Unloaded += ProgramManagementControl_Unloaded;
     }
@@ -189,7 +192,9 @@ public partial class ProgramManagementControl : UserControl
         _repository = offline == null ? new ProgramManagementRepository(connectionString) : new ProgramManagementRepository(offline);
         PlcInput.Text = Convert.ToString(plcValue, CultureInfo.InvariantCulture) ?? string.Empty;
         ClassInput.Text = Convert.ToString(programClassValue, CultureInfo.InvariantCulture) ?? string.Empty;
-        return await LoadProgramsAsync(record) && CurrentContext != null;
+        var timer = System.Diagnostics.Stopwatch.StartNew();
+        try { return await LoadProgramsAsync(record) && CurrentContext != null; }
+        finally { SessionTestLog.Trace("PROGRAM-PERF", $"open-ms={timer.ElapsedMilliseconds}; offline={offline != null}"); }
     }
 
     private async void LoadButton_Click(object sender, RoutedEventArgs e)
@@ -200,7 +205,7 @@ public partial class ProgramManagementControl : UserControl
 
     private async void ProgramTreeView_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
     {
-        if (_syncingTreeSelection || _loading || e.NewValue is not TreeViewItem item || item.Tag is not ProgramTreeNode node)
+        if (_syncingTreeSelection || _contextChangePending || _loading || e.NewValue is not TreeViewItem item || item.Tag is not ProgramTreeNode node)
             return;
 
         _pendingTreeSelection = node;
@@ -245,7 +250,7 @@ public partial class ProgramManagementControl : UserControl
             SetStatus("Последовательность не найдена в выбранной программе. Раскройте ветку ещё раз после обновления.");
 
         if (node.Kind == ProgramTreeNodeKind.StepOccurrence && !_contextChangePending)
-            await SelectPendingTreeStepAsync();
+            SelectPendingTreeStep();
 
         if (_pendingTreeSelection == node)
         {
@@ -484,7 +489,7 @@ public partial class ProgramManagementControl : UserControl
             && SameValue(CurrentContext.RecordValue, GetValue(row.Row, "Prog_Record"))
             && SameValue(CurrentContext.SeqRecordValue, GetValue(row.Row, "Record"));
 
-    private async Task SelectPendingTreeStepAsync()
+    private void SelectPendingTreeStep()
     {
         var node = _pendingTreeSelection;
         if (node?.Kind != ProgramTreeNodeKind.StepOccurrence || !IsCurrentSequence(node.SequenceRow)) return;
@@ -505,8 +510,6 @@ public partial class ProgramManagementControl : UserControl
         finally { _revertingSelection = false; }
         DetailsTabs.SelectedItem = SequenceTab;
         SequenceTabs.SelectedItem = StepDetailsTab;
-        if (int.TryParse(Convert.ToString(number, CultureInfo.InvariantCulture), NumberStyles.Integer, CultureInfo.InvariantCulture, out int stepNumber))
-            await LoadStepParametersAsync(stepNumber);
         SyncTreeToContext();
     }
 
@@ -640,6 +643,11 @@ public partial class ProgramManagementControl : UserControl
         return true;
     }
 
+    private void ProgramLayout_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        ProgramFieldsGroup.MaxHeight = e.NewSize.Height * 0.65;
+    }
+
     private void ProgramFieldsScroll_SizeChanged(object sender, SizeChangedEventArgs e)
     {
         if (ProgramFields != null)
@@ -666,7 +674,7 @@ public partial class ProgramManagementControl : UserControl
             if (column == null || MainWindow.HideLanguageField(column)) continue;
             bool readOnly = !canEdit || ProtectedContextColumns.Contains(column) ||
                 (_nonEditableColumns.TryGetValue("programs", out var protectedColumns) && protectedColumns.Contains(column));
-            var line = new DockPanel { Margin = new Thickness(4, 0, 8, 8), MinHeight = 52 };
+            var line = new DockPanel { Margin = new Thickness(2, 0, 6, 4) };
             var label = new Label { Content = aliases[0], Padding = new Thickness(0, 0, 0, 3) };
             DockPanel.SetDock(label, Dock.Top);
             var input = new TextBox { IsReadOnly = readOnly, Padding = new Thickness(6, 4, 6, 4) };
@@ -892,11 +900,9 @@ public partial class ProgramManagementControl : UserControl
         {
 
             var transitions = await _repository.GetTransitionsAsync(CurrentContext);
-            var programParams = await _repository.GetParametersAsync(CurrentContext, 0);
-
+            if (transitions.Columns.Contains("SeqStep_Number")) transitions.DefaultView.Sort = "SeqStep_Number ASC";
             await BindTableAsync(TransitionsGrid, transitions);
-            await BindTableAsync(ProgramParamsGrid, programParams);
-            StepParamsGrid.ItemsSource = null;
+            await LoadParametersAsync(CurrentContext);
             _referencedSteps = (await _repository.GetStepsAsync(CurrentContext)).DefaultView;
             RefreshSequenceTreeFromGrids();
             SetStatus(postCommitWarning ?? string.Empty);
@@ -917,17 +923,14 @@ public partial class ProgramManagementControl : UserControl
         return true;
     }
 
-    private async void TransitionsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private void TransitionsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         UpdateCommandState();
         if (_loading || _revertingSelection || _contextChangePending || TransitionsGrid.SelectedItem is not DataRowView row
             || !row.Row.Table.Columns.Contains("SeqStep_Number")) return;
         if (!CanChangeSelection(TransitionsGrid, e)) return;
         ShowTransitionConditions(row);
-        if (!int.TryParse(Convert.ToString(row["SeqStep_Number"], CultureInfo.InvariantCulture),
-                NumberStyles.Integer, CultureInfo.InvariantCulture, out int stepNumber) || stepNumber <= 0) return;
         SyncTreeToContext();
-        await LoadStepParametersAsync(stepNumber);
     }
 
     private void ShowTransitionConditions(DataRowView transition)
@@ -1012,24 +1015,43 @@ public partial class ProgramManagementControl : UserControl
         transition != null && int.TryParse(Convert.ToString(GetValue(transition.Row, "SeqStep_Number"), CultureInfo.InvariantCulture),
             NumberStyles.Integer, CultureInfo.InvariantCulture, out int number) ? number : null;
 
-    private async Task LoadStepParametersAsync(int stepNumber)
+    private async Task LoadParametersAsync(ProgramContext context)
     {
-        if (_loading || _contextChangePending || CurrentContext?.SeqRecordValue == null || !CanDiscardPendingEdits()) return;
-        var targetContext = CopyContext(CurrentContext);
-        _contextChangePending = true;
-        bool?[] enabledBeforeLoad = SetContextGridsEnabled(false);
-        try
+        var table = await _repository.GetAllSequenceParametersAsync(context);
+        _parameterTypes = await GetParameterLookupAsync("Type");
+        var program = new DataView(table) { RowFilter = "[Step_Number] = 0" };
+        var steps = new DataView(table) { RowFilter = "[Step_Number] > 0" };
+        var protectedFields = await _repository.GetNonEditableColumnsAsync(ProgramManagementRepository.ParameterTable);
+        _nonEditableColumns["programParams"] = protectedFields;
+        _nonEditableColumns["stepParams"] = protectedFields;
+        ProgramParamsGrid.ItemsSource = program;
+        StepParamsGrid.ItemsSource = steps;
+    }
+
+    private IReadOnlyList<LookupOption> _parameterTypes = Array.Empty<LookupOption>();
+
+    private async Task<IReadOnlyList<LookupOption>> GetParameterLookupAsync(string fieldName)
+    {
+        var tables = fieldName == "Unit" ? new[] { "dbo.Units" }
+            : new[] { "dbo.Prog_StepParamTypes", "dbo.ProgStepParamTypes" };
+        var service = _offlineSource == null ? new LookupOptionsService(new DatabaseService(_connectionString)) : null;
+        foreach (var table in tables)
         {
-            var table = await _repository.GetParametersAsync(targetContext, stepNumber);
-            await BindTableAsync(StepParamsGrid, table);
-            SetStatus(string.Empty);
+            var field = new Configurator.Core.Architecture.FieldDefinition
+            {
+                Name = fieldName, LookupTable = table, LookupKeyField = fieldName == "Unit" ? "Unit_ID" : "",
+                LookupDisplayField = "Name"
+            };
+            var options = _offlineSource != null
+                ? OfflineLookupOptionsService.Get(_offlineSource.Project, "Program", ProgramManagementRepository.ParameterTable, field)
+                : await service.TryGetAsync("Program", ProgramManagementRepository.ParameterTable, fieldName,
+                    explicitLookupTable: table, explicitLookupKeyField: field.LookupKeyField, explicitLookupDisplayField: "Name");
+            if (options.Count > 0)
+                return fieldName == "Type" ? options.Select(option => new LookupOption { Key = option.Key,
+                    Display = option.Display.StartsWith(option.Key + " · ", StringComparison.Ordinal)
+                        ? option.Display[(option.Key.Length + 3)..] : option.Display }).ToList() : options;
         }
-        catch (Exception ex) { SetStatus("Не удалось загрузить параметры шага: " + Configurator.Infrastructure.UserErrorMessage.Format(ex)); }
-        finally
-        {
-            RestoreContextGridsEnabled(enabledBeforeLoad);
-            _contextChangePending = false;
-        }
+        return Array.Empty<LookupOption>();
     }
 
     private static bool SameValue(object left, object right) =>
@@ -1149,43 +1171,45 @@ public partial class ProgramManagementControl : UserControl
             TransitionsGrid.SelectedItem is not DataRowView selected ||
             sender is not Button button ||
             !int.TryParse(Convert.ToString(button.Tag, CultureInfo.InvariantCulture), out int direction)) return;
+        var timer = System.Diagnostics.Stopwatch.StartNew();
         if (!CanDiscardPendingEdits()) return;
         var context = CopyContext(CurrentContext);
         var original = ToValues(selected.Row, DataRowVersion.Current);
         _contextChangePending = true;
         bool?[] enabled = SetContextGridsEnabled(false);
-        int? movedTo = null;
         try
         {
-            var move = await _repository.MoveStepWithJournalAsync(context, original, direction);
-            movedTo = move.NewStepNumber;
-            string warning = RaiseJournal(ProgramManagementRepository.TransitionTable, ChangeJournalOperationKind.Update,
-                original, null, IdentityFor(ProgramManagementRepository.TransitionTable, original),
-                $"Перемещено вхождение шага на номер {movedTo}; изменены связанные ссылки",
-                move.Changes, ChangeJournalRestoreKind.ProgramStepMove, move.RestorePayloadJson);
-            bool loaded = await LoadSequenceChildrenAsync(afterCommittedChange: true, postCommitWarning: warning);
-            if (loaded)
+            int current = Convert.ToInt32(original["SeqStep_Number"]);
+            var neighbor = TransitionsGrid.Items.OfType<DataRowView>()
+                .Where(item => direction * (long)(Convert.ToInt32(item["SeqStep_Number"]) - current) > 0)
+                .OrderBy(item => Math.Abs((long)Convert.ToInt32(item["SeqStep_Number"]) - current)).FirstOrDefault();
+            if (neighbor == null) return;
+            var changes = await _repository.SwapStepAssignmentsAsync(context, original, ToValues(neighbor.Row, DataRowVersion.Current));
+            string warning = changes.Count == 0 ? null : RaiseJournal(ProgramManagementRepository.TransitionTable,
+                ChangeJournalOperationKind.Composite, null, null, IdentityFor(ProgramManagementRepository.TransitionTable, original),
+                $"Обмен привязок шагов между позициями {current} и {neighbor["SeqStep_Number"]}", changes);
+            foreach (var change in changes)
             {
-                var row = TransitionsGrid.Items.OfType<DataRowView>()
-                    .FirstOrDefault(item => TryGetSequenceStepNumber(item) == movedTo);
-                if (row != null)
-                {
-                    _revertingSelection = true;
-                    try { TransitionsGrid.SelectedItem = row; }
-                    finally { _revertingSelection = false; }
-                    ShowTransitionConditions(row);
-                    SyncTreeToContext();
-                }
-                SetStatus($"Вхождение перемещено на номер {movedTo}." + FormatJournalWarning(warning));
+                var row = Equals(change.IdentityBefore["SeqStep_Number"].ToObject(), original["SeqStep_Number"]) ? selected.Row : neighbor.Row;
+                foreach (var field in change.After)
+                    if (!System.Collections.StructuralComparisons.StructuralEqualityComparer.Equals(change.Before[field.Key].ToObject(), field.Value.ToObject()))
+                        row[field.Key] = field.Value.ToObject() ?? DBNull.Value;
+                row.AcceptChanges();
             }
+            TransitionsGrid.SelectedItem = neighbor;
+            TransitionsGrid.ScrollIntoView(neighbor);
+            RefreshSequenceTreeFromGrids();
+            ShowTransitionConditions(neighbor);
+            SetStatus($"Шаг выбран на позиции {neighbor["SeqStep_Number"]}." + FormatJournalWarning(warning));
         }
         catch (Exception ex) { SetStatus("Не удалось переместить вхождение: " + Configurator.Infrastructure.UserErrorMessage.Format(ex)); }
         finally
         {
             RestoreContextGridsEnabled(enabled);
             _contextChangePending = false;
+            SessionTestLog.Trace("PROGRAM-PERF", $"swap-ms={timer.ElapsedMilliseconds}; offline={_offlineSource != null}");
         }
-        if (movedTo.HasValue) await LoadStepParametersAsync(movedTo.Value);
+
     }
 
 
@@ -1200,7 +1224,7 @@ public partial class ProgramManagementControl : UserControl
         string temporaryFile = null;
         try
         {
-            string content = await _repository.BuildAwlAsync(context);
+            var (content, skippedDefaults) = await _repository.BuildAwlAsync(context);
             string name = Convert.ToString(GetValue(row.Row, "Name_L1") ?? GetValue(row.Row, "NameL1")) ?? "";
             string safeName = string.Concat(name.Select(ch => System.IO.Path.GetInvalidFileNameChars().Contains(ch) ? '_' : ch)).TrimEnd('.', ' ');
             int record = Convert.ToInt32(context.RecordValue, CultureInfo.InvariantCulture);
@@ -1217,7 +1241,8 @@ public partial class ProgramManagementControl : UserControl
             await System.IO.File.WriteAllTextAsync(temporaryFile, content, new System.Text.UTF8Encoding(false));
             System.IO.File.Move(temporaryFile, dialog.FileName, overwrite: true);
             temporaryFile = null;
-            SetStatus($"AWL-файл сохранён: {dialog.FileName}");
+            string warning = skippedDefaults == 0 ? "" : $" Пропущено значений для отсутствующих шагов за пределами типа программы: {skippedDefaults}.";
+            SetStatus($"AWL-файл сохранён: {dialog.FileName}." + warning);
         }
         catch (Exception ex)
         {
@@ -1377,7 +1402,8 @@ public partial class ProgramManagementControl : UserControl
     {
         var fields = await _repository.GetInsertColumnsAsync(tableName, generatedColumns);
         var panel = new StackPanel { Margin = new Thickness(14) };
-        var editors = new List<(ColumnInfo Column, TextBox Editor)>();
+        var editors = new List<(ColumnInfo Column, Func<string> Read)>();
+        bool parameter = tableName == ProgramManagementRepository.ParameterTable;
         foreach (var column in fields.Where(c => !MainWindow.HideLanguageField(c.Name)))
         {
             bool required = !column.IsNullable && !column.HasDefault || column.Name.Equals("Name_L1", StringComparison.OrdinalIgnoreCase);
@@ -1386,11 +1412,28 @@ public partial class ProgramManagementControl : UserControl
                 Text = column.Name + " · " + column.DataType + (required ? " *" : ""),
                 Margin = new Thickness(0, 5, 0, 2)
             });
-            var editor = new TextBox { MinWidth = 360, Margin = new Thickness(0, 0, 0, 3) };
-            if (defaults != null && defaults.TryGetValue(column.Name, out var defaultValue))
-                editor.Text = Convert.ToString(defaultValue, CultureInfo.InvariantCulture);
-            panel.Children.Add(editor);
-            editors.Add((column, editor));
+            if (parameter && column.Name.Equals("Type", StringComparison.OrdinalIgnoreCase) && _parameterTypes.Count > 0)
+            {
+                var types = new ComboBox { ItemsSource = _parameterTypes, DisplayMemberPath = nameof(LookupOption.Display),
+                    SelectedValuePath = nameof(LookupOption.Key) };
+                panel.Children.Add(types);
+                editors.Add((column, () => types.SelectedValue as string));
+            }
+            else if (parameter && (column.DataType.Equals("bit", StringComparison.OrdinalIgnoreCase)
+                || IsParameterFlag(column.Name)))
+            {
+                var toggle = ParameterToggle(column.Name, required ? false : null, !required);
+                panel.Children.Add(toggle);
+                editors.Add((column, () => toggle.IsChecked switch { true => "1", false => "0", null => null }));
+            }
+            else
+            {
+                var editor = new TextBox { MinWidth = 240, Margin = new Thickness(0, 0, 0, 3) };
+                if (defaults != null && defaults.TryGetValue(column.Name, out var defaultValue))
+                    editor.Text = Convert.ToString(defaultValue, CultureInfo.InvariantCulture);
+                panel.Children.Add(editor);
+                editors.Add((column, () => editor.Text));
+            }
         }
         if (fields.Count == 0)
             panel.Children.Add(new TextBlock { Text = "Все остальные поля будут взяты из значений базы данных или оставлены пустыми." });
@@ -1418,9 +1461,9 @@ public partial class ProgramManagementControl : UserControl
 
         var values = defaults == null ? new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
             : new Dictionary<string, object>(defaults, StringComparer.OrdinalIgnoreCase);
-        foreach (var (column, editor) in editors)
+        foreach (var (column, read) in editors)
         {
-            string text = editor.Text?.Trim() ?? string.Empty;
+            string text = read()?.Trim() ?? string.Empty;
             bool required = !column.IsNullable && !column.HasDefault || column.Name.Equals("Name_L1", StringComparison.OrdinalIgnoreCase);
             if (text.Length == 0)
             {
@@ -1768,9 +1811,8 @@ public partial class ProgramManagementControl : UserControl
         if (_loading || _contextChangePending || CurrentContext?.SeqRecordValue == null ||
             !UserAuthorizationService.Require(insert ? Permission.AddData : Permission.DeleteData) || !CanDiscardPendingEdits()) return;
         string tag = (string)button.Tag;
-        int? step = tag == "programParams" ? 0 : TryGetSequenceStepNumber(TransitionsGrid.SelectedItem as DataRowView);
         var selected = FindGrid(tag).SelectedItem as DataRowView;
-        if (!step.HasValue) { SetStatus("Выберите вхождение шага."); return; }
+        int step = !insert && selected != null ? Convert.ToInt32(selected["Step_Number"], CultureInfo.InvariantCulture) : 0;
         if (!insert && selected == null) { SetStatus("Выберите параметр."); return; }
         var context = CopyContext(CurrentContext);
         _contextChangePending = true;
@@ -1783,10 +1825,10 @@ public partial class ProgramManagementControl : UserControl
                 var values = await PromptInsertValuesAsync(ProgramManagementRepository.ParameterTable,
                     new[] { "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Seq_Record", "Step_Number", "Record" }, "Новый параметр");
                 if (values == null) return;
-                var inserted = await _repository.AddParameterWithSnapshotAsync(context, step.Value, values);
-                int record = inserted.GeneratedValue;
-                RaiseJournal(ProgramManagementRepository.ParameterTable, ChangeJournalOperationKind.Insert, null, inserted.Values,
-                    IdentityFor(ProgramManagementRepository.ParameterTable, inserted.Values), "Создан параметр",
+                int definitionStep = tag == "programParams" ? 0 : 1;
+                var inserted = await _repository.AddParameterWithSnapshotAsync(context, definitionStep, values);
+                journalWarning = RaiseJournal(ProgramManagementRepository.ParameterTable, ChangeJournalOperationKind.Insert,
+                    null, inserted.Values, IdentityFor(ProgramManagementRepository.ParameterTable, inserted.Values), "Создан параметр",
                     new[] { CreateInsertJournalChange(ProgramManagementRepository.ParameterTable, inserted) },
                     restoreIncludesAllChanges: inserted.RestoreIncludesAllChanges, restoreWarning: inserted.RestoreUnavailableReason);
             }
@@ -1795,13 +1837,13 @@ public partial class ProgramManagementControl : UserControl
                 var before = ToValues(selected.Row, DataRowVersion.Current);
                 var type = GetValue(selected.Row, "Type");
                 var record = GetValue(selected.Row, "Record");
-                var preview = await _repository.PrepareParameterDeletionAsync(context, step.Value, type, record);
+                var preview = await _repository.PrepareParameterDeletionAsync(context, step, type, record);
                 IReadOnlyList<ChangeJournalRowChange> changes = null;
                 if (preview.Options.Count == 0)
                 {
                     if (Configurator.Infrastructure.ModernDialog.Show(Window.GetWindow(this), "Удалить выбранный параметр?",
                         "Параметр", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-                    await _repository.DeleteParameterAsync(context, step.Value, type, record, expected: before);
+                    await _repository.DeleteParameterAsync(context, step, type, record, expected: before);
                 }
                 else
                 {
@@ -1816,7 +1858,7 @@ public partial class ProgramManagementControl : UserControl
                     changes == null ? ChangeJournalOperationKind.Delete : ChangeJournalOperationKind.Composite, before, null,
                     IdentityFor(ProgramManagementRepository.ParameterTable, before), "Удалён параметр", changes);
             }
-            await BindTableAsync(FindGrid(tag), await _repository.GetParametersAsync(context, step.Value));
+            await LoadParametersAsync(context);
             SetStatus((insert ? "Параметр создан." : "Параметр удалён.") + FormatJournalWarning(journalWarning));
         }
         catch (Exception ex)
@@ -1854,16 +1896,7 @@ public partial class ProgramManagementControl : UserControl
         if (selected.Row.Table.Columns.Contains("Unit"))
         {
             var context = CurrentContext;
-            try
-            {
-                var field = new Configurator.Core.Architecture.FieldDefinition
-                { Name = "Unit", LookupTable = "dbo.Units", LookupKeyField = "Unit_ID" };
-                units = _offlineSource != null
-                    ? OfflineLookupOptionsService.Get(_offlineSource.Project, "Program", ProgramManagementRepository.ParameterTable, field)
-                    : await new LookupOptionsService(new DatabaseService(_connectionString)).TryGetAsync(
-                        "Program", ProgramManagementRepository.ParameterTable, "Unit",
-                        explicitLookupTable: field.LookupTable, explicitLookupKeyField: field.LookupKeyField);
-            }
+            try { units = await GetParameterLookupAsync("Unit"); }
             catch (Exception ex) { Configurator.Infrastructure.UserErrorMessage.Format(ex); }
             if (!ReferenceEquals(context, CurrentContext) || !ReferenceEquals(grid.SelectedItem, selected) || _contextChangePending) return;
         }
@@ -1873,26 +1906,44 @@ public partial class ProgramManagementControl : UserControl
         var inputs = new List<Control>();
         foreach (DataColumn column in draft.Columns)
         {
+            if (MainWindow.HideLanguageField(column.ColumnName) ||
+                (tag != "sequences" && ProtectedContextColumns.Contains(column.ColumnName))) continue;
             bool readOnly = column.ReadOnly || protectedColumns.Contains(column.ColumnName) ||
-                ProtectedContextColumns.Contains(column.ColumnName) || column.ColumnName is "Record" or "Type";
+                ProtectedContextColumns.Contains(column.ColumnName) || column.ColumnName == "Record";
             var field = new StackPanel { Margin = new Thickness(6, 4, 6, 4) };
             Control input;
             DependencyProperty property;
-            if (!readOnly && column.ColumnName.Equals("Unit", StringComparison.OrdinalIgnoreCase) && units.Count > 0)
+            bool isType = tag != "sequences" && column.ColumnName.Equals("Type", StringComparison.OrdinalIgnoreCase);
+            if (isType || (!readOnly && column.ColumnName.Equals("Unit", StringComparison.OrdinalIgnoreCase) && units.Count > 0))
             {
-                var choices = units.ToList();
+                var choices = (isType ? _parameterTypes : units).ToList();
                 string current = Convert.ToString(selected[column.ColumnName], CultureInfo.InvariantCulture);
                 if (!string.IsNullOrWhiteSpace(current) && !choices.Any(choice => choice.Key == current))
                     choices.Insert(0, new LookupOption { Key = current, Display = current + " · текущее значение" });
-                if (column.AllowDBNull) choices.Insert(0, new LookupOption { Key = "", Display = "(не задано)" });
+                if (!isType && column.AllowDBNull) choices.Insert(0, new LookupOption { Key = "", Display = "(не задано)" });
                 var combo = new ComboBox { ItemsSource = choices, DisplayMemberPath = nameof(LookupOption.Display), SelectedValuePath = nameof(LookupOption.Key),
-                    SelectedValue = current };
+                    SelectedValue = current, IsEnabled = !readOnly && (!isType || _parameterTypes.Count > 0) };
                 combo.SelectionChanged += (_, _) =>
                 {
                     if (combo.SelectedValue is string key)
                         draft.Rows[0][column.ColumnName] = key.Length == 0 ? DBNull.Value : key;
                 };
                 input = combo;
+                property = null;
+            }
+            else if (column.DataType == typeof(bool) || IsParameterFlag(column.ColumnName))
+            {
+                var value = selected[column.ColumnName];
+                var toggle = ParameterToggle(column.ColumnName, value == DBNull.Value ? null : Convert.ToBoolean(value), column.AllowDBNull);
+                if (!readOnly && value == DBNull.Value && toggle.IsChecked == false)
+                    draft.Rows[0][column] = Convert.ChangeType(0, column.DataType, CultureInfo.InvariantCulture);
+                toggle.IsEnabled = !readOnly;
+                void StoreValue(object sender, RoutedEventArgs e) => draft.Rows[0][column] = toggle.IsChecked.HasValue
+                    ? Convert.ChangeType(toggle.IsChecked.Value ? 1 : 0, column.DataType, CultureInfo.InvariantCulture) : DBNull.Value;
+                toggle.Checked += StoreValue;
+                toggle.Unchecked += StoreValue;
+                toggle.Indeterminate += StoreValue;
+                input = toggle;
                 property = null;
             }
             else
@@ -1908,7 +1959,7 @@ public partial class ProgramManagementControl : UserControl
                 ValidatesOnExceptions = true,
                 TargetNullValue = string.Empty
             });
-            field.Children.Add(new Label { Content = column.ColumnName, Target = input, Padding = new Thickness(0, 0, 0, 2) });
+            field.Children.Add(new Label { Content = new TextBlock { Text = column.ColumnName }, Target = input, Padding = new Thickness(0, 0, 0, 2) });
             field.Children.Add(input);
             fields.Children.Add(field);
             inputs.Add(input);
@@ -1932,8 +1983,8 @@ public partial class ProgramManagementControl : UserControl
         {
             Owner = Window.GetWindow(this), WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Title = tag == "sequences" ? "Изменить последовательность" : "Изменить параметр",
-            Width = Math.Min(1080, SystemParameters.WorkArea.Width),
-            Height = Math.Min(640, SystemParameters.WorkArea.Height),
+            Width = Math.Min(790, SystemParameters.WorkArea.Width),
+            MaxHeight = Math.Min(620, SystemParameters.WorkArea.Height), SizeToContent = SizeToContent.Height,
             Content = layout
         };
         save.Click += (_, _) =>
@@ -1945,6 +1996,39 @@ public partial class ProgramManagementControl : UserControl
         var button = tag == "sequences" ? SaveSequencesButton :
             tag == "programParams" ? SaveProgramParamsButton : SaveStepParamsButton;
         await SaveEntityAsync(button, draft.Rows[0]);
+    }
+
+    private sealed class ParameterNameConverter : IValueConverter
+    {
+        private readonly IReadOnlyDictionary<string, string> _names;
+
+        public ParameterNameConverter(IEnumerable<LookupOption> choices)
+            => _names = choices.ToDictionary(choice => choice.Key, choice => choice.Display);
+
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            string key = System.Convert.ToString(value, CultureInfo.InvariantCulture) ?? "";
+            return _names.TryGetValue(key, out string name) ? name : key;
+        }
+
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+            => Binding.DoNothing;
+    }
+
+    private static bool IsParameterFlag(string name)
+        => name.Replace("_", "").Equals("UseActValue", StringComparison.OrdinalIgnoreCase)
+            || name.Replace("_", "").Equals("UseHisterezis", StringComparison.OrdinalIgnoreCase);
+
+    internal static ToggleButton ParameterToggle(string name, bool? value, bool nullable)
+    {
+        bool threeState = nullable && !IsParameterFlag(name);
+        var button = new ToggleButton { IsThreeState = threeState, IsChecked = threeState ? value : value.GetValueOrDefault(), MinHeight = 27 };
+        void UpdateLabel() => button.Content = button.IsChecked switch { true => "Да", false => "Нет", null => "—" };
+        UpdateLabel();
+        button.Checked += (_, _) => UpdateLabel();
+        button.Unchecked += (_, _) => UpdateLabel();
+        button.Indeterminate += (_, _) => UpdateLabel();
+        return button;
     }
 
     private async void SaveEntityButton_Click(object sender, RoutedEventArgs e)
@@ -1990,7 +2074,11 @@ public partial class ProgramManagementControl : UserControl
         bool?[] enabledBeforeSave = SetContextGridsEnabled(false);
         try
         {
-            await _repository.SaveRowAsync(tableName, original, updated);
+            IReadOnlyList<ChangeJournalRowChange> typeChanges = null;
+            if (tableName == ProgramManagementRepository.ParameterTable && !Equals(original["Type"], updated["Type"]))
+                typeChanges = await _repository.ChangeParameterTypeAsync(original, updated);
+            else
+                await _repository.SaveRowAsync(tableName, original, updated);
             if (draft != null)
                 foreach (DataColumn column in row.Table.Columns)
                     if (!Equals(row[column], draft[column.ColumnName])) row[column] = draft[column.ColumnName];
@@ -2007,8 +2095,8 @@ public partial class ProgramManagementControl : UserControl
                 IdentityBefore = JournalValues(IdentityFor(tableName, original)),
                 IdentityAfter = JournalValues(IdentityFor(tableName, updated))
             };
-            string journalWarning = RaiseJournal(tableName, ChangeJournalOperationKind.Update, original, updated,
-                IdentityFor(tableName, updated), "Изменена запись Program/Step", new[] { savedChange });
+            string journalWarning = RaiseJournal(tableName, typeChanges == null ? ChangeJournalOperationKind.Update : ChangeJournalOperationKind.Composite, original, updated,
+                IdentityFor(tableName, updated), "Изменена запись Program/Step", typeChanges ?? new[] { savedChange });
             SetStatus("Изменения сохранены. Строка проверена на отсутствие параллельной правки." + FormatJournalWarning(journalWarning));
             if (tableName == ProgramManagementRepository.ProgramTable) ProgramSaved?.Invoke(row);
         }
@@ -2058,6 +2146,14 @@ public partial class ProgramManagementControl : UserControl
         }
         bool parameterType = e.PropertyName.Equals("Type", StringComparison.OrdinalIgnoreCase) &&
             (gridKey.Equals("stepParams", StringComparison.OrdinalIgnoreCase) || gridKey.Equals("programParams", StringComparison.OrdinalIgnoreCase));
+        if (parameterType && _parameterTypes.Count > 0)
+        {
+            e.Column = new DataGridTextColumn
+            {
+                Header = e.PropertyName, Binding = new Binding("[Type]") { Mode = BindingMode.OneWay,
+                    Converter = new ParameterNameConverter(_parameterTypes) }
+            };
+        }
         bool protectedColumn = ProtectedContextColumns.Contains(e.PropertyName) || parameterType ||
             (_nonEditableColumns.TryGetValue(gridKey, out var nonEditable) && nonEditable.Contains(e.PropertyName));
         if (!protectedColumn) return;

@@ -21,7 +21,6 @@
             <Button Width="190" Height="36" Padding="4,0" x:Name="AddButton" Content="＋ Добавить" Style="{StaticResource BtnPrimary}" Click="Add_Click"/>
             <Button Width="190" Height="36" Padding="4,0" x:Name="DeleteButton" Content="Удалить строку" Margin="8,0,0,0" Style="{StaticResource BtnSecondary}" Click="Delete_Click"/>
             <Button Width="190" Height="36" Padding="4,0" x:Name="SaveButton" Content="Сохранить" Margin="8,0,0,0" Style="{StaticResource BtnSaveObject}" Click="Save_Click"/>
-            <Button Width="190" Height="36" Padding="4,0" x:Name="RefreshButton" Content="Перечитать" ToolTip="Заново загрузить раздел из проекта" Margin="8,0,0,0" Style="{StaticResource BtnSecondary}" Click="Refresh_Click"/>
             <Button Width="190" Height="36" Padding="4,0" x:Name="ToggleRecipeButton" Visibility="Collapsed" Content="Использование в рецепте" ToolTip="Переключить использование выбранного параметра в рецепте"
                     Margin="8,0,0,0" Style="{StaticResource BtnSecondary}" Click="ToggleRecipe_Click"/>
         </WrapPanel>
@@ -37,7 +36,7 @@
             </ComboBox>
             <DataGrid x:Name="RowsGrid" Grid.Row="1" AutoGenerateColumns="True" CanUserAddRows="False" CanUserDeleteRows="False"
                   IsReadOnly="False" SelectionMode="Single" SelectionUnit="FullRow" AutoGeneratingColumn="RowsGrid_AutoGeneratingColumn"
-                  MouseDoubleClick="RowsGrid_DoubleClick" BeginningEdit="RowsGrid_BeginningEdit" RowEditEnding="RowsGrid_RowEditEnding" SelectionChanged="RowsGrid_SelectionChanged"
+                  PreviewMouseDoubleClick="RowsGrid_DoubleClick" BeginningEdit="RowsGrid_BeginningEdit" RowEditEnding="RowsGrid_RowEditEnding" SelectionChanged="RowsGrid_SelectionChanged"
                   HeadersVisibility="Column" EnableRowVirtualization="True"/>
             <GroupBox x:Name="RecipeDetailsGroup" Grid.Row="2" Header="Параметры рецепта" Visibility="Collapsed" Margin="0,8,0,0"/>
         </Grid>

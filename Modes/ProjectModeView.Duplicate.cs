@@ -17,17 +17,32 @@ public partial class ProjectModeView
     private const string ObjectClipboardFormat = "GASS.Configurator.Mode3.Object";
     private (Guid Token, string ClassName, string Table, int Generation, DataRow Row)? _copiedObject;
 
+    private bool SupportsObjectCopy => _configurationKind is ConfigurationKind.Plc or ConfigurationKind.Area ||
+        (_configurationKind == ConfigurationKind.Class && _selectedClass?.PrimaryStorage != null);
+    private string CopyTable => _configurationKind == ConfigurationKind.Class ? _selectedClass.PrimaryStorage.TableName : _configurationTableName;
+    private string CopyClass => _configurationKind == ConfigurationKind.Class ? _selectedClass.Name : _configurationKind.ToString();
+
+    private Task DuplicateSelectionAsync(DataRow row) => _configurationKind == ConfigurationKind.Class
+        ? DuplicateObjectAsync(new[] { row }) : AddConfigurationValueAsync(row);
+
+    private Task DuplicateListAsync()
+    {
+        if (_configurationKind != ConfigurationKind.Class) return DuplicateSelectionAsync(_selectedRow);
+        var rows = ObjectList.SelectedItems.Cast<ObjectItem>().Select(item => _objects.Rows[item.RowIndex]).ToArray();
+        return DuplicateObjectAsync(rows);
+    }
+
     private void CopySelectedObject()
     {
-        if (_selectedRow == null || ObjectList.SelectedItems.Count != 1 || _selectedClass?.PrimaryStorage == null) return;
+        if (_selectedRow == null || ObjectList.SelectedItems.Count != 1 || !SupportsObjectCopy) return;
         try
         {
             var snapshot = _selectedRow.Table.Clone();
             snapshot.ImportRow(_selectedRow);
             var token = Guid.NewGuid();
             Clipboard.SetData(ObjectClipboardFormat, token.ToString());
-            _copiedObject = (token, _selectedClass.Name, _selectedClass.PrimaryStorage.TableName, _workspaceGeneration, snapshot.Rows[0]);
-            ShowActionFeedback($"Скопирован объект класса {_selectedClass.Name}");
+            _copiedObject = (token, CopyClass, CopyTable, _workspaceGeneration, snapshot.Rows[0]);
+            ShowActionFeedback($"Скопирован объект {CopyClass}");
         }
         catch (System.Runtime.InteropServices.ExternalException)
         {
@@ -37,7 +52,7 @@ public partial class ProjectModeView
 
     private async void PasteCopiedObject()
     {
-        if (_copiedObject is not { } copy || _selectedClass?.PrimaryStorage == null) return;
+        if (_copiedObject is not { } copy || !SupportsObjectCopy || !BtnNewObject.IsEnabled) return;
         try
         {
             if (!Equals(Clipboard.GetData(ObjectClipboardFormat), copy.Token.ToString())) return;
@@ -47,19 +62,19 @@ public partial class ProjectModeView
             ShowActionFeedback("Буфер обмена занят", isError: true);
             return;
         }
-        if (copy.Generation != _workspaceGeneration || copy.ClassName != _selectedClass.Name ||
-            copy.Table != _selectedClass.PrimaryStorage.TableName)
+        if (copy.Generation != _workspaceGeneration || copy.ClassName != CopyClass ||
+            copy.Table != CopyTable)
         {
             ShowActionFeedback($"Вставка доступна только в исходном проекте и классе {copy.ClassName}", isError: true);
             return;
         }
 
-        await DuplicateObjectAsync(copy.Row);
+        await DuplicateSelectionAsync(copy.Row);
     }
 
-    private async Task DuplicateObjectAsync(DataRow sourceRow)
+    private async Task DuplicateObjectAsync(DataRow[] sources)
     {
-        if (!BtnNewObject.IsEnabled || !UserAuthorizationService.Require(Permission.AddData)) return;
+        if (sources.Length == 0 || !BtnNewObject.IsEnabled || !UserAuthorizationService.Require(Permission.AddData)) return;
         var selectedClass = _selectedClass;
         var offlineProject = _offlineProject;
         var offlineSource = _offlineSource;
@@ -68,73 +83,105 @@ public partial class ProjectModeView
         {
             var crud = RequireCrudSource();
             var workspace = RequireWorkspace();
-            var source = SnapshotRow(sourceRow);
-            var sourceName = PickName(sourceRow, selectedClass);
             var tableName = selectedClass.PrimaryStorage.TableName;
             var db = offlineProject == null ? new DatabaseService(_connection.ToConnectionString(_selectedDatabase)) : null;
             var columns = await ReadObjectColumnsAsync(tableName, db!);
             var keys = offlineSource != null ? offlineSource.GetSchema(tableName)?.KeyColumns ?? new List<string>()
                 : await db!.GetPrimaryKeyColumnsAsync(tableName);
+            bool legacy = (keys.Count == 0 || offlineSource?.GetSchema(tableName)?.HasStableKey == false) && tableName.Equals("dbo.Valves2S", StringComparison.OrdinalIgnoreCase);
+            if (legacy) keys = new List<string> { "PLC", "PLC_Class_Number", "Record" };
             if (keys.Count == 0) throw new InvalidOperationException("Не удалось определить ключ копии.");
-            var recordScopeClass = ProjectClassCatalog.FindRecordClassColumn(keys);
-
-            IEnumerable<IReadOnlyDictionary<string, object?>> allRows = Array.Empty<IReadOnlyDictionary<string, object?>>();
-            int? nextRecord = null;
-            if (offlineProject != null)
+            var classColumn = ProjectClassCatalog.FindRecordClassColumn(keys);
+            bool Current() => generation == _workspaceGeneration && _selectedClass == selectedClass && _configurationKind == ConfigurationKind.Class;
+            var occupied = new List<IReadOnlyDictionary<string, object?>>();
+            if (columns.Any(c => c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase)))
             {
-                var localTable = offlineSource!.ResolveTableName(tableName);
-                allRows = offlineProject.LocalRecords.Where(r => r.TableName.Equals(localTable, StringComparison.OrdinalIgnoreCase))
-                    .Select(r => (IReadOnlyDictionary<string, object?>)r.Values.ToDictionary(
-                        pair => pair.Key, pair => (object?)pair.Value?.ToString(), StringComparer.OrdinalIgnoreCase)).ToList();
+                var records = await AssemblyRowsAsync(workspace, tableName, new(), Current);
+                foreach (var record in records)
+                    occupied.Add(record.Values.ToDictionary(p => p.Key, p => (object?)p.Value?.ToString(), StringComparer.OrdinalIgnoreCase));
             }
-            else
+            if (!Current()) return;
+            var existing = occupied.ToArray();
+            var lookups = await LoadObjectLookupOptionsAsync(selectedClass,columns,db);
+            if (!Current()) return;
+            var fixedClass = classColumn ?? columns.FirstOrDefault(c => new[] { "PLCClassNumber", "PLC_Class_Number", "PLCClasssNumber" }
+                .Contains(c.Name,StringComparer.OrdinalIgnoreCase))?.Name;
+            var drafts = new DataTable();
+            foreach (var row in sources)
             {
-                var recordColumn = columns.FirstOrDefault(column => column.Name.Equals("Record", StringComparison.OrdinalIgnoreCase));
-                if (recordColumn != null)
-                {
-                    var plcColumn = columns.FirstOrDefault(column => column.Name.Equals("PLC", StringComparison.OrdinalIgnoreCase));
-                    nextRecord = await db!.GetFreeScopedRecordValueAsync(tableName, recordColumn.Name, plcColumn?.Name,
-                        plcColumn == null ? null : sourceRow[plcColumn.Name], default,
-                        recordScopeClass, recordScopeClass == null ? null : sourceRow[recordScopeClass]);
-                }
+                var values = Mode3DuplicateValues.Build(row, columns, occupied, classColumn: classColumn);
+                if (fixedClass != null && values.ContainsKey(fixedClass))
+                    values[fixedClass] = Convert.ChangeType(selectedClass.ClassNumber,row.Table.Columns[fixedClass]!.DataType,CultureInfo.InvariantCulture);
+                occupied.Add(values);
+                if (drafts.Columns.Count == 0)
+                    foreach (var field in values.Keys) drafts.Columns.Add(field, row.Table.Columns[field]!.DataType);
+                var draft = drafts.NewRow();
+                foreach (var field in values) draft[field.Key] = field.Value ?? DBNull.Value;
+                drafts.Rows.Add(draft);
             }
-
-            var values = Mode3DuplicateValues.Build(sourceRow, columns, allRows, nextRecord, recordScopeClass);
-            if (generation != _workspaceGeneration) return;
-            if (_configurationKind != ConfigurationKind.Class || _selectedClass != selectedClass) return;
-            if (values.TryGetValue("Record", out var suggested))
+            foreach (DataColumn column in drafts.Columns)
+                column.ReadOnly = column.ColumnName.Equals(fixedClass,StringComparison.OrdinalIgnoreCase) ||
+                    column.ColumnName.Equals("Area",StringComparison.OrdinalIgnoreCase);
+            string ValidateDrafts()
             {
-                var dialog = new TextInputWindow("Вставка объекта", "Record нового объекта",
-                    placeholder: Convert.ToString(suggested, CultureInfo.InvariantCulture) ?? "") { Owner = Window.GetWindow(this) };
-                if (values.TryGetValue("PLC", out var plc))
+                var reserved = existing.ToList();
+                foreach (DataRow draft in drafts.Rows)
                 {
-                    var addresses = await PlcAddressCatalog.SuggestAddressesAsync(workspace, tableName,
-                        Convert.ToString(plc, CultureInfo.InvariantCulture) ?? "", selectedClass.ClassNumber.ToString(CultureInfo.InvariantCulture), default);
-                    foreach (var column in columns.Where(c => !c.IsReadOnly))
-                        if (addresses.TryGetValue(column.Name, out var addressHint))
-                            dialog.OfferAddress(column.Name, addressHint);
+                    foreach (var column in columns.Where(c => drafts.Columns.Contains(c.Name)))
+                    {
+                        var value = draft[column.Name];
+                        if (value == DBNull.Value && !column.IsNullable) return $"Укажите значение {column.Name} для копии {drafts.Rows.IndexOf(draft)+1}.";
+                        if (lookups.TryGetValue(column.Name,out var choices) && value != DBNull.Value &&
+                            !Equals(value,sources[drafts.Rows.IndexOf(draft)][column.Name]) &&
+                            !choices.Any(c => Mode3DuplicateValues.SameScopeValue(c.Key,value)))
+                            return $"Выберите {column.Name} из справочника (копия {drafts.Rows.IndexOf(draft)+1}).";
+                        if (InputPlaceholder.IsFlag(column) && value != DBNull.Value && !Equals(value,sources[drafts.Rows.IndexOf(draft)][column.Name]) &&
+                            value is not bool && !new[] { "0", "1" }.Contains(Convert.ToString(value)))
+                            return $"Поле {column.Name} принимает 0 или 1.";
+                        if (value is string text && column.MaxLength > 0)
+                        {
+                            int limit = column.DataType.ToLowerInvariant() is "nvarchar" or "nchar" ? column.MaxLength / 2 : column.MaxLength;
+                            if (text.Length > limit) return $"{column.Name}: максимум {limit} символов (копия {drafts.Rows.IndexOf(draft)+1}).";
+                        }
+                    }
+                    if (!drafts.Columns.Contains("Record")) continue;
+                    if (!int.TryParse(Convert.ToString(draft["Record"]), NumberStyles.None, CultureInfo.InvariantCulture,out _))
+                        return "Record должен быть целым неотрицательным числом.";
+                    var scope = new[] { "PLC", classColumn, "Record" }.Where(k => k != null && drafts.Columns.Contains(k)).ToArray();
+                    if (reserved.Any(r => scope.All(k => Mode3DuplicateValues.SameScopeValue(r.GetValueOrDefault(k!), draft[k!]))))
+                        return $"Record {draft["Record"]} уже занят в выбранном контексте (копия {drafts.Rows.IndexOf(draft)+1}).";
+                    reserved.Add(scope.ToDictionary(k => k!, k => (object?)draft[k!],StringComparer.OrdinalIgnoreCase));
                 }
-                if (generation != _workspaceGeneration || _selectedClass != selectedClass || dialog.ShowDialog() != true) return;
-                foreach (var address in dialog.AddressResults)
-                    values[address.Key] = Convert.ChangeType(address.Value, sourceRow.Table.Columns[address.Key]!.DataType, CultureInfo.InvariantCulture);
-                if (!int.TryParse(dialog.Result, NumberStyles.None, CultureInfo.InvariantCulture, out var record))
-                {
-                    ShowActionFeedback("Record должен быть целым неотрицательным числом", isError: true);
-                    return;
-                }
-                if (ScopedRecordSuggestion.IsAreasTable(tableName) && values.ContainsKey("AreaName"))
-                    values["AreaName"] = ScopedRecordSuggestion.AreaNameForRecord(record);
-                values["Record"] = Convert.ChangeType(record, sourceRow.Table.Columns["Record"]!.DataType, CultureInfo.InvariantCulture);
+                return "";
             }
-            if (generation != _workspaceGeneration || _configurationKind != ConfigurationKind.Class || _selectedClass != selectedClass) return;
-            var inserted = (await ((IProjectBatchCrudDataSource)crud).CreateRecordsAsync(tableName, new[] { values })).Single();
-            var snapshot = inserted.ToDictionary(pair => pair.Key, pair => pair.Value ?? DBNull.Value, StringComparer.OrdinalIgnoreCase);
-            if (generation != _workspaceGeneration) return;
-            var key = SelectIdentity(snapshot, keys);
-            var targetName = PickName(ToDataRow(inserted, sourceRow), selectedClass);
-            var description = DescribeDuplicate(sourceName, targetName, snapshot);
-            RecordMode3Mutation(tableName, ChangeJournalOperationKind.Duplicate, description, source, snapshot,
-                SelectIdentity(source, keys), key, generation);
+            bool analogInput = selectedClass.Name.Equals("AI", StringComparison.OrdinalIgnoreCase) || tableName.Equals("dbo.AnaIN", StringComparison.OrdinalIgnoreCase);
+            bool analogOutput = selectedClass.Name.Equals("AO", StringComparison.OrdinalIgnoreCase) || tableName.Equals("dbo.AnaOUT", StringComparison.OrdinalIgnoreCase);
+            bool isInput = analogInput || selectedClass.Name.Equals("DI",StringComparison.OrdinalIgnoreCase) || tableName.Equals("dbo.DiscretIN",StringComparison.OrdinalIgnoreCase);
+            bool isOutput = analogOutput || selectedClass.Name.Equals("DO",StringComparison.OrdinalIgnoreCase) || tableName.Equals("dbo.DiscretOUT",StringComparison.OrdinalIgnoreCase);
+            var addressColumn = drafts.Columns.Cast<DataColumn>().FirstOrDefault(c =>
+                !c.ReadOnly && (analogInput || analogOutput || c.DataType == typeof(string)) && new[] { "Address", "Adress", isInput ? "Address_Input" : "Address_Output" }.Contains(c.ColumnName, StringComparer.OrdinalIgnoreCase));
+            Func<Task> assignAddresses = null!;
+            if (addressColumn != null && drafts.Columns.Contains("PLC") && (isInput || isOutput))
+            {
+                assignAddresses = async () =>
+                {
+                    var maps = await PlcAddressCatalog.LoadAsync(workspace, default);
+                    if (!Current()) throw new InvalidOperationException("Выбранный проект изменился.");
+                    Mode3DuplicateValues.AssignAddresses(drafts, addressColumn, maps, isInput ? 'I' : 'Q', analogInput || analogOutput);
+                };
+            }
+            if (!DuplicateDraftWindow.Edit(Window.GetWindow(this), selectedClass.Name, drafts, sources, ValidateDrafts, lookups, assignAddresses, addressColumn?.ColumnName, isInput) || !Current() ||
+                !UserAuthorizationService.Require(Permission.AddData)) return;
+            var batch = drafts.Rows.Cast<DataRow>().Select(row => drafts.Columns.Cast<DataColumn>().ToDictionary(
+                c => c.ColumnName, c => row.IsNull(c) ? null : row[c], StringComparer.OrdinalIgnoreCase)).ToList();
+            if (workspace.IsReadOnly) throw new InvalidOperationException("Проект открыт только для чтения.");
+            var inserted = await ((IProjectBatchCrudDataSource)crud).CreateRecordsAsync(tableName, batch);
+            if (!Current()) return;
+            var description = $"Создано копий {selectedClass.Name}: {inserted.Count}";
+            var changes = DuplicateJournalChanges(tableName, inserted, keys);
+            var key = changes[0].IdentityAfter.ToDictionary(p => p.Key, p => p.Value.ToObject());
+            PublishMode3Mutation(tableName, ChangeJournalOperationKind.Duplicate, description, changes, key,
+                string.Join(", ", keys) + $" · {changes.Count} записей", true);
             await LoadObjectsAsync();
             if (generation != _workspaceGeneration) return;
             await SelectDuplicatedObjectAsync(key.ToDictionary(p => p.Key, p => (object?)p.Value, StringComparer.OrdinalIgnoreCase), tableName, workspace, generation);
@@ -147,6 +194,21 @@ public partial class ProjectModeView
             ShowActionFeedback($"Ошибка: {Configurator.Infrastructure.UserErrorMessage.Format(ex)}", isError: true);
             Configurator.Infrastructure.ModernDialog.Show(Configurator.Infrastructure.UserErrorMessage.Format(ex), "Дублирование", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    internal static List<ChangeJournalRowChange> DuplicateJournalChanges(string table,
+        IReadOnlyList<IReadOnlyDictionary<string,object?>> inserted, IReadOnlyList<string> keys)
+    {
+        return inserted.Select(row =>
+        {
+            var snapshot = row.ToDictionary(p => p.Key, p => p.Value ?? DBNull.Value, StringComparer.OrdinalIgnoreCase);
+            return new ChangeJournalRowChange
+            {
+                TableName = table, Kind = ChangeJournalOperationKind.Duplicate,
+                After = JournalValues(snapshot), IdentityAfter = JournalValues(SelectIdentity(snapshot, keys)),
+                AfterIsCompleteOfflineRecord = true
+            };
+        }).ToList();
     }
 
     private async Task SelectDuplicatedObjectAsync(IReadOnlyDictionary<string, object?> key, string tableName,
@@ -209,6 +271,23 @@ public partial class ProjectModeView
 
 internal static class Mode3DuplicateValues
 {
+    internal static void AssignAddresses(DataTable drafts, DataColumn address, IReadOnlyDictionary<string,PlcAddressMap> maps, char area, bool analog = false)
+    {
+        var plan = new List<(DataRow Row, string Address)>();
+        foreach (var group in drafts.Rows.Cast<DataRow>().GroupBy(r => Convert.ToString(r["PLC"], CultureInfo.InvariantCulture)))
+        {
+            if (!int.TryParse(group.Key, out var plc) || plc < 0)
+                throw new InvalidOperationException("Для каждой копии выберите PLC.");
+            var map = maps.TryGetValue(plc.ToString(CultureInfo.InvariantCulture), out var found) ? found : new PlcAddressMap();
+            var rows = group.ToArray();
+            var free = map.FreeAddresses(area, bit: !analog, size: analog ? 2 : 1, numeric: analog && address.DataType != typeof(string), limit: rows.Length, aligned: analog);
+            if (free.Count != rows.Length)
+                throw new InvalidOperationException($"PLC {plc}: недостаточно подтверждённых свободных {area}-адресов. Проверьте карту адресов.");
+            for (int i = 0; i < rows.Length; i++) plan.Add((rows[i],free[i]));
+        }
+        foreach (var item in plan) item.Row[address] = item.Address;
+    }
+
     internal static Dictionary<string, object?> Build(DataRow source, IReadOnlyList<ColumnInfo> columns,
         IEnumerable<IReadOnlyDictionary<string, object?>> allRows, int? nextRecord = null, string? classColumn = null)
     {

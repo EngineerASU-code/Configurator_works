@@ -166,10 +166,20 @@ public partial class MainWindow
             return (matches.Count, null, matches.FirstOrDefault());
         }
 
+        var areaName = Core.Workspace.ScopedRecordSuggestion.IsAreasTable(table)
+            ? columns.FirstOrDefault(c => !c.IsReadOnly && !c.IsIdentity && c.Name.Equals("AreaName", StringComparison.OrdinalIgnoreCase))
+            : null;
+        void SetAreaName(Dictionary<string, object> values)
+        {
+            if (areaName != null)
+                values[areaName.Name] = Core.Workspace.ScopedRecordSuggestion.AreaNameForRecord(Convert.ToInt32(values[record.Name], CultureInfo.InvariantCulture));
+        }
+
         void ValidateInsert(Dictionary<string, object> values, int number)
         {
             if (!canAdd || record.IsIdentity || record.IsReadOnly)
                 throw new InvalidOperationException($"Строка {number}. Добавление с указанным Record недоступно.");
+            SetAreaName(values);
             var missing = columns.FirstOrDefault(c => !c.IsIdentity && !c.IsReadOnly && !c.IsNullable && !c.HasDefault &&
                 (!values.TryGetValue(c.Name, out var value) || value == null));
             if (missing != null)
@@ -249,6 +259,7 @@ public partial class MainWindow
                     reserved.Add(changed[i]);
                     item.Key = changed[i];
                     item.Values[record.Name] = item.Key[record.Name];
+                    SetAreaName(item.Values);
                 }
                 plan.Add((item.Key, item.Values, replace ? item.Online : null));
                 offlineTargets.Add(replace ? item.Local : null);

@@ -54,7 +54,10 @@ public sealed partial class ProgramManagementRepository
         using (var triggers = new SqlCommand("""
             SELECT TOP (1) tr.name FROM sys.triggers tr
             JOIN sys.trigger_events e ON e.object_id=tr.object_id
-            WHERE tr.is_disabled=0 AND e.type_desc='UPDATE' AND tr.parent_id IN
+            WHERE tr.is_disabled=0 AND e.type_desc='UPDATE'
+              AND NOT (tr.object_id=ISNULL(OBJECT_ID('dbo.Prog_Recipes_Upd'),-1)
+                       AND tr.parent_id=OBJECT_ID('dbo.Prog_Recipes') AND tr.is_instead_of_trigger=0)
+              AND tr.parent_id IN
                 (OBJECT_ID('dbo.Prog_StepTransition'),OBJECT_ID('dbo.Prog_StepParam'),OBJECT_ID('dbo.Prog_Recipes'));
             """, connection, transaction))
         {
@@ -133,6 +136,7 @@ public sealed partial class ProgramManagementRepository
 
         foreach (var (name, field) in tables)
         {
+            if (IsSharedStepParameterSchema(schemas[name])) continue;
             string column = QuoteIdentifier(field);
             using var update = ScopedCommand($"UPDATE {QuoteTable(name)} SET {column}=@to WHERE {where} AND {column}=@from");
             var from = update.Parameters.Add("@from", SqlDbType.Int);

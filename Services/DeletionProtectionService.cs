@@ -29,6 +29,7 @@ public sealed class DeletionProtectionService
         ArgumentNullException.ThrowIfNull(request);
         ProjectWriteGuard.EnsureDataTableWritable(request.TableName);
         var plan = new DeletionPlan { Request = request };
+        var blocked = new List<(string Reason, string Table)>();
         if (_schema.Relations.Any(relation => relation == null))
             plan.ValidationErrors.Add("Удаление заблокировано: карта зависимостей содержит пустую связь, которую невозможно проверить.");
         foreach (var relation in _schema.Relations.Where(r =>
@@ -36,7 +37,7 @@ public sealed class DeletionProtectionService
         {
             if (!relation.IsUsableForDeletionProtection)
             {
-                plan.ValidationErrors.Add($"Удаление заблокировано: связь {relation.SourceTable} → {relation.TargetTable} не подтверждена для защиты зависимостей.");
+                blocked.Add(("Связь не подтверждена для проверки зависимостей", relation.SourceTable));
                 continue;
             }
 
@@ -47,13 +48,13 @@ public sealed class DeletionProtectionService
                 relation.SourceColumns.Any(column => !sourceTable.Columns.Any(c => c.Name.Equals(column, StringComparison.OrdinalIgnoreCase))) ||
                 relation.TargetColumns.Any(column => !targetTable.Columns.Any(c => c.Name.Equals(column, StringComparison.OrdinalIgnoreCase))))
             {
-                plan.ValidationErrors.Add($"Удаление заблокировано: связь {relation.SourceTable} → {relation.TargetTable} имеет неполную или неизвестную схему столбцов.");
+                blocked.Add(("Неполная или неизвестная схема столбцов связи", relation.SourceTable));
                 continue;
             }
 
             if (relation.TargetColumns.Any(column => request.Key == null || !request.Key.ContainsKey(column)))
             {
-                plan.ValidationErrors.Add($"Удаление заблокировано: для проверки связи {relation.SourceTable} → {relation.TargetTable} не хватает ключевых значений строки.");
+                blocked.Add(("Для проверки связи не хватает ключевых значений строки", relation.SourceTable));
                 continue;
             }
 
@@ -65,23 +66,21 @@ public sealed class DeletionProtectionService
             plan.Dependencies.AddRange(hits);
 
             if (hits.Any(hit => !HasStableIdentity(sourceTable, hit.SourceKey.Keys)))
-                plan.ValidationErrors.Add($"Удаление заблокировано: для зависимых строк в {relation.SourceTable} нет подтверждённого первичного или уникального ключа.");
+                blocked.Add(("У зависимых строк нет подтверждённого первичного или уникального ключа", relation.SourceTable));
 
             if (!RelationCanBeWritten(relation))
             {
-                var reason = string.Join(", ", relation.SourceColumns.Select(column =>
-                {
-                    var source = _schema.FindTable(relation.SourceTable);
-                    var meta = source?.Columns.FirstOrDefault(c => c.Name.Equals(column, StringComparison.OrdinalIgnoreCase));
-                    if (meta?.IsComputed == true) return $"{relation.SourceTable}.{column} (computed)";
-                    if (meta?.IsIdentity == true) return $"{relation.SourceTable}.{column} (identity)";
-                    return $"{relation.SourceTable}.{column}";
-                }));
-                plan.ValidationErrors.Add($"Найдены зависимые строки: {reason}. Автоматическая замена невозможна, потому что поле связи недоступно для записи.");
+                blocked.Add(("Поле связи недоступно для записи. Автоматическая замена невозможна", relation.SourceTable));
             }
         }
+        plan.ValidationErrors.AddRange(DescribeBlockedTables(blocked));
         return plan;
     }
+
+    internal static IEnumerable<string> DescribeBlockedTables(IEnumerable<(string Reason, string Table)> issues) =>
+        issues.GroupBy(issue => issue.Reason).Select(group => group.Key + ". Таблицы: " +
+            string.Join(", ", group.Select(issue => issue.Table).Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(table => table, StringComparer.OrdinalIgnoreCase)));
 
     public async Task ExecuteAsync(DeletionPlan plan, IReadOnlyList<ReferenceReplacement> replacements, Func<SqlConnection, SqlTransaction, CancellationToken, Task<bool>> validateAfterReplacement, CancellationToken cancellationToken = default)
         => await ExecuteBatchAsync(new[] { new DeletionExecutionItem(plan, replacements) }, validateAfterReplacement, cancellationToken);
@@ -193,7 +192,7 @@ public sealed class DeletionProtectionService
         return Equals(a, b);
     }
 
-    private async Task EnsureNoCurrentDependentsAsync(SqlConnection connection, SqlTransaction transaction, DeletionRequest request, CancellationToken ct, IReadOnlyDictionary<string, object> deletedIdentity = null)
+    internal async Task EnsureNoCurrentDependentsAsync(SqlConnection connection, SqlTransaction transaction, DeletionRequest request, CancellationToken ct, IReadOnlyDictionary<string, object> deletedIdentity = null)
     {
         foreach (var relation in _schema.Relations.Where(r => r != null && r.TargetTable.Equals(request.TableName, StringComparison.OrdinalIgnoreCase)))
         {

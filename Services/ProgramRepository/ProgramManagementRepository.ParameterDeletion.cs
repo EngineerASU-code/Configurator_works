@@ -29,15 +29,20 @@ public sealed partial class ProgramManagementRepository
         scope["Step_Number"] = stepNumber;
         scope["Type"] = type;
 
-        var recipeValues = _offline != null
-            ? SnapshotOfflineRows(RecipeValuesTable, scope)
-            : SnapshotRows(await GetScopedTableAsync(RecipeValuesTable, scope, ct, readAll: true));
+        var recipeScope = RecipeScopeForParameter(scope);
+        var recipeValues = InParameterScope(_offline != null
+            ? SnapshotOfflineRows(RecipeValuesTable, recipeScope)
+            : SnapshotRows(await GetScopedTableAsync(RecipeValuesTable, recipeScope, ct, readAll: true)), stepNumber);
         var dependencies = recipeValues.Where(row => ValuesEqual(row["Record"], record)).ToArray();
         if (dependencies.Length == 0)
             return new ParameterDeletionPreview(scope, record, Array.Empty<DependencyReplacementWindow.DependencyOption>());
 
-        var parameters = SnapshotRows(await GetScopedTableAsync(ParameterTable, scope, ct, readAll: true));
+        var parameters = InParameterScope(SnapshotRows(await GetScopedTableAsync(ParameterTable, recipeScope, ct, readAll: true)), stepNumber);
+        if (parameters.Count(row => ValuesEqual(row["Record"], record)) != 1)
+            throw new InvalidOperationException("Номер определения параметра неоднозначен в последовательности.");
         var available = parameters.Where(row => row["Record"] != DBNull.Value && !ValuesEqual(row["Record"], record))
+            .GroupBy(row => row["Record"]).Where(group => group.Count() == 1).Select(group => group.Single())
+            .Where(row => ValuesEqual(row["Step_Number"], stepNumber))
             .Select(row => new ReplacementCandidate
             {
                 Values = new[] { row["Record"] },
@@ -51,9 +56,10 @@ public sealed partial class ProgramManagementRepository
         {
             var recipe = row["Recipe_Record"];
             var candidates = available.Where(candidate => !recipeValues.Any(value =>
-                ValuesEqual(value["Recipe_Record"], recipe) && ValuesEqual(value["Record"], candidate.Values[0]))).ToArray();
+                ValuesEqual(value["Recipe_Record"], recipe) && ValuesEqual(value["Step_Number"], row["Step_Number"])
+                && ValuesEqual(value["Record"], candidate.Values[0]))).ToArray();
             if (candidates.Length == 0)
-                throw new InvalidOperationException($"Рецепт № {recipe} ссылается на параметр № {record}. В том же шаге нет свободного параметра такого типа для замены.");
+                throw new InvalidOperationException($"Рецепт № {recipe} ссылается на параметр № {record}. В последовательности нет свободного параметра такого типа для замены.");
 
             return new DependencyReplacementWindow.DependencyOption
             {
@@ -93,18 +99,18 @@ public sealed partial class ProgramManagementRepository
                 ?? throw new InvalidOperationException("Выбран недоступный параметр для замены.");
             return (Before: option.Hit.SourceValues, Candidate: candidate.TargetValues);
         }).ToArray();
-        if (selections.Length == 0 || selections.Length != replacements.Count)
+        if (selections.Length != replacements.Count)
             throw new InvalidOperationException("Нужен подтверждённый список замен в связанных рецептах.");
 
         var changes = new List<ChangeJournalRowChange>();
         if (_offline != null)
         {
-            var schema = GetOfflineSchema(RecipeValuesTable);
-            if (!schema.HasStableKey || !schema.KeyColumns.ToHashSet(StringComparer.OrdinalIgnoreCase).SetEquals(RecipeValueKey))
+            var schema = _offline.GetSchema(RecipeValuesTable);
+            if (selections.Length > 0 && (schema == null || !schema.HasStableKey || !schema.KeyColumns.ToHashSet(StringComparer.OrdinalIgnoreCase).SetEquals(RecipeValueKey)))
                 throw new InvalidOperationException("В локальном проекте нет подтверждённого ключа значений рецептов.");
             await _offline.ExecuteMutationTransactionAsync(async () =>
             {
-                await ApplyReplacementsAsync(null, null, schema.KeyColumns);
+                await ApplyReplacementsAsync(null, null, schema?.KeyColumns ?? RecipeValueKey);
                 await DeleteOfflineIfUnreferencedAsync(ParameterTable, parameterKey,
                     new[] { (RecipeValuesTable, (IReadOnlyDictionary<string, object>)parameterKey) }, ct, expected);
             }, ct);
@@ -115,9 +121,12 @@ public sealed partial class ProgramManagementRepository
             await SqlProviderGuard.OpenConnectionAsync(connection, ct);
             using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable, ct);
             await EnsureUniqueIndexAsync(connection, transaction, ParameterTable, UniqueKeyColumns[ParameterTable], ct);
-            await EnsureUniqueIndexAsync(connection, transaction, RecipeValuesTable, RecipeValueKey, ct);
-            await EnsureSafeReplacementSqlAsync(connection, transaction, ParameterTable, ct);
-            await EnsureSafeReplacementSqlAsync(connection, transaction, RecipeValuesTable, ct);
+            if (selections.Length > 0)
+            {
+                await EnsureUniqueIndexAsync(connection, transaction, RecipeValuesTable, RecipeValueKey, ct);
+                await EnsureSafeReplacementSqlAsync(connection, transaction, ParameterTable, ct);
+                await EnsureSafeReplacementSqlAsync(connection, transaction, RecipeValuesTable, ct);
+            }
             await ApplyReplacementsAsync(connection, transaction, RecipeValueKey);
             await ExecuteSqlChangeAsync(connection, transaction, ParameterTable, parameterKey, null, ct);
             if ((await ReadLockedRowsAsync(connection, transaction, ParameterTable, parameterKey, ct)).Count != 0)
@@ -140,12 +149,15 @@ public sealed partial class ProgramManagementRepository
                 => connection == null ? Task.FromResult(SnapshotOfflineRows(table, key))
                     : ReadLockedRowsAsync(connection, transaction, table, key, ct);
 
-            EnsureSnapshotMatches(new[] { expected }, await ReadRows(ParameterTable, parameterKey));
-            EnsureSnapshotMatches(selections.Select(item => item.Before).ToArray(), await ReadRows(RecipeValuesTable, parameterKey));
+            var recipeScope = RecipeScopeForParameter(parameterKey);
+            int step = Convert.ToInt32(parameterKey["Step_Number"], CultureInfo.InvariantCulture);
+            EnsureSnapshotMatches(new[] { expected }, InParameterScope(await ReadRows(ParameterTable, recipeScope), step));
+            EnsureSnapshotMatches(selections.Select(item => item.Before).ToArray(),
+                InParameterScope(await ReadRows(RecipeValuesTable, recipeScope), step));
             foreach (var (before, candidate) in selections)
             {
                 var replacementKey = SelectRecipeParameterKey(candidate, UniqueKeyColumns[ParameterTable]);
-                EnsureSnapshotMatches(new[] { candidate }, await ReadRows(ParameterTable, replacementKey));
+                EnsureSnapshotMatches(new[] { candidate }, InParameterScope(await ReadRows(ParameterTable, RecipeScopeForParameter(replacementKey)), step));
                 var oldKey = SelectRecipeParameterKey(before, recipeKey);
                 var newRecord = candidate["Record"];
                 var newKey = new Dictionary<string, object>(oldKey, StringComparer.OrdinalIgnoreCase) { ["Record"] = newRecord };
@@ -170,9 +182,20 @@ public sealed partial class ProgramManagementRepository
                     IdentityAfter = JournalParameterValues(newKey)
                 });
             }
-            EnsureSnapshotMatches(Array.Empty<IReadOnlyDictionary<string, object>>(), await ReadRows(RecipeValuesTable, parameterKey));
+            EnsureSnapshotMatches(Array.Empty<IReadOnlyDictionary<string, object>>(), InParameterScope(await ReadRows(RecipeValuesTable, recipeScope), step));
         }
     }
+
+    private static Dictionary<string, object> RecipeScopeForParameter(IReadOnlyDictionary<string, object> scope)
+    {
+        var result = new Dictionary<string, object>(scope, StringComparer.OrdinalIgnoreCase);
+        if (Convert.ToInt32(scope["Step_Number"], CultureInfo.InvariantCulture) > 0) result.Remove("Step_Number");
+        return result;
+    }
+
+    private static IReadOnlyList<IReadOnlyDictionary<string, object>> InParameterScope(
+        IReadOnlyList<IReadOnlyDictionary<string, object>> rows, int step)
+        => step == 0 ? rows : rows.Where(row => Convert.ToInt32(row["Step_Number"], CultureInfo.InvariantCulture) > 0).ToArray();
 
     private static async Task ExecuteSqlChangeAsync(SqlConnection connection, SqlTransaction transaction,
         string table, IReadOnlyDictionary<string, object> key, object replacement, CancellationToken ct)

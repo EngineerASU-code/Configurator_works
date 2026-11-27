@@ -184,7 +184,7 @@ ORDER BY fk.name,fkc.constraint_column_id;";
         }
     }
 
-    private static void AddScalarConventionRelations(DatabaseSchema schema)
+    internal static void AddScalarConventionRelations(DatabaseSchema schema)
     {
         foreach (var source in schema.Tables)
         {

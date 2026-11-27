@@ -119,7 +119,7 @@ public partial class ProjectModeView
                     if (_configurationKind == ConfigurationKind.Plc && ReferenceEquals(_selectedRow, row))
                         UpdateConfigurationTypePreview(row);
                 };
-                value = box;
+                value = CreateCardFieldEditor(column, box);
             }
             value.SetResourceReference(Control.BackgroundProperty, "BrushPanel");
             value.SetResourceReference(Control.ForegroundProperty, "BrushText");
@@ -258,6 +258,8 @@ public partial class ProjectModeView
             }
             lookups = _onlineLookupOptionsService;
         }
+        bool isRegulator = string.Equals(selectedClass.PrimaryStorage?.TableName, "dbo.Reglers", StringComparison.OrdinalIgnoreCase);
+        var signalPickers = new List<ComboBox>();
         int groupRow = 0;
         foreach (var groupEntry in orderedGroups)
         {
@@ -364,7 +366,15 @@ public partial class ProjectModeView
                     comboOptions.Add(new LookupOption { Key = currentLookupValue, Display = $"{currentLookupValue} · текущее значение" });
                 if (!isGeneratedArea && comboOptions.Count == 0 && knownLookupField && !string.IsNullOrWhiteSpace(currentLookupValue))
                     comboOptions.Add(new LookupOption { Key = currentLookupValue, Display = currentLookupValue });
-                if (isGeneratedArea || isReadOnlyClassNumber)
+                if (isRegulator && (field.Name.Equals("AI_Number", StringComparison.OrdinalIgnoreCase) ||
+                    field.Name.Equals("AO_Number", StringComparison.OrdinalIgnoreCase)))
+                {
+                    var picker = new ComboBox { Tag = field.Name, Height = 30, IsEnabled = false,
+                        DisplayMemberPath = nameof(LookupOption.Display), SelectedValuePath = nameof(LookupOption.Key) };
+                    signalPickers.Add(picker);
+                    editor = picker;
+                }
+                else if (isGeneratedArea || isReadOnlyClassNumber)
                 {
                     string readOnlyValue = currentLookupValue;
                     if (isGeneratedArea)
@@ -390,9 +400,9 @@ public partial class ProjectModeView
                     readOnlyArea.SetResourceReference(Control.BorderBrushProperty, "BrushBorder");
                     editor = readOnlyArea;
                 }
-                else if (field.Name.Equals("Type", StringComparison.OrdinalIgnoreCase)
+                else if (!MsTypeCatalog.IsField(field.Name) && (field.Name.Equals("Type", StringComparison.OrdinalIgnoreCase)
                     ? CanUseTypeLookup(options, currentLookupValue)
-                    : options.Count > 0 || knownLookupField)
+                    : options.Count > 0 || knownLookupField))
                 {
                     var combo = new ComboBox
                     {
@@ -436,7 +446,7 @@ public partial class ProjectModeView
                     box.SetResourceReference(Control.BackgroundProperty, "BrushPanel");
                     box.SetResourceReference(Control.ForegroundProperty, "BrushText");
                     box.SetResourceReference(Control.BorderBrushProperty, "BrushBorder");
-                    editor = box;
+                    editor = CreateCardFieldEditor(selectedRow.Table.Columns[field.Name], box, field.DataType);
                 }
                 if (editor is TextBox addressInput && PlcAddressCatalog.IsSuggestedField(field.Name)
                     && selectedClass.PrimaryStorage is { } storage)
@@ -463,6 +473,19 @@ public partial class ProjectModeView
                         if (IsCurrentRender()) UpdateObjectTypePreviewFromEditors();
                     };
                 }
+                if (editor is TextBox msTypeInput && MsTypeCatalog.IsField(field.Name) && selectedClass.PrimaryStorage is { } msStorage)
+                    editor = InputPlaceholder.WithAddressList(msTypeInput, msTypeInput, async () =>
+                    {
+                        var values = await MsTypeCatalog.ReadAsync(RequireWorkspace(), msStorage.TableName, selectedClass.ClassNumber.ToString());
+                        return IsCurrentRender() ? values : null;
+                    }, true);
+                if (editor is TextBox plain)
+                {
+                    string hint = InputPlaceholder.EmptyHint(new ColumnInfo { DataType = field.DataType ?? "" });
+                    editor = InputPlaceholder.Wrap(plain, new TextBlock { Text = hint });
+                    editor.HorizontalAlignment = HorizontalAlignment.Stretch;
+                }
+                else if (editor is ComboBox picker) editor = InputPlaceholder.Lookup(picker);
                 Grid.SetColumn(editor, 1);
                 rowPanel.Children.Add(editor);
                 Grid.SetColumn(rowPanel, col);
@@ -488,6 +511,64 @@ public partial class ProjectModeView
         }
 
         if (!IsCurrentRender()) return;
+        foreach (var picker in signalPickers)
+        {
+            var field = (string)picker.Tag;
+            var classField = field + "_Class";
+            var table = field.Equals("AI_Number", StringComparison.OrdinalIgnoreCase) ? "dbo.AnaIN" : "dbo.AnaOUT";
+            var controls = FindEditorControls(ObjectEditor).ToList();
+            FrameworkElement Find(string name) => controls.FirstOrDefault(c => string.Equals(c.Tag as string, name, StringComparison.OrdinalIgnoreCase));
+            string Value(string name) => Find(name) switch
+            {
+                TextBox text => text.Text.Trim(),
+                ComboBox combo => Convert.ToString(combo.SelectedValue) ?? "",
+                _ => GetText(name)
+            };
+            int revision = 0;
+            async Task Refresh()
+            {
+                int request = ++revision;
+                bool Current() => IsCurrentRender() && request == revision;
+                string plc = Value("PLC"), number = Value(classField);
+                bool original = plc == GetText("PLC") && number == GetText(classField);
+                string previous = Convert.ToString(picker.SelectedValue);
+                picker.IsEnabled = false;
+                picker.ItemsSource = null;
+                try
+                {
+                    var options = new List<LookupOption>();
+                    if (int.TryParse(plc, out int plcId) && int.TryParse(number, out int classId))
+                    {
+                        var rows = await AssemblyRowsAsync(RequireWorkspace(), table, new() { ["PLC"] = plcId, ["PLC_Class_Number"] = classId }, Current);
+                        if (!Current()) return;
+                        foreach (var signal in rows)
+                        {
+                            string key = Field(signal, "Record"), name = Field(signal, "Name", "Name_L1", "NameL1", "Tag");
+                            if (key.Length > 0) options.Add(new LookupOption { Key = key, Display = name.Length == 0 ? key : $"{key} · {name}" });
+                        }
+                    }
+                    if (!Current()) return;
+                    var choices = LookupOptionRules.KeepUnambiguousKeys(options).ToList();
+                    string selected = original ? GetText(field) : previous;
+                    if (original && !string.IsNullOrEmpty(selected) && !choices.Any(o => o.Key == selected))
+                        choices.Add(new LookupOption { Key = selected, Display = $"{selected} · текущая ссылка не найдена" });
+                    picker.ItemsSource = choices;
+                    picker.SelectedValue = selected;
+                    picker.IsEnabled = true;
+                }
+                catch (Exception ex)
+                {
+                    if (Current()) ShowActionFeedback($"{field}: {Infrastructure.UserErrorMessage.Format(ex)}", isError: true);
+                }
+            }
+            foreach (var dependency in new[] { Find("PLC"), Find(classField) })
+            {
+                if (dependency is TextBox text) text.TextChanged += async (_, _) => await Refresh();
+                if (dependency is ComboBox combo) combo.SelectionChanged += async (_, _) => await Refresh();
+            }
+            await Refresh();
+            if (!IsCurrentRender()) return;
+        }
         UpdateObjectTypePreviewFromEditors();
         UpdateLookupWarningsButton();
         TxtStatus.Text = $"{(offline ? "Offline · " : string.Empty)}{_selectedClass.Name} · показаны все {actualFields.Count} полей · {(offline ? "значения взяты из локального снимка" : "связанные поля — выпадающие списки")}";
@@ -638,6 +719,15 @@ public partial class ProjectModeView
         if (_selectedRow == null || _selectedClass?.PrimaryStorage == null) return;
         try
         {
+            if (string.Equals(_selectedClass.PrimaryStorage.TableName, "dbo.Reglers", StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (var field in new[] { "AI_Number", "AO_Number" }.Where(_selectedRow.Table.Columns.Contains))
+                {
+                    var picker = FindEditorControls(ObjectEditor).OfType<ComboBox>().FirstOrDefault(c => string.Equals(c.Tag as string, field, StringComparison.OrdinalIgnoreCase));
+                    if (picker == null || !picker.IsEnabled || (picker.SelectedValue == null && !string.IsNullOrWhiteSpace(GetText(field))))
+                        throw new InvalidOperationException($"Проверьте PLC, класс и выбор сигнала для {field}.");
+                }
+            }
             if (_offlineProject != null)
             {
                 var offlineValues = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
@@ -712,18 +802,34 @@ public partial class ProjectModeView
             if (type == typeof(decimal)) return decimal.Parse(text, System.Globalization.CultureInfo.InvariantCulture);
             if (type == typeof(double)) return double.Parse(text, System.Globalization.CultureInfo.InvariantCulture);
             if (type == typeof(float)) return float.Parse(text, System.Globalization.CultureInfo.InvariantCulture);
-            if (type == typeof(bool)) return bool.Parse(text);
+            if (type == typeof(bool)) return text switch { "1" => true, "0" => false, _ => bool.Parse(text) };
             if (type == typeof(Guid)) return Guid.Parse(text);
             return Convert.ChangeType(text, type, System.Globalization.CultureInfo.InvariantCulture);
         }
         catch { throw new InvalidOperationException($"Поле «{field}» требует значение типа {type.Name}, но «{text}» нельзя преобразовать."); }
     }
 
-    private static IEnumerable<FrameworkElement> FindEditorControls(DependencyObject root)
+    internal static FrameworkElement CreateCardFieldEditor(DataColumn column, TextBox input, string declaredType = null)
+    {
+        var info = new ColumnInfo { Name = column.ColumnName, DataType = column.DataType.Name };
+        if (!InputPlaceholder.IsFlag(info))
+        {
+            info.DataType = declaredType ?? "";
+            if (!InputPlaceholder.IsFlag(info)) return input;
+        }
+
+        var field = InputPlaceholder.Flag(info, input);
+        field.IsEnabled = !input.IsReadOnly && input.IsEnabled;
+        field.Tag = input;
+        return field;
+    }
+
+    internal static IEnumerable<FrameworkElement> FindEditorControls(DependencyObject root)
     {
         if (root == null) yield break;
         foreach (var child in LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>())
         {
+            if (child is Border { Tag: TextBox flagValue }) yield return flagValue;
             if (child is TextBox || child is ComboBox) yield return (FrameworkElement)child;
             foreach (var nested in FindEditorControls(child)) yield return nested;
         }

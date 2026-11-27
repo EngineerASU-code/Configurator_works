@@ -65,7 +65,7 @@
                 </Border>
                 <Border Grid.Column="1" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="0,0,1,0" Padding="10,0,14,0">
                     <StackPanel VerticalAlignment="Center">
-                        <TextBlock Text="ПОСЛЕДНЕЕ ДЕЙСТВИЕ" Foreground="{DynamicResource BrushTextSecondary}" FontSize="10"/>
+                        <DockPanel><Button DockPanel.Dock="Right" x:Name="RowAttemptsButton" Visibility="Collapsed" Content="⚠ Попытки" Click="RowAttempts_Click" ToolTip="Открыть локальные попытки сохранения"/><TextBlock Text="ПОСЛЕДНЕЕ ДЕЙСТВИЕ" Foreground="{DynamicResource BrushTextSecondary}" FontSize="10"/></DockPanel>
                         <TextBlock x:Name="LastActionText" Text="Нет действий" Margin="2,3,2,2" Foreground="{DynamicResource BrushText}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
                     </StackPanel>
                 </Border>

@@ -43,6 +43,10 @@ public sealed partial class ProgramManagementRepository
         [ParameterTable] = new[] { "Record", "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Seq_Record", "Step_Number", "Type" }
     };
 
+    internal static IReadOnlyList<string> GetLogicalKey(string table) =>
+        UniqueKeyColumns.TryGetValue(table, out var columns) ? columns :
+        ProgramSupportCatalog.ProgramTables.FirstOrDefault(t => t.TableName == table)?.KeyColumns ?? Array.Empty<string>();
+
     private readonly DatabaseService _database;
     private readonly string _connectionString;
     private readonly OfflineProjectDataSource? _offline;
@@ -72,7 +76,7 @@ public sealed partial class ProgramManagementRepository
         => GetScopedTableAsync(TransitionTable, ProgramScope(context, includeSequence: true), ct);
 
     public Task<DataTable> GetAllSequenceParametersAsync(ProgramContext context, CancellationToken ct = default)
-        => GetScopedTableAsync(ParameterTable, ProgramScope(context, includeSequence: true), ct);
+        => GetScopedTableAsync(ParameterTable, ProgramScope(context, includeSequence: true), ct, readAll: true);
 
     public Task<DataTable> GetParametersAsync(ProgramContext context, int stepNumber, CancellationToken ct = default)
     {
@@ -105,7 +109,7 @@ public sealed partial class ProgramManagementRepository
         var generated = new HashSet<string>(generatedColumns ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
         var columns = await _database.GetTableColumnsAsync(tableName, ct);
         return columns.Where(column => !column.IsIdentity && !column.IsReadOnly && !generated.Contains(column.Name) &&
-                (!column.IsNullable && !column.HasDefault || column.Name.Equals("Name_L1", StringComparison.OrdinalIgnoreCase)))
+                (tableName == ParameterTable || !column.IsNullable && !column.HasDefault || column.Name.Equals("Name_L1", StringComparison.OrdinalIgnoreCase)))
             .ToList();
     }
 
@@ -200,16 +204,13 @@ public sealed partial class ProgramManagementRepository
             scope.Keys.Append("Record").ToArray(), fields, ct);
     }
 
-    public Task DeleteParameterAsync(ProgramContext context, int stepNumber, object type, object record, CancellationToken ct = default, IReadOnlyDictionary<string, object> expected = null)
+    public async Task DeleteParameterAsync(ProgramContext context, int stepNumber, object type, object record, CancellationToken ct = default, IReadOnlyDictionary<string, object> expected = null)
     {
-        var key = ProgramScope(context, includeSequence: true);
-        key["Step_Number"] = stepNumber;
-        key["Type"] = type;
-        key["Record"] = record;
-        var dependencies = new (string Table, IReadOnlyDictionary<string, object> Scope)[] { ("dbo.Prog_Recipes", key) };
-        return _offline != null
-            ? _offline.ExecuteMutationTransactionAsync(async () => await DeleteOfflineIfUnreferencedAsync(ParameterTable, key, dependencies, ct, expected))
-            : DeleteIfUnreferencedAsync(ParameterTable, key, key.Keys.ToArray(), dependencies, ct, expected: expected);
+        var scope = ProgramScope(context, includeSequence: true);
+        scope["Step_Number"] = stepNumber;
+        scope["Type"] = type;
+        var preview = new ParameterDeletionPreview(scope, record, Array.Empty<DependencyReplacementWindow.DependencyOption>());
+        await DeleteParameterWithReplacementsAsync(preview, expected, Array.Empty<ReferenceReplacement>(), ct);
     }
 
     public Task<DataTable> GetStepChoicesAsync(object plc, CancellationToken ct = default)
@@ -383,7 +384,7 @@ public sealed partial class ProgramManagementRepository
         };
         var dependentTables = new (string Table, IReadOnlyDictionary<string, object> Scope)[]
         {
-            (ParameterTable, parameterScope), ("dbo.Prog_Recipes", parameterScope)
+            ("dbo.Prog_Recipes", parameterScope)
         };
         if (_offline != null)
         {
@@ -498,6 +499,7 @@ public sealed partial class ProgramManagementRepository
                 table => SnapshotRows(ReadOfflineTable(table.Name, scope)), StringComparer.OrdinalIgnoreCase);
             foreach (var table in tables)
             {
+                if (IsSharedStepParameterSchema(schemas[table.Name])) continue;
                 await ReplaceNumber(table.Name, table.Field, first, temporary);
                 await ReplaceNumber(table.Name, table.Field, second, first);
                 await ReplaceNumber(table.Name, table.Field, temporary, second);
@@ -671,7 +673,9 @@ public sealed partial class ProgramManagementRepository
                     restoreUnavailableReason = "не удалось проверить триггеры и побочные действия таблицы";
                 }
             }
-            var predicates = BuildPredicates(scope, "scope", out var parameters);
+            bool shared = tableName == ParameterTable && Convert.ToInt32(scope["Step_Number"], CultureInfo.InvariantCulture) > 0;
+            var predicates = BuildPredicates(shared ? RecipeScopeForParameter(scope) : scope, "scope", out var parameters);
+            if (shared) predicates += " AND [Step_Number] > 0";
             using (var command = new Microsoft.Data.SqlClient.SqlCommand(
                 $"SELECT MAX({QuoteIdentifier(generatedColumn)}) FROM {QuoteTable(tableName)} WITH (UPDLOCK, HOLDLOCK) WHERE {predicates}", connection, transaction))
             {
@@ -1050,8 +1054,10 @@ ORDER BY i.index_id, ic.key_ordinal;";
         bool isIdentity = schema.Columns.FirstOrDefault(column => column.Name.Equals(generatedColumn, StringComparison.OrdinalIgnoreCase))?.IsIdentity == true;
         if (!record.ContainsKey(generatedColumn) && !isIdentity)
         {
-            var rows = ReadOfflineTable(schema.TableName, scope);
-            long maximum = rows.Rows.Count == 0 ? 0 : rows.Rows.Cast<DataRow>()
+            bool shared = tableName == ParameterTable && Convert.ToInt32(scope["Step_Number"], CultureInfo.InvariantCulture) > 0;
+            var rows = ReadOfflineTable(schema.TableName, shared ? RecipeScopeForParameter(scope) : scope);
+            long maximum = rows.Rows.Cast<DataRow>()
+                .Where(row => !shared || Convert.ToInt32(row["Step_Number"], CultureInfo.InvariantCulture) > 0)
                 .Where(row => row[generatedColumn] != DBNull.Value)
                 .Select(row => Convert.ToInt64(row[generatedColumn], CultureInfo.InvariantCulture)).DefaultIfEmpty(0).Max();
             record[generatedColumn] = checked(maximum + 1);

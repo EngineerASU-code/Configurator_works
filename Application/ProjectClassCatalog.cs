@@ -65,11 +65,13 @@ internal static class ProjectClassCatalog
     {
         var columns = keys.ToList();
         return columns.Contains("Record", StringComparer.OrdinalIgnoreCase)
-            ? columns.FirstOrDefault(name =>
-                new string(name.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant()
-                    is "class" or "classnumber" or "plcclassnumber" or "plcclasssnumber")
-            : null;
+            ? FindClassColumn(columns) : null;
     }
+
+    internal static string? FindClassColumn(IEnumerable<string> columns) =>
+        columns.FirstOrDefault(name =>
+                new string(name.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant()
+                    is "class" or "classnumber" or "plcclassnumber" or "plcclasssnumber");
 
     internal static string? Read(ProjectRecord row, string column) =>
         ReadNode(row, column)?.ToString().Trim() is { Length: > 0 } value

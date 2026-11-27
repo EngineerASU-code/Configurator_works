@@ -58,14 +58,15 @@ public sealed partial class ProgramManagementRepository
         _offline != null ? SnapshotOfflineRows(table, scope) : SnapshotRows(await GetScopedTableAsync(table, scope, ct, readAll: true));
 
     internal async Task<IReadOnlyList<ChangeJournalRowChange>> ReplaceAndDeleteContextAsync(ContextReplacementPreview preview,
-        object? replacementRecord, CancellationToken ct = default)
+        object? replacementRecord, CancellationToken ct = default, bool deleteContents = false)
     {
         bool mustReplace = preview.Dependencies.Values.Any(rows => rows.Count > 0);
-        if (mustReplace != (replacementRecord != null))
+        if (deleteContents && (preview.Table != ProgramTable || replacementRecord != null)) throw new ArgumentException(nameof(deleteContents));
+        if (!deleteContents && mustReplace != (replacementRecord != null))
             throw new InvalidOperationException("Выберите запись для замены зависимостей.");
         var replacement = replacementRecord == null ? null : preview.Candidates.SingleOrDefault(
             row => ExactValueEquals(row["Record"], replacementRecord));
-        if (mustReplace && replacement == null)
+        if (!deleteContents && mustReplace && replacement == null)
             throw new InvalidOperationException("Выбранная замена отсутствует в подтверждённом контексте.");
         var source = preview.SourceKey;
         var replacementKey = new Dictionary<string, object>(source, StringComparer.OrdinalIgnoreCase);
@@ -84,7 +85,7 @@ public sealed partial class ProgramManagementRepository
             IReadOnlyList<ChangeJournalRowChange> changes = Array.Empty<ChangeJournalRowChange>();
             await _offline.ExecuteMutationTransactionAsync(async () =>
             {
-                changes = await ApplyContextReplacementAsync(preview, replacement, replacementKey, dependentScope, null, null, null, ct);
+                changes = await ApplyContextReplacementAsync(preview, replacement, replacementKey, dependentScope, null, null, null, ct, deleteContents);
             }, ct);
             return changes;
         }
@@ -99,7 +100,7 @@ public sealed partial class ProgramManagementRepository
         using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.Serializable, ct);
         try
         {
-            var changes = await ApplyContextReplacementAsync(preview, replacement, replacementKey, dependentScope, connection, transaction, protection, ct);
+            var changes = await ApplyContextReplacementAsync(preview, replacement, replacementKey, dependentScope, connection, transaction, protection, ct, deleteContents);
             await transaction.CommitAsync(ct);
             return changes;
         }
@@ -112,7 +113,7 @@ public sealed partial class ProgramManagementRepository
 
     private async Task<IReadOnlyList<ChangeJournalRowChange>> ApplyContextReplacementAsync(ContextReplacementPreview preview,
         IReadOnlyDictionary<string, object>? replacement, Dictionary<string, object> replacementKey,
-        Dictionary<string, object> dependentScope, SqlConnection? connection, SqlTransaction? transaction, DeletionProtectionService? protection, CancellationToken ct)
+        Dictionary<string, object> dependentScope, SqlConnection? connection, SqlTransaction? transaction, DeletionProtectionService? protection, CancellationToken ct, bool deleteContents)
     {
         async Task<IReadOnlyList<IReadOnlyDictionary<string, object>>> Read(string table, IReadOnlyDictionary<string, object> scope, bool optional = false)
         {
@@ -148,7 +149,7 @@ public sealed partial class ProgramManagementRepository
             EnsureSnapshotMatches(dependent.Value, await Read(dependent.Key, dependentScope, optional: true));
 
         var changes = new List<ChangeJournalRowChange>();
-        foreach (var dependent in preview.Dependencies.Where(pair => pair.Value.Count > 0))
+        foreach (var dependent in preview.Dependencies.Where(pair => pair.Value.Count > 0).OrderBy(pair => deleteContents ? (pair.Key == SequenceTable ? 2 : pair.Key == ParameterTable ? 1 : 0) : 0))
         {
             var table = dependent.Key;
             var keys = await VerifyKey(table);
@@ -157,6 +158,18 @@ public sealed partial class ProgramManagementRepository
             foreach (var before in dependent.Value)
             {
                 var key = ContextReplacementKey(before, keys);
+                if (deleteContents)
+                {
+                    if (_offline != null)
+                    {
+                        OfflineObjectDeletionGuard.Check(_offline, table, new[] { before.ToDictionary(p => p.Key, p => (object?)p.Value) });
+                        if (await _offline.DeleteRecordsAsync(table, keys, new[] { key.ToDictionary(p => p.Key, p => (object?)p.Value) }, ct) != 1)
+                            throw new InvalidOperationException($"Изменился состав «{table}».");
+                    }
+                    else await protection!.DeleteUnreferencedInTransactionAsync(connection!, transaction!, table, key, before, ct);
+                    changes.Add(ContextReplacementJournal(table, keys, before, null));
+                    continue;
+                }
                 var oldRecord = before[preview.ReferenceColumn];
                 var newValue = Convert.ChangeType(newRecord, oldRecord.GetType(), System.Globalization.CultureInfo.InvariantCulture);
                 assignment[preview.ReferenceColumn] = newValue;

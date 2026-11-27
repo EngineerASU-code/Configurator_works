@@ -19,7 +19,7 @@ namespace Configurator
             catch { /* Ресурсы темы имеют безопасные значения из App.xaml. */ }
             var initialization = Task.Run(UserAuthorizationService.Initialize);
             var welcome = new WorkspaceStartupDialog();
-            SetRequestedWindowPosition(welcome, e.Args);
+            bool explicitPosition = SetRequestedWindowPosition(welcome, e.Args);
             MainWindow = welcome;
             ShutdownMode = ShutdownMode.OnMainWindowClose;
             bool opening = false;
@@ -56,7 +56,6 @@ namespace Configurator
                     editor.WindowState = WindowState.Normal;
                     editor.Owner = welcome;
                     editor.WindowStartupLocation = WindowStartupLocation.CenterOwner;
-                    bool explicitPosition = SetRequestedWindowPosition(editor, e.Args);
                     MainWindow = editor;
                     editor.Show();
                     editor.Owner = null;

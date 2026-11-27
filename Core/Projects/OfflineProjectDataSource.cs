@@ -139,6 +139,9 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (records == null || records.Count == 0) return Task.FromResult<IReadOnlyList<IReadOnlyDictionary<string, object?>>>(Array.Empty<IReadOnlyDictionary<string, object?>>());
+        if (tableName.Equals("dbo.Valves2S", StringComparison.OrdinalIgnoreCase) &&
+            GetSchema(tableName) is { HasStableKey: false } legacySchema)
+            return CreateLegacyDsvBatchAsync(legacySchema, records, cancellationToken);
         var backup = _project.LocalRecords.Select(r => new ProjectRecord
         {
             TableName = r.TableName, Key = r.Key, RowVersion = r.RowVersion,
@@ -168,6 +171,18 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
             InvalidateIndexes();
             throw;
         }
+    }
+
+    internal void UpdateMessageTexts(ProjectRecord record, Dictionary<string, object?> changes)
+    {
+        var schema = GetSchema("dbo.Prog_Msg") ?? throw new InvalidOperationException("Отсутствует таблица сообщений.");
+        if (!string.Equals(record.TableName, schema.TableName, StringComparison.OrdinalIgnoreCase) ||
+            changes.Keys.Any(n => n is not ("Text_L1" or "Text_L2")))
+            throw new InvalidOperationException("Допускается изменение только текста сообщения.");
+        if (_project.Settings.UnifiedLanguage) UnifiedLanguage.Mirror(changes, schema.Columns.Select(c => c.Name));
+        ValidateValues(schema, changes, isCreate: false, null);
+        foreach (var pair in changes) record.Values[pair.Key] = ProjectKeyCodec.ToNode(pair.Value);
+        Touch(invalidateIndex: false);
     }
 
     public Task UpdateRecordAsync(string tableName, IReadOnlyList<string> keyColumns,
@@ -357,6 +372,56 @@ public sealed class OfflineProjectDataSource : IProjectDataSource, IProjectCrudD
     }
 
     /// <summary>Upserts a record in the local project only.</summary>
+    internal void UpdateAssemblySnapshotField(ProjectRecord row, string field, int value)
+    {
+        ProjectWriteGuard.EnsureDataTableWritable(row.TableName);
+        var schema = GetSchema(row.TableName) ?? throw new InvalidOperationException("Отсутствует схема таблицы.");
+        var rows = GetRecords(row.TableName);
+        if (!_suspendNotifications || !rows.Any(r => ReferenceEquals(r,row)))
+            throw new InvalidOperationException("Строка снимка больше недоступна.");
+        ValidateValues(schema,new Dictionary<string,object?> { [field]=value },false,null);
+        var updated = (System.Text.Json.Nodes.JsonObject)row.Values.DeepClone();
+        updated[field] = value;
+        row.Values = updated;
+        Touch();
+    }
+
+    private async Task<IReadOnlyList<IReadOnlyDictionary<string, object?>>> CreateLegacyDsvBatchAsync(
+        ProjectTableSchema schema, IReadOnlyList<IReadOnlyDictionary<string, object?>> records, CancellationToken ct)
+    {
+        string[] keys = ["PLC", "PLC_Class_Number", "Record"];
+        var snapshots = new List<IReadOnlyDictionary<string, object?>>(records.Count);
+        await ExecuteMutationTransactionAsync(() =>
+        {
+            var used = GetRecords(schema.TableName).Select(r => ProjectKeyCodec.Encode(schema, keys, k => r.Values[k])).ToHashSet();
+            foreach (var record in records)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (keys.Any(k => !record.TryGetValue(k, out var value) || value == null || value == DBNull.Value))
+                    throw new InvalidOperationException("Для копии DSV нужны PLC, класс и Record.");
+                if (!used.Add(BuildKey(schema, keys, record)))
+                    throw new InvalidOperationException("Record DSV уже занят в выбранном PLC и классе.");
+                var values = new Dictionary<string,object?>(record, StringComparer.OrdinalIgnoreCase);
+                InsertAssemblySnapshotRow(schema, values);
+                snapshots.Add(values);
+            }
+            return Task.CompletedTask;
+        }, ct);
+        return snapshots;
+    }
+
+    internal void InsertAssemblySnapshotRow(ProjectTableSchema schema, Dictionary<string,object?> values)
+    {
+        if (!_suspendNotifications) throw new InvalidOperationException("Для копирования нужна транзакция снимка.");
+        ProjectWriteGuard.EnsureDataTableWritable(schema.TableName);
+        if (_project.Settings.UnifiedLanguage) UnifiedLanguage.Mirror(values,schema.Columns.Select(c=>c.Name));
+        ValidateValues(schema,values,true,null);
+        var row = new ProjectRecord { TableName=schema.TableName, Key=Guid.NewGuid().ToString("N") };
+        foreach (var pair in values) row.Values[pair.Key] = ProjectKeyCodec.ToNode(pair.Value);
+        _project.LocalRecords.Add(row);
+        Touch();
+    }
+
     public void UpsertRecord(ProjectRecord record)
     {
         ArgumentNullException.ThrowIfNull(record);

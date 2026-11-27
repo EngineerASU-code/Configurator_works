@@ -80,7 +80,7 @@ public sealed class LookupOptionsService
             await _db.GetPrimaryKeyColumnsAsync(lookupTable, ct), preferredKey, keyAliases);
         if (string.IsNullOrWhiteSpace(key)) return Array.Empty<LookupOption>();
 
-        string cacheKey = lookupTable + "|" + key + "|" + (combineAreaNames ? "area" : displayHint ?? "");
+        string cacheKey = fieldName + "|" + lookupTable + "|" + key + "|" + (combineAreaNames ? "area" : displayHint ?? "");
         if (_cache.TryGetValue(cacheKey, out var cached)) return cached;
 
         // Fetch both the stored key and human-readable columns. Without selecting
@@ -106,7 +106,7 @@ public sealed class LookupOptionsService
                 var rowColumns = row.Table.Columns.Cast<DataColumn>().Select(column => column.ColumnName).ToArray();
                 string display = LookupOptionDisplayFormatter.Format(rowColumns,
                     column => row[column] == DBNull.Value ? string.Empty : Convert.ToString(row[column]),
-                    keyText, displayHint, combineAreaNames, useAreaNameLookup);
+                    keyText, displayHint, combineAreaNames, useAreaNameLookup, fieldName.Equals("Type", StringComparison.OrdinalIgnoreCase));
                 options.Add(new LookupOption { Key = keyText, Display = display });
             }
             if (data.Rows.Count < lookupPageSize || options.Count >= maxLookupOptions) break;

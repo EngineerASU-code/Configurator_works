@@ -8,7 +8,7 @@ namespace Configurator;
 
 internal static class ProgramAwlExporter
 {
-    public static string Generate(DataRow program, DataRow layout, DataTable defaults,
+    public static (string Content, int SkippedDefaults) Generate(DataRow program, DataRow layout, DataTable defaults,
         DataTable transitions, DataTable steps, DataRow defaultRecipe)
     {
         int record = Number(program, "Record");
@@ -21,7 +21,14 @@ internal static class ProgramAwlExporter
         int stepParameters = Capacity("StepParam_MaxCount");
         int stepFunctions = Capacity("StepFunction_MaxCount");
         int stepOptions = Capacity("StepOption_MaxCount");
-        var values = defaults.Rows.Cast<DataRow>()
+        foreach (DataRow transition in transitions.Rows)
+        {
+            int number = Number(transition, "SeqStep_Number");
+            if (number > stepCount)
+                throw new InvalidOperationException($"Шаг {number} превышает предел типа программы ({stepCount}). Проверьте номер шага или тип программы.");
+        }
+        // Legacy projects can retain defaults for deleted occurrences beyond the fixed PLC layout.
+        var values = defaults.Rows.Cast<DataRow>().Where(row => Number(row, "Step_Number") <= stepCount)
             .OrderBy(row => Number(row, "Step_Number")).ThenBy(row => Number(row, "Type"))
             .ThenBy(row => Number(row, "Record")).ToArray();
         var recipe = values.Where(row => Number(row, "UseRecipes") > 0).ToArray();
@@ -138,7 +145,7 @@ internal static class ProgramAwlExporter
                 Line($"    Recipe.Product_Number := {Format(Range(Number(defaultRecipe, "Type"), short.MinValue, short.MaxValue, "Type"))};");
         }
 
-        return output.Append("END_DATA_BLOCK").ToString();
+        return (output.Append("END_DATA_BLOCK").ToString(), defaults.Rows.Count - values.Length);
     }
 
     private static string SetpointType(int type) => type switch

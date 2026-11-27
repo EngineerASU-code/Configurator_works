@@ -503,6 +503,11 @@ public static class CompareTransfer
         if (preview.ExpectedRecord is null || matching.Count != 1 ||
             !JsonNode.DeepEquals(preview.ExpectedRecord.Values, matching[0].Values))
             throw new CompareTransferException("Целевая запись изменилась после сравнения. Повторите сравнение.");
+        if (preview.DeletesRecord)
+        {
+            try { OfflineObjectDeletionGuard.CheckCompareDeletion(dataSource, matching[0]); }
+            catch (InvalidOperationException ex) { throw new CompareTransferException(ex.Message); }
+        }
     }
 
     private static string RecordKey(ProjectTableSchema schema, ProjectRecord record) =>

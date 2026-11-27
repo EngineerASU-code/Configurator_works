@@ -144,11 +144,11 @@ internal sealed class PlcAddressMap
         return FreeAddresses(selectedArea, bit, size, owner.Analog && !match.Groups["area"].Success && width.Length == 0, limit);
     }
 
-    internal IReadOnlyList<string> FreeAddresses(char selectedArea, bool bit, int size, bool numeric, int limit = 256)
+    internal IReadOnlyList<string> FreeAddresses(char selectedArea, bool bit, int size, bool numeric, int limit = 256, bool aligned = false)
     {
         if (Issues.Count != 0) return Array.Empty<string>();
         var result = new List<string>();
-        for (int offset = 0; offset <= 65536 - size && result.Count < limit; offset++)
+        for (int offset = 0; offset <= 65536 - size && result.Count < limit; offset += aligned ? size : 1)
         {
             if (bit)
             {

@@ -875,6 +875,7 @@ namespace Configurator
             if (CurrentProjectText == null) return;
             if (_isOfflineWorkspace && _openedLocalProject != null)
             {
+                RefreshRowAttempts(null);
                 CurrentProjectText.Content = _openedLocalProject.Manifest.Name + " · Offline";
                 CurrentProjectText.ToolTip = "Текущий локальный проект. Изменения сохраняются в .cfgproj и не отправляются в SQL Server.";
                 RecordSessionContext($"{_openedLocalProject.Manifest.Name} [id:{_openedLocalProject.Manifest.ProjectId}]", "Offline");
@@ -887,6 +888,7 @@ namespace Configurator
                 && !string.IsNullOrWhiteSpace(_selectedDbName)
                 && _connection.ConnectedDatabases.Any(db => db.Equals(_selectedDbName, StringComparison.OrdinalIgnoreCase));
             string activeProjectName = selectedOnlineProjectIsActive ? _selectedDbName : string.Empty;
+            RefreshRowAttempts(activeProjectName);
             CurrentProjectText.Content = string.IsNullOrWhiteSpace(activeProjectName) ? "не выбран" : activeProjectName;
             CurrentProjectText.ToolTip = string.IsNullOrWhiteSpace(activeProjectName) ? "Нажмите, чтобы выбрать проект" : $"Текущий проект: {activeProjectName}. Нажмите, чтобы сменить.";
             string projectIdentity = selectedOnlineProjectIsActive ? $"{_connection.Server}/{activeProjectName}" : activeProjectName;

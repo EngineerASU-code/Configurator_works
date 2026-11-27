@@ -76,7 +76,7 @@ public static class OfflineLookupOptionsService
                     if (string.IsNullOrWhiteSpace(key)) return null;
                     var display = LookupOptionDisplayFormatter.Format(names,
                         column => GetValue(record.Values, column) ?? string.Empty,
-                        key, displayHint, combineAreaNames: false, useAreaNameLookup: useAreaNameLookup);
+                        key, displayHint, combineAreaNames: false, useAreaNameLookup: useAreaNameLookup, isType: fieldName.Equals("Type", StringComparison.OrdinalIgnoreCase));
                     return new LookupOption { Key = key, Display = display };
                 }));
                 return options;
@@ -108,7 +108,7 @@ public static class OfflineLookupOptionsService
                 Key = item.Key,
                 Display = LookupOptionDisplayFormatter.Format(new[] { listKey, listDisplay },
                     column => column.Equals(listKey, StringComparison.OrdinalIgnoreCase) ? item.Key : item.Text,
-                    item.Key, listDisplay, combineAreaNames: false, useAreaNameLookup: useAreaNameLookup)
+                    item.Key, listDisplay, combineAreaNames: false, useAreaNameLookup: useAreaNameLookup, isType: fieldName.Equals("Type", StringComparison.OrdinalIgnoreCase))
             }));
     }
 

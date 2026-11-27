@@ -43,10 +43,13 @@ public partial class ProjectModeView
 
         var dependencies = FindOfflineDependents(source, targetRecord, targetKey, relations);
         SessionTestLog.Trace("CRUD", $"operation=DeleteConfigurationValue; phase=dependencies; source=offline; table='{table}'; dependentRows={dependencies.Count}; elapsedMs={timer.ElapsedMilliseconds}");
-        if (dependencies.Any(item => item.Hit.SourceKey.Count == 0))
-            throw new InvalidOperationException("В снимке найдены зависимые строки без стабильного ключа. Их нельзя безопасно заменить; удаление отменено.");
-        if (dependencies.Count > 0 && dependencies.Any(item => !CanReplaceOfflineDependency(item)))
-            throw new InvalidOperationException("Среди зависимых строк есть поля, которые локальная схема считает неизменяемыми. Удаление отменено.");
+        var issues = dependencies.Where(item => item.Hit.SourceKey.Count == 0)
+            .Select(item => ("У зависимых строк нет стабильного ключа", item.Hit.SourceTable))
+            .Concat(dependencies.Where(item => !CanReplaceOfflineDependency(item))
+                .Select(item => ("Поле связи недоступно для записи", item.Hit.SourceTable)));
+        var errors = DeletionProtectionService.DescribeBlockedTables(issues).ToList();
+        if (errors.Count > 0)
+            throw new InvalidOperationException(string.Join(Environment.NewLine, errors));
 
         IReadOnlyList<ReferenceReplacement> replacements = Array.Empty<ReferenceReplacement>();
         if (dependencies.Count > 0)

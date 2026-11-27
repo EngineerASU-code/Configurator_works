@@ -32,12 +32,20 @@ public partial class MainWindow
             _changeJournal.BindOnlineProject(entry.Server, entry.Database, entry.ProjectName, entry.Mode);
         }
         ShowLastAction(entry.DisplayDescription);
-        if (!_changeJournal.Record(entry))
+        SaveJournalEntry(entry);
+    }
+
+    private bool SaveJournalEntry(ChangeJournalEntry entry)
+    {
+        while (!_changeJournal.Record(entry))
         {
-            Configurator.Infrastructure.ModernDialog.Show(this,
-                "Изменение выполнено, но запись в журнал не сохранена. Не закрывайте приложение до фиксации проблемы.",
-                "Ошибка журнала изменений", MessageBoxButton.OK, MessageBoxImage.Warning);
+            var retry = Configurator.Infrastructure.ModernDialog.Show(this,
+                "Данные уже изменены. Устраните проблему с записью и выберите «Да», чтобы повторить сохранение журнала. " +
+                "При выборе «Нет» запись для отмены может быть потеряна. Повторить сохранение?",
+                "Ошибка журнала изменений", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+            if (retry != MessageBoxResult.Yes) return false;
         }
+        return true;
     }
 
     private void ActionLog_Changed(object sender, EventArgs e)
@@ -373,12 +381,7 @@ public partial class MainWindow
             Changes = journalChanges.ToList()
         };
         ShowLastAction(entry.DisplayDescription);
-        if (!_changeJournal.Record(entry))
-        {
-            Configurator.Infrastructure.ModernDialog.Show(
-                "Данные уже изменены, но запись в журнал изменений не сохранена. Не повторяйте операцию; проверьте доступность папки ChangeJournal и сохраните сведения об операции вручную.",
-                "Предупреждение журнала изменений", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
+        SaveJournalEntry(entry);
     }
 
     private static ChangeJournalOperationKind InferJournalOperation(IReadOnlyList<ChangeJournalRowChange> changes)

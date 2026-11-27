@@ -83,6 +83,16 @@ public sealed class OnlineProjectCrudDataSource : IProjectCrudDataSource, IProje
             foreach (var record in records)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (tableName.Equals("dbo.Valves2S", StringComparison.OrdinalIgnoreCase) &&
+                    record.ContainsKey("PLC") && record.ContainsKey("PLC_Class_Number") && record.ContainsKey("Record"))
+                {
+                    using var check = new SqlCommand($"SELECT TOP (1) 1 FROM {quotedTable} WITH (UPDLOCK,HOLDLOCK) WHERE PLC=@plc AND PLC_Class_Number=@class AND Record=@record", connection, transaction);
+                    check.Parameters.AddWithValue("@plc", record["PLC"] ?? DBNull.Value);
+                    check.Parameters.AddWithValue("@class", record["PLC_Class_Number"] ?? DBNull.Value);
+                    check.Parameters.AddWithValue("@record", record["Record"] ?? DBNull.Value);
+                    if (await check.ExecuteScalarAsync(cancellationToken) != null)
+                        throw new InvalidOperationException("Record DSV уже занят в выбранном PLC и классе.");
+                }
                 using var command = new SqlCommand(sql, connection, transaction);
                 for (int i = 0; i < columns.Count; i++)
                 {

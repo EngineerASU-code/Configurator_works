@@ -18,6 +18,7 @@ namespace Configurator
         private Dictionary<string, TextBox> _fieldInputs = new Dictionary<string, TextBox>();
         private readonly string _classNumberColumn;
         private readonly int? _forcedClassNumber;
+        private readonly Func<string, Task<List<LookupOption>>> _msTypes;
         private readonly Dictionary<string, List<LookupOption>> _lookupOptions;
         private readonly Dictionary<string, ComboBox> _lookupInputs = new(StringComparer.OrdinalIgnoreCase);
         private readonly Func<string, CancellationToken, Task<int>> _suggestScopedRecord;
@@ -43,11 +44,13 @@ namespace Configurator
             Dictionary<string, string> currentValues, string keyColumn,
             string classNumberColumn = null, int? forcedClassNumber = null, Dictionary<string, List<LookupOption>> lookupOptions = null,
             Func<string, CancellationToken, Task<int>> suggestScopedRecord = null,
-            Func<string, Task<Dictionary<string, List<LookupOption>>>> addresses = null)
+            Func<string, Task<Dictionary<string, List<LookupOption>>>> addresses = null,
+            Func<string, Task<List<LookupOption>>> msTypes = null)
         {
             InitializeComponent();
             _classNumberColumn = classNumberColumn ?? "";
             _forcedClassNumber = forcedClassNumber;
+            _msTypes = msTypes;
             _lookupOptions = lookupOptions ?? new Dictionary<string, List<LookupOption>>(StringComparer.OrdinalIgnoreCase);
             _suggestScopedRecord = suggestScopedRecord;
             WindowTitle.Text = $"Изменить строку — {tableName}";
@@ -95,7 +98,7 @@ namespace Configurator
 
                 bool hasLookupDefinition = _lookupOptions.TryGetValue(col.Name, out var options);
                 bool hasLookupOptions = hasLookupDefinition && options.Count > 0;
-                bool isLookup = !isClassNumber && (hasLookupDefinition || IsKnownLookupField(col.Name));
+                bool isLookup = !MsTypeCatalog.IsField(col.Name) && !isClassNumber && (hasLookupDefinition || IsKnownLookupField(col.Name));
                 options ??= new List<LookupOption>();
                 if (isLookup && _currentValues != null && _currentValues.TryGetValue(col.Name, out string existingLookupValue) && !string.IsNullOrWhiteSpace(existingLookupValue)
                     && !options.Any(option => string.Equals(option.Key, existingLookupValue, StringComparison.OrdinalIgnoreCase)))
@@ -131,15 +134,29 @@ namespace Configurator
                 if (isKey && textBox != null && !isClassNumber) textBox.ToolTip = "Ключевое поле можно изменить. Уникальность проверяется при сохранении.";
 
                 fieldPanel.Children.Add(label);
-                if (addresses != null && textBox != null && PlcAddressCatalog.IsSuggestedField(col.Name))
-                    fieldPanel.Children.Add(InputPlaceholder.WithAddressList(textBox, textBox, async () =>
+                if (textBox != null && InputPlaceholder.IsFlag(col))
+                    fieldPanel.Children.Add(InputPlaceholder.Flag(col, textBox));
+                else if (input is ComboBox picker)
+                    fieldPanel.Children.Add(InputPlaceholder.Lookup(picker));
+                else if (textBox != null)
+                {
+                    var editor = InputPlaceholder.WrapField(textBox, col);
+                    if (_msTypes != null && MsTypeCatalog.IsField(col.Name))
+                    {
+                        var scope = ProjectClassCatalog.FindClassColumn(_columns.Select(c => c.Name));
+                        fieldPanel.Children.Add(InputPlaceholder.WithAddressList(editor, textBox, () =>
+                            _msTypes(_forcedClassNumber?.ToString() ?? (scope == null ? null : _lookupInputs.GetValueOrDefault(scope)?.SelectedValue?.ToString() ?? _fieldInputs.GetValueOrDefault(scope)?.Text ?? _currentValues?.GetValueOrDefault(scope))), true));
+                    }
+                    else if (addresses != null && PlcAddressCatalog.IsSuggestedField(col.Name))
+                    fieldPanel.Children.Add(InputPlaceholder.WithAddressList(editor, textBox, async () =>
                     {
                         string plc = _lookupInputs.GetValueOrDefault("PLC")?.SelectedValue?.ToString();
                         if (string.IsNullOrWhiteSpace(plc)) return null;
                         var choices = await addresses(plc);
                         return plc == _lookupInputs.GetValueOrDefault("PLC")?.SelectedValue?.ToString() ? choices.GetValueOrDefault(col.Name) : null;
                     }));
-                else fieldPanel.Children.Add(input);
+                    else fieldPanel.Children.Add(editor);
+                }
                 if (textBox != null) _fieldInputs[col.Name] = textBox;
 
                 if (textBox != null) textBox.TextChanged += (s, e) => { textBox.ClearValue(Control.BackgroundProperty); ValidateFields(); };
@@ -176,7 +193,7 @@ namespace Configurator
                 string fieldName = colInfo.Name;
                 string valueText = _lookupInputs.TryGetValue(fieldName, out var lookupBox)
                     ? lookupBox.SelectedValue?.ToString() ?? ""
-                    : _fieldInputs.TryGetValue(fieldName, out var textBox) ? textBox.Text : "";
+                    : _fieldInputs.TryGetValue(fieldName, out var textBox) ? InputPlaceholder.FieldValue(textBox) : "";
 
                 if (_forcedClassNumber.HasValue && !string.IsNullOrWhiteSpace(_classNumberColumn) &&
                     fieldName.Equals(_classNumberColumn, StringComparison.OrdinalIgnoreCase))
@@ -217,7 +234,7 @@ namespace Configurator
 
                 string input = _lookupInputs.TryGetValue(fieldName, out var lookupBox)
                     ? lookupBox.SelectedValue?.ToString() ?? ""
-                    : _fieldInputs.TryGetValue(fieldName, out var textBox) ? textBox.Text : "";
+                    : _fieldInputs.TryGetValue(fieldName, out var textBox) ? InputPlaceholder.FieldValue(textBox) : "";
                 if (_currentValues != null && _currentValues.TryGetValue(fieldName, out var original) &&
                     string.Equals(input, original ?? "", StringComparison.Ordinal))
                     continue;

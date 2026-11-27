@@ -13,7 +13,7 @@ internal static class LookupOptionDisplayFormatter
         string key,
         string hint,
         bool combineAreaNames,
-        bool useAreaNameLookup)
+        bool useAreaNameLookup, bool isType = false)
     {
         string Name(string candidate) => names.FirstOrDefault(name => name.Equals(candidate, StringComparison.OrdinalIgnoreCase));
         string Value(string candidate)
@@ -39,6 +39,7 @@ internal static class LookupOptionDisplayFormatter
                 var value = getValue(valueColumn) ?? string.Empty;
                 if (!string.IsNullOrWhiteSpace(value))
                 {
+                    if (isType) return value == key ? key : $"{key} · {value}";
                     display = $"{value}  [{key}]";
                     break;
                 }

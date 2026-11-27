@@ -19,6 +19,12 @@ public sealed class ProgramStepMoveTableSnapshot
 
 public sealed partial class ProgramManagementRepository
 {
+    // In the legacy schema these are shared definitions. Only recipe values belong to occurrences.
+    private static bool IsSharedStepParameterSchema(ProjectTableSchema schema)
+        => schema.TableName.Equals(ParameterTable, StringComparison.OrdinalIgnoreCase)
+           && schema.KeyColumns.ToHashSet(StringComparer.OrdinalIgnoreCase).SetEquals(
+               new[] { "PLC", "PLC_Class_Prog_Number", "Prog_Record", "Seq_Record", "Step_Number", "Type", "Record" });
+
     internal static IReadOnlyList<ChangeJournalRowChange> BuildStepMoveJournalChanges(
         IReadOnlyList<(string Name, string Field)> tables,
         IReadOnlyDictionary<string, ProjectTableSchema> schemas,
@@ -35,13 +41,14 @@ public sealed partial class ProgramManagementRepository
             if (!schema.HasStableKey || !keys.Contains(field, StringComparer.OrdinalIgnoreCase) || stableKeys.Length == 0)
                 throw new InvalidOperationException($"Не удалось сформировать обратимый снимок {table}: ключ не подтверждён.");
 
+            bool sharedDefinitions = IsSharedStepParameterSchema(schema);
             var remaining = afterRows[table].ToList();
             foreach (var before in beforeRows[table])
             {
                 if (!before.TryGetValue(field, out var previousNumber))
                     throw new InvalidOperationException($"В снимке {table} отсутствует поле {field}.");
                 int prior = Convert.ToInt32(previousNumber, System.Globalization.CultureInfo.InvariantCulture);
-                int expectedNumber = prior == first ? second : prior == second ? first : prior;
+                int expectedNumber = sharedDefinitions ? prior : prior == first ? second : prior == second ? first : prior;
                 var candidates = remaining.Where(after =>
                     after.TryGetValue(field, out var currentNumber) &&
                     Convert.ToInt32(currentNumber, System.Globalization.CultureInfo.InvariantCulture) == expectedNumber &&
@@ -52,6 +59,10 @@ public sealed partial class ProgramManagementRepository
 
                 var after = candidates[0];
                 remaining.Remove(after);
+                if (table.Equals("dbo.Prog_Recipes", StringComparison.OrdinalIgnoreCase) &&
+                    before.Any(pair => !pair.Key.Equals(field, StringComparison.OrdinalIgnoreCase) &&
+                        (!after.TryGetValue(pair.Key, out var current) || !ExactValueEquals(pair.Value, current))))
+                    throw new InvalidOperationException("При перемещении изменились данные рецепта. Операция отменена.");
                 if (before.Count != after.Count || before.Any(pair => !after.TryGetValue(pair.Key, out var value) || !ExactValueEquals(pair.Value, value)))
                 {
                     Dictionary<string, ChangeJournalValue> Snapshot(IReadOnlyDictionary<string, object> row)

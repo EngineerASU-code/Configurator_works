@@ -68,13 +68,16 @@ namespace Configurator
                 if (!hasMeaningfulValue)
                     throw new InvalidOperationException("Нельзя добавить полностью пустую строку. Заполните хотя бы одно поле.");
     
+                var languageColumns = UsesUnifiedLanguage
+                    ? (await GetTableColumnsAsync(tableName, ct)).Where(c => !c.IsReadOnly).Select(c => c.Name).ToArray()
+                    : null;
                 using var connection = Configurator.Core.Projects.SqlProviderGuard.CreateConnection(_connectionString);
                 await Configurator.Core.Projects.SqlProviderGuard.OpenConnectionAsync(connection, ct);
     
                 var quotedName = QuoteTableName(tableName);
                 var computedColumns = await GetComputedColumnsAsync(connection, tableName, ct);
                 var writableValues = values.Where(x => !computedColumns.Contains(x.Key)).ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
-                if (UsesUnifiedLanguage) UnifiedLanguage.Mirror(writableValues, (await GetTableColumnsAsync(tableName, ct)).Where(c => !c.IsReadOnly).Select(c => c.Name));
+                if (languageColumns != null) UnifiedLanguage.Mirror(writableValues, languageColumns);
                 if (writableValues.Count == 0) throw new InvalidOperationException("Нет сохраняемых полей: все переданные столбцы вычисляемые.");
                 var columns = writableValues.Keys.ToList();
                 var columnSql = string.Join(", ", columns.Select(QuoteIdentifier));
@@ -114,6 +117,32 @@ namespace Configurator
 #nullable restore
 #nullable enable annotations
     
+            internal async Task<Dictionary<string, object>> ReadAttemptRowAsync(ChangeJournalRowChange change)
+            {
+                if (change.IdentityBefore.Count == 0) throw new InvalidOperationException("У строки нет признаков для поиска.");
+                using var connection = SqlProviderGuard.CreateConnection(_connectionString);
+                await SqlProviderGuard.OpenConnectionAsync(connection, default);
+                using var command = connection.CreateCommand();
+                var conditions = new List<string>();
+                foreach (var pair in change.IdentityBefore)
+                {
+                    var column = QuoteIdentifier(pair.Key);
+                    if (pair.Value.IsDbNull) conditions.Add(column + " IS NULL");
+                    else
+                    {
+                        var parameter = "@k" + conditions.Count;
+                        conditions.Add(column + " = " + parameter);
+                        command.Parameters.AddWithValue(parameter, pair.Value.ToObject());
+                    }
+                }
+                command.CommandText = $"SELECT TOP (2) * FROM {QuoteTableName(change.TableName)} WHERE {string.Join(" AND ", conditions)}";
+                using var reader = await command.ExecuteReaderAsync();
+                if (!await reader.ReadAsync()) throw new InvalidOperationException("Строка с прежним ключом отсутствует.");
+                var row = Enumerable.Range(0, reader.FieldCount).ToDictionary(reader.GetName, reader.GetValue, StringComparer.OrdinalIgnoreCase);
+                if (await reader.ReadAsync()) throw new InvalidOperationException("Найдено несколько строк с таким ключом.");
+                return row;
+            }
+
             public async Task UpdateRowAsync(string tableName, List<string> keyColumns, Dictionary<string, object> keyValues, Dictionary<string, object> values, CancellationToken ct = default, Dictionary<string, object> expectedValues = null)
             {
                 ProjectWriteGuard.EnsureDataTableWritable(tableName);
@@ -173,9 +202,10 @@ namespace Configurator
     
                     await transaction.CommitAsync(ct);
                 }
-                catch
+                catch (Exception ex)
                 {
                     await transaction.RollbackAsync(CancellationToken.None);
+                    ex.Data["RowUpdateRolledBack"] = true;
                     throw;
                 }
             }
@@ -199,6 +229,7 @@ namespace Configurator
                     values = new Dictionary<string, object>(values, StringComparer.OrdinalIgnoreCase);
                     UnifiedLanguage.Mirror(values, expectedSchema.Columns.Select(c => c.Name));
                 }
+                var deletionSchema = delete ? await new DatabaseArchitectureAnalyzer(_connectionString).AnalyzeAsync(ct) : null;
                 var changedColumns = values.Keys.ToArray();
                 foreach (string changedColumn in changedColumns)
                 {
@@ -273,6 +304,13 @@ namespace Configurator
 
                     await EnsureCompareWriteStillSafeAsync(connection, transaction, schemaName, bareTableName,
                         delete ? "DELETE" : insert ? "INSERT" : "UPDATE", ct);
+
+                    if (deletionSchema != null)
+                    {
+                        var protection = new DeletionProtectionService(_connectionString, deletionSchema);
+                        var request = new Core.Architecture.DeletionRequest { TableName = expectedSchema.TableName, Key = actualSnapshots[0] };
+                        await protection.EnsureNoCurrentDependentsAsync(connection, transaction, request, ct, keyValues);
+                    }
 
                     if (insert && CompareTransferPreview.IsEquipmentTable(expectedSchema))
                     {
@@ -529,9 +567,10 @@ WHERE s.name=@schema AND t.name=@table";
     
                     await transaction.CommitAsync(ct);
                 }
-                catch
+                catch (Exception ex)
                 {
                     await transaction.RollbackAsync(CancellationToken.None);
+                    ex.Data["RowUpdateRolledBack"] = true;
                     throw;
                 }
             }

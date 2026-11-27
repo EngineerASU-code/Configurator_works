@@ -327,7 +327,6 @@ public sealed partial class ChangeJournalService
             _contextProjectId = "online:" + storageServer.ToLowerInvariant() + "/" + _contextDatabase.Trim().ToLowerInvariant();
             _contextMode = mode;
             _rootDirectory = Path.Combine(_baseDirectory, "Online", SafePath(storageServer), SafePath(_contextDatabase));
-            Directory.CreateDirectory(_rootDirectory);
         }
     }
 

@@ -56,6 +56,15 @@
                             <TextBlock Text="Конфигурация" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource BrushText}" Margin="2,2,2,8"/>
                         </Button>
                         <ListBox x:Name="ConfigurationList" BorderThickness="0" Background="Transparent" Padding="1" SelectionChanged="ConfigurationList_SelectionChanged" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                            <ListBox.GroupStyle>
+                                <GroupStyle>
+                                    <GroupStyle.HeaderTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" Margin="4,8,2,3" Foreground="{DynamicResource BrushTextSecondary}"/>
+                                        </DataTemplate>
+                                    </GroupStyle.HeaderTemplate>
+                                </GroupStyle>
+                            </ListBox.GroupStyle>
                             <ListBox.ItemContainerStyle>
                                 <Style TargetType="ListBoxItem">
                                     <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
@@ -161,6 +170,20 @@
                     </Border>
                     <local:MatrixCatalogControl x:Name="MatrixCatalogEditor" Visibility="Collapsed" />
                 </Grid>
+                <Border Grid.Column="4" CornerRadius="12" Padding="10" Background="{DynamicResource BrushPanel}" BorderBrush="{DynamicResource BrushBorder}" BorderThickness="1">
+                    <Border.Style><Style TargetType="Border"><Setter Property="Visibility" Value="Collapsed"/><Style.Triggers>
+                        <DataTrigger Binding="{Binding SelectedItem.IsObjects, ElementName=ConfigurationList}" Value="True"><Setter Property="Visibility" Value="Visible"/></DataTrigger>
+                    </Style.Triggers></Style></Border.Style>
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Button x:Name="AssemblyDeleteButton" Content="Удалить Object…" Style="{StaticResource BtnSecondary}" Click="AssemblyDeleteClick" Padding="12,4" Margin="0,0,8,0"/><Button x:Name="AssemblyCopyButton" HorizontalAlignment="Right" Content="Дублировать Object…" Style="{StaticResource BtnSecondary}" Click="AssemblyCopyClick" Padding="12,4"/></StackPanel>
+                        <TextBlock Grid.Row="1" x:Name="AssemblyTitle" Foreground="{DynamicResource BrushTextSecondary}" HorizontalAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                        <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+                            <Viewbox Stretch="Uniform" StretchDirection="DownOnly" VerticalAlignment="Center"><Canvas x:Name="AssemblyCanvas" Width="660" Height="360"/></Viewbox>
+                        </ScrollViewer>
+                    </Grid>
+                </Border>
+
             </Grid>
         <!-- Hidden compatibility filters retained for existing data/filter helpers. They are no longer shown in Mode 3 UI. -->
         <StackPanel Visibility="Collapsed"><ComboBox x:Name="CmbPlcFilter" SelectionChanged="ObjectFilter_SelectionChanged"/><ComboBox x:Name="CmbAreaFilter" SelectionChanged="ObjectFilter_SelectionChanged"/></StackPanel>

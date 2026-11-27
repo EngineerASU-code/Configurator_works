@@ -28,6 +28,7 @@ namespace Configurator
         private readonly int? _forcedClassNumber;
         private readonly string _recordScopeClassColumn;
         private readonly string _classNumberColumn;
+        private readonly Func<string, Task<List<LookupOption>>> _msTypes;
         private readonly Dictionary<string, List<LookupOption>> _lookupOptions;
         private readonly Func<string, string, CancellationToken, Task<int>> _scopedRecordProvider;
         private readonly Func<string, string, string, CancellationToken, Task<bool>> _recordExistsProvider;
@@ -56,12 +57,14 @@ namespace Configurator
             Func<string, string, string, CancellationToken, Task<bool>> recordExistsProvider = null,
             bool preferFreeScopedRecord = false,
             string recordScopeClassColumn = null,
-            Func<string, string, CancellationToken, Task<Dictionary<string, List<LookupOption>>>> freeAddressProvider = null)
+            Func<string, string, CancellationToken, Task<Dictionary<string, List<LookupOption>>>> freeAddressProvider = null,
+            Func<string, Task<List<LookupOption>>> msTypes = null)
         {
             InitializeComponent();
             _forcedClassNumber = forcedClassNumber;
             _recordScopeClassColumn = recordScopeClassColumn;
             _classNumberColumn = classNumberColumn ?? "";
+            _msTypes = msTypes;
             _lookupOptions = lookupOptions ?? new Dictionary<string, List<LookupOption>>(StringComparer.OrdinalIgnoreCase);
             _scopedRecordProvider = scopedRecordProvider;
             _recordExistsProvider = recordExistsProvider;
@@ -77,15 +80,10 @@ namespace Configurator
             _plcColumn = string.IsNullOrWhiteSpace(plcColumn)
                 ? _columns.FirstOrDefault(c => c.Name.Equals("PLC", StringComparison.OrdinalIgnoreCase))?.Name ?? ""
                 : plcColumn;
-            if (_tableName.Equals("dbo.Prog", StringComparison.OrdinalIgnoreCase))
-            {
-                Width = 1080;
-                Height = 680;
-                MinWidth = 1000;
-                FieldsScroll.VerticalScrollBarVisibility = ScrollBarVisibility.Disabled;
-                FieldsScroll.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
-            }
+            Width = Math.Min(Width, SystemParameters.WorkArea.Width);
+            Height = Math.Min(Height, SystemParameters.WorkArea.Height);
             GenerateFields();
+            FieldArea.SizeChanged += (_, _) => ArrangeFields();
             if (initialValues != null)
             {
                 foreach (var pair in initialValues)
@@ -94,10 +92,88 @@ namespace Configurator
                     if (_lookupInputs.TryGetValue(pair.Key, out var combo)) combo.SelectedValue = pair.Value == null || pair.Value == DBNull.Value ? null : Convert.ToString(pair.Value, CultureInfo.InvariantCulture);
                 }
             }
+            if (DerivesAreaName && _fieldInputs.TryGetValue("AreaName", out var area) &&
+                _fieldInputs.TryGetValue("Record", out var record))
+            {
+                var hint = _hints.GetValueOrDefault("Record");
+                void UpdateName()
+                {
+                    var value = string.IsNullOrWhiteSpace(record.Text) ? hint?.Text : record.Text;
+                    area.Text = int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var number)
+                        ? Configurator.Core.Workspace.ScopedRecordSuggestion.AreaNameForRecord(number) : "";
+                }
+                record.TextChanged += (_, _) => UpdateName();
+                if (hint != null)
+                {
+                    var property = System.ComponentModel.DependencyPropertyDescriptor.FromProperty(TextBlock.TextProperty, typeof(TextBlock));
+                    EventHandler changed = (_, _) => UpdateName();
+                    property.AddValueChanged(hint, changed);
+                    Closed += (_, _) => property.RemoveValueChanged(hint, changed);
+                }
+                UpdateName();
+            }
             Loaded += AddRowWindow_Loaded;
             Closed += (_, _) => { _recordCts?.Cancel(); _recordCheckCts?.Cancel(); };
         }
 
+        private bool DerivesAreaName => !_editMode && _recordColumn.Equals("Record", StringComparison.OrdinalIgnoreCase)
+            && Configurator.Core.Workspace.ScopedRecordSuggestion.IsAreasTable(_tableName)
+            && _columns.Any(c => !c.IsReadOnly && c.Name.Equals("Record", StringComparison.OrdinalIgnoreCase));
+
+        private int _page;
+        private void PreviousPage_Click(object sender, RoutedEventArgs e) { _page--; ArrangeFields(); }
+        private void NextPage_Click(object sender, RoutedEventArgs e) { _page++; ArrangeFields(); }
+
+        private void ArrangeFields()
+        {
+            if (FieldArea.ActualHeight <= 0 || FieldArea.ActualWidth <= 0) return;
+            int maxColumns = Math.Clamp((int)(FieldArea.ActualWidth / 195), 2, 6);
+            int page = 0;
+            double used = 0;
+            var pages = new List<(Border Card, UIElement Field, int Page)>();
+            foreach (Border card in FieldsPanel.Children)
+            {
+                var stack = (StackPanel)card.Child;
+                var header = (TextBlock)stack.Children[0];
+                var grid = (UniformGrid)stack.Children[1];
+                grid.Columns = Math.Min(maxColumns, grid.Children.Count);
+                header.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                double overhead = header.DesiredSize.Height + card.Padding.Top + card.Padding.Bottom +
+                    card.BorderThickness.Top + card.BorderThickness.Bottom + card.Margin.Bottom;
+                for (int i = 0; i < grid.Children.Count; i += grid.Columns)
+                {
+                    double rowHeight = 0;
+                    for (int j = i; j < Math.Min(i + grid.Columns, grid.Children.Count); j++)
+                    {
+                        var field = (FrameworkElement)grid.Children[j];
+                        field.Visibility = Visibility.Visible;
+                        field.Measure(new Size((FieldArea.ActualWidth - 24) / grid.Columns, double.PositiveInfinity));
+                        rowHeight = Math.Max(rowHeight, field.DesiredSize.Height);
+                    }
+                    double needed = rowHeight + (i == 0 ? overhead : 0);
+                    if (used > 0 && used + needed > FieldArea.ActualHeight)
+                    {
+                        page++;
+                        used = 0;
+                        needed = rowHeight + overhead;
+                    }
+                    used += needed;
+                    for (int j = i; j < Math.Min(i + grid.Columns, grid.Children.Count); j++)
+                        pages.Add((card, grid.Children[j], page));
+                }
+            }
+            _page = Math.Clamp(_page, 0, page);
+            foreach (var group in pages.GroupBy(entry => entry.Card))
+            {
+                group.Key.Visibility = group.Any(entry => entry.Page == _page) ? Visibility.Visible : Visibility.Collapsed;
+                foreach (var entry in group)
+                    entry.Field.Visibility = entry.Page == _page ? Visibility.Visible : Visibility.Collapsed;
+            }
+            PageControls.Visibility = page > 0 ? Visibility.Visible : Visibility.Collapsed;
+            PageNumber.Text = $"{_page + 1} / {page + 1}";
+            PreviousPage.IsEnabled = _page > 0;
+            NextPage.IsEnabled = _page < page;
+        }
         private void GenerateFields()
         {
             FieldsPanel.Children.Clear();
@@ -111,8 +187,8 @@ namespace Configurator
             {
                 var groupBorder = new Border
                 {
-                    Margin = new Thickness(0, 0, 0, 10),
-                    Padding = new Thickness(10, 8, 10, 8),
+                    Margin = new Thickness(0, 0, 0, 5),
+                    Padding = new Thickness(10, 5, 10, 5),
                     BorderThickness = new Thickness(1),
                     CornerRadius = new CornerRadius(7)
                 };
@@ -125,45 +201,46 @@ namespace Configurator
                     Text = group.Key,
                     FontSize = 12,
                     FontWeight = FontWeights.SemiBold,
-                    Margin = new Thickness(0, 0, 0, 7)
+                    Margin = new Thickness(0, 0, 0, 4)
                 };
                 header.SetResourceReference(TextBlock.ForegroundProperty, "BrushTextSecondary");
                 groupPanel.Children.Add(header);
 
-                var fieldsGrid = new UniformGrid { Columns = 3 };
+                var fieldsGrid = new UniformGrid { Columns = Math.Min(4, group.Count()) };
                 foreach (var col in group.OrderBy(c => InputPlaceholder.FieldOrder(c.Name)))
                 {
-                    var fieldPanel = new StackPanel { Margin = new Thickness(0, 0, 12, 8) };
+                    var fieldPanel = new StackPanel { Margin = new Thickness(0, 0, 8, 4) };
                     bool isKey = col.Name.Equals(_recordColumn, StringComparison.OrdinalIgnoreCase);
                     bool isRecord = isKey && col.Name.Equals("Record", StringComparison.OrdinalIgnoreCase);
                     bool isClassNumber = _forcedClassNumber.HasValue &&
                         !string.IsNullOrWhiteSpace(_classNumberColumn) &&
                         col.Name.Equals(_classNumberColumn, StringComparison.OrdinalIgnoreCase);
-                    string titleText = isClassNumber ? "🔒 " : (isRecord ? "↻ " : (isKey ? "🔑 " : ""));
+                    bool isAreaName = DerivesAreaName && col.Name.Equals("AreaName", StringComparison.OrdinalIgnoreCase);
+                    string titleText = isClassNumber || isAreaName ? "🔒 " : (isRecord ? "↻ " : (isKey ? "🔑 " : ""));
                     titleText += $"{col.Name} ({col.DataType})";
-                    if (col.IsNullable) titleText += " — nullable";
+
                     if (col.HasDefault) titleText += " — default";
 
                     var label = new TextBlock
-                    { Text = titleText, FontSize = 10, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 3) };
+                    { Text = titleText, ToolTip = titleText, TextTrimming = TextTrimming.CharacterEllipsis, FontSize = 12, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 3) };
                     label.SetResourceReference(TextBlock.ForegroundProperty, "BrushText");
 
                     bool hasLookupDefinition = _lookupOptions.TryGetValue(col.Name, out var options);
                     bool hasLookupOptions = hasLookupDefinition && options.Count > 0;
                     // The class number is assigned by the selected class, not by a lookup picker.
-                    bool isLookup = !isClassNumber && (hasLookupDefinition || IsKnownLookupField(col.Name));
+                    bool isLookup = !MsTypeCatalog.IsField(col.Name) && !isAreaName && !isClassNumber && (hasLookupDefinition || IsKnownLookupField(col.Name));
                     options ??= new List<LookupOption>();
                     Control input;
                     if (isLookup)
                     {
-                        var combo = new ComboBox { Width = 290, Height = 30, FontSize = 12, ItemsSource = options, DisplayMemberPath = nameof(LookupOption.Display), SelectedValuePath = nameof(LookupOption.Key) };
+                        var combo = new ComboBox { Height = 30, FontSize = 13, ItemsSource = options, DisplayMemberPath = nameof(LookupOption.Display), SelectedValuePath = nameof(LookupOption.Key) };
                         _lookupInputs[col.Name] = combo;
                         if (!hasLookupOptions) { combo.IsEnabled = false; combo.ToolTip = "Для связанного поля не удалось загрузить справочник. Значение нельзя вводить вручную; проверьте подключение и наличие таблицы-справочника."; }
                         input = combo;
                     }
                     else
                     {
-                        input = new TextBox { Width = 290, Height = 30, Padding = new Thickness(8, 5, 8, 5), FontSize = 12 };
+                        input = new TextBox { Height = 30, Padding = new Thickness(8, 5, 8, 5), FontSize = 13 };
                     }
                     var textBox = input as TextBox;
                     if (isClassNumber && textBox != null)
@@ -180,16 +257,41 @@ namespace Configurator
                                 : !string.IsNullOrWhiteSpace(_plcColumn) ? "Предложение: последний Record для выбранного PLC + 1. Значение можно изменить вручную." : "Предложение: последний Record + 1. Значение можно изменить вручную.")
                             : (col.HasDefault ? "Пусто → значение по умолчанию" : col.IsNullable ? "Пусто → NULL" : "Обязательное поле");
 
+                    if (isAreaName)
+                    {
+                        textBox.IsReadOnly = true;
+                        textBox.ToolTip = "Название формируется из Record, например 6 → 006.";
+                    }
                     fieldPanel.Children.Add(label);
                     if (!_editMode && textBox != null && (isRecord || PlcAddressCatalog.IsSuggestedField(col.Name)))
                     {
-                        var hint = new TextBlock { Text = isRecord ? "Введите Record" : "Введите адрес" };
+                        var hint = new TextBlock { Text = "—" };
                         _hints[col.Name] = hint;
                         if (isRecord && _autoRecordValue > 0)
                             hint.Text = _autoRecordValue.ToString(CultureInfo.InvariantCulture);
                         var editor = InputPlaceholder.Wrap(textBox, hint);
+                        editor.HorizontalAlignment = HorizontalAlignment.Stretch;
                         fieldPanel.Children.Add(isRecord ? editor : InputPlaceholder.WithAddressList(editor, textBox,
                             () => Task.FromResult(_addresses.GetValueOrDefault(col.Name))));
+                    }
+                    else if (textBox != null && InputPlaceholder.IsFlag(col))
+                    {
+                        fieldPanel.Children.Add(InputPlaceholder.Flag(col, textBox));
+                    }
+                    else if (textBox != null)
+                    {
+                        var editor = InputPlaceholder.WrapField(textBox, col);
+                        if (_msTypes != null && MsTypeCatalog.IsField(col.Name))
+                        {
+                            var scope = ProjectClassCatalog.FindClassColumn(_columns.Select(c => c.Name));
+                            fieldPanel.Children.Add(InputPlaceholder.WithAddressList(editor, textBox, () =>
+                                _msTypes(_forcedClassNumber?.ToString() ?? (scope == null ? null : ReadInput(scope))), true));
+                        }
+                        else fieldPanel.Children.Add(editor);
+                    }
+                    else if (input is ComboBox picker)
+                    {
+                        fieldPanel.Children.Add(InputPlaceholder.Lookup(picker));
                     }
                     else fieldPanel.Children.Add(input);
                     if (textBox != null) _fieldInputs[col.Name] = textBox;
@@ -311,8 +413,8 @@ namespace Configurator
             var addressHints = _hints.Where(pair => PlcAddressCatalog.IsSuggestedField(pair.Key)).ToList();
             _addresses.Clear();
             bool needsPlc = string.IsNullOrWhiteSpace(plcText);
-            if (recordHint != null) recordHint.Text = needsPlc ? "Выберите PLC" : "Введите Record";
-            foreach (var hint in addressHints) hint.Value.Text = needsPlc && _freeAddressProvider != null ? "Выберите PLC" : "Введите адрес";
+            if (recordHint != null) recordHint.Text = needsPlc ? "PLC" : "—";
+            foreach (var hint in addressHints) hint.Value.Text = needsPlc && _freeAddressProvider != null ? "PLC" : "—";
             BtnConfirm.IsEnabled = true;
             if (string.IsNullOrWhiteSpace(plcText)) return;
             string classValue = ReadRecordScopeClass();
@@ -371,7 +473,7 @@ namespace Configurator
                 string fieldName = colInfo.Name;
                 string text = _lookupInputs.TryGetValue(fieldName, out var lookupBox)
                     ? lookupBox.SelectedValue?.ToString() ?? ""
-                    : _fieldInputs.TryGetValue(fieldName, out var textBoxValue) ? textBoxValue.Text.Trim() : "";
+                    : _fieldInputs.TryGetValue(fieldName, out var textBoxValue) ? InputPlaceholder.FieldValue(textBoxValue).Trim() : "";
                 if (colInfo == null || colInfo.IsReadOnly)
                     continue;
 

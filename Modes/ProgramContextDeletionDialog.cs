@@ -54,7 +54,7 @@ internal static class ProgramContextDeletionDialog
 
 public partial class ProjectModeView
 {
-    private async Task DeleteProgramFromListAsync(Dictionary<string, object> source, int generation)
+    private async Task DeleteProgramFromListAsync(Dictionary<string, object> source, int generation, Core.Projects.ProjectRecord? assembly = null)
     {
         try
         {
@@ -65,17 +65,26 @@ public partial class ProjectModeView
                 ? new ProgramManagementRepository(_offlineSource)
                 : new ProgramManagementRepository(_connection.ToConnectionString(_selectedDatabase));
             var preview = await repository.PrepareContextReplacementAsync(context, null, source);
-            if (generation != _workspaceGeneration || !IsVisible || !ProgramContextDeletionDialog.Confirm(Window.GetWindow(this), preview, out var replacement) ||
+            bool Current() => generation == _workspaceGeneration && IsVisible && (assembly == null ||
+                (_workspace is { IsReadOnly: false } && (ObjectList.SelectedItem as ObjectItem)?.AssemblyProgram == assembly));
+            if (!Current()) return;
+            object? replacement = null;
+            bool confirmed = assembly == null ? ProgramContextDeletionDialog.Confirm(Window.GetWindow(this), preview, out replacement)
+                : ModernDialog.Show(Window.GetWindow(this), $"Удалить Object «{AssemblyLabel(assembly)}» и записи программы?\n" +
+                    string.Join("\n", preview.Dependencies.Where(p => p.Value.Count > 0).Select(p => $"{p.Key} · {p.Value.Count}")) +
+                    "\nСтатусы, датчики и справочник шагов сохранятся.", "Удаление Object", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+            if (!confirmed || !Current() ||
                 generation != _workspaceGeneration || !IsVisible || !UserAuthorizationService.Require(Permission.DeleteData)) return;
-            var changes = await repository.ReplaceAndDeleteContextAsync(preview, replacement);
+            var changes = await repository.ReplaceAndDeleteContextAsync(preview, replacement, deleteContents: assembly != null);
             var table = ProgramManagementRepository.ProgramTable;
             var identity = changes[^1].IdentityBefore.ToDictionary(pair => pair.Key, pair => pair.Value.ToObject(), StringComparer.OrdinalIgnoreCase);
-            var description = replacement == null ? "Удалена программа" : $"Удалена программа, перенесено связанных записей: {changes.Count - 1}";
+            var description = assembly != null ? $"Удалён Object «{AssemblyLabel(assembly)}», записей: {changes.Count}" : replacement == null ? "Удалена программа" : $"Удалена программа, перенесено связанных записей: {changes.Count - 1}";
             RecordMode3Mutation(table, ChangeJournalOperationKind.Delete, description, source, null!, identity, null!, generation,
                 relatedChanges: changes.SkipLast(1).ToList(),
-                journalOperationKind: replacement == null ? ChangeJournalOperationKind.Delete : ChangeJournalOperationKind.Composite);
+                journalOperationKind: changes.Count == 1 ? ChangeJournalOperationKind.Delete : ChangeJournalOperationKind.Composite);
             if (generation != _workspaceGeneration) return;
-            await LoadObjectsAsync();
+            if (assembly != null && _configurationKind == ConfigurationKind.Objects) await LoadAssemblyListAsync();
+            else await LoadObjectsAsync();
             TxtStatus.Text = description;
             ShowActionFeedback(description);
         }

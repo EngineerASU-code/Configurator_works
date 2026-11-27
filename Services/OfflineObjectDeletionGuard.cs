@@ -12,6 +12,36 @@ namespace Configurator;
 
 internal static class OfflineObjectDeletionGuard
 {
+    internal static void CheckCompareDeletion(OfflineProjectDataSource source, ProjectRecord target)
+    {
+        var project = source.Project;
+        var captured = DatabaseGraphRelationMaterializer.ReadCapturedSchema(project.Architecture["physicalSchema"]);
+        var schema = DatabaseGraphRelationMaterializer.WithProjectTables(captured, project.TableSchemas);
+        DatabaseArchitectureAnalyzer.AddScalarConventionRelations(schema);
+        KnownProjectRelationRules.Add(schema);
+        var document = new GraphRelationStore(project).Load(strict: true);
+        var relations = DatabaseGraphRelationMaterializer.Materialize(schema,
+            new GraphRelationProjectDocument { ManualRelations = document.ManualRelations });
+        var resolved = GraphRelationDefinition.ResolveTableName(schema.Tables.Select(t => t.FullName), target.TableName);
+        var table = schema.FindTable(resolved) ?? throw new InvalidOperationException("Не удалось проверить таблицу удаляемого объекта.");
+        foreach (var relation in relations.Where(r => r.Target.Equals(table.FullName, StringComparison.OrdinalIgnoreCase)))
+        {
+            var childTable = schema.FindTable(relation.Source)!;
+            var columns = relation.SourceColumns.Zip(relation.TargetColumns).ToArray();
+            if (columns.Length == 0 || relation.SourceColumns.Count != relation.TargetColumns.Count ||
+                columns.Any(pair => !target.Values.ContainsKey(pair.Second)))
+                throw new InvalidOperationException($"Невозможно проверить связь {relation.Source} с {relation.Target}.");
+            foreach (var child in source.GetRecords(relation.Source))
+            {
+                if (ReferenceEquals(child, target)) continue;
+                if (!columns.All(pair => CouldMatch(child.Values[pair.First], target.Values[pair.Second],
+                    childTable.Columns.Single(c => c.Name.Equals(pair.First, StringComparison.OrdinalIgnoreCase)).DataType,
+                    table.Columns.Single(c => c.Name.Equals(pair.Second, StringComparison.OrdinalIgnoreCase)).DataType))) continue;
+                throw new InvalidOperationException($"Удаление остановлено. На {relation.Target} ссылается {relation.Source} ({string.Join(", ", relation.SourceColumns)}), запись {child.Key}. Сначала измените или удалите ссылку.");
+            }
+        }
+    }
+
     public static IReadOnlyList<DependencyReplacementWindow.DependencyOption> BuildOptions(
         OfflineProjectDataSource source, string tableName, IReadOnlyList<Dictionary<string, object?>> targets, Func<DatabaseGraphRelation, bool>? includeRelation = null)
     {

@@ -27,10 +27,13 @@ public sealed class ProjectCompareSettingsStore
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (!File.Exists(_path)) return new ProjectCompareSettings([], []);
-        await using var stream = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, useAsync: true);
+        await using var stream = OpenSnapshot();
         return await JsonSerializer.DeserializeAsync<ProjectCompareSettings>(stream, cancellationToken: cancellationToken)
             .ConfigureAwait(false) ?? throw new InvalidDataException("Файл проектных настроек содержит NULL.");
     }
+
+    internal FileStream OpenSnapshot() =>
+        new(_path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 81920, useAsync: true);
 
     public async Task SaveAsync(ProjectCompareSettings settings, string expectedFingerprint, CancellationToken cancellationToken = default)
     {
@@ -47,7 +50,8 @@ public sealed class ProjectCompareSettingsStore
         {
             await using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, useAsync: true))
                 await JsonSerializer.SerializeAsync(stream, settings, Options, cancellationToken).ConfigureAwait(false);
-            File.Move(temp, _path, true);
+            if (File.Exists(_path)) File.Replace(temp, _path, null);
+            else File.Move(temp, _path);
         }
         finally
         {

@@ -35,8 +35,7 @@ public sealed partial class ProgramManagementRepository
             .Select(group => group.Key).Order().ToArray();
         var childScope = new Dictionary<string, object>(scope, StringComparer.OrdinalIgnoreCase) { ["Step_Number"] = number };
         var children = new Dictionary<string, IReadOnlyList<IReadOnlyDictionary<string, object>>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var table in new[] { ParameterTable, RecipeValuesTable })
-            children.Add(table, await ReadContextReplacementRowsAsync(table, childScope, CancellationToken.None));
+        children.Add(RecipeValuesTable, await ReadContextReplacementRowsAsync(RecipeValuesTable, childScope, CancellationToken.None));
         return new StepDeletionPreview(rows, destinations, number, incomingCount, candidates, children);
     }
 
@@ -49,7 +48,6 @@ public sealed partial class ProgramManagementRepository
         var scope = ProgramScope(context, includeSequence: true);
         var target = new Dictionary<string, object>(scope, StringComparer.OrdinalIgnoreCase) { ["SeqStep_Number"] = preview.Number };
         var childScope = new Dictionary<string, object>(scope, StringComparer.OrdinalIgnoreCase) { ["Step_Number"] = preview.Number };
-        var children = new[] { ParameterTable, RecipeValuesTable };
         var keys = UniqueKeyColumns[TransitionTable];
         var journal = new List<ChangeJournalRowChange>();
 
@@ -68,34 +66,30 @@ public sealed partial class ProgramManagementRepository
             EnsureSnapshotMatches(preview.Rows, rows);
             var byNumber = rows.ToDictionary(row => ReadStepNumber(row["SeqStep_Number"]));
             EnsureSnapshotMatches(new[] { expected }, new[] { byNumber[preview.Number] });
-            foreach (var child in children)
-                EnsureSnapshotMatches(preview.Children[child], await readChildren(child, childScope));
+            var recipeRows = preview.Children[RecipeValuesTable];
+            EnsureSnapshotMatches(recipeRows, await readChildren(RecipeValuesTable, childScope));
 
-            foreach (var recipe in preview.Children[RecipeValuesTable])
-                if (!preview.Children[ParameterTable].Any(parameter =>
-                        ValuesEqual(parameter["Record"], recipe["Record"]) && ValuesEqual(parameter["Type"], recipe["Type"])))
-                    throw new InvalidOperationException("Перенос значений рецептов заблокирован: один из рецептов ссылается на параметр, отсутствующий на исходном шаге.");
-
-            foreach (var child in children.Where(name => preview.Children[name].Count > 0))
+            if (recipeRows.Count > 0)
             {
-                var childKeys = child == ParameterTable ? UniqueKeyColumns[ParameterTable] : RecipeValueKey;
-                foreach (var before in preview.Children[child])
+                var definitions = InParameterScope(await readChildren(ParameterTable, scope), 1);
+                foreach (var before in recipeRows)
                 {
-                    var key = ContextReplacementKey(before, childKeys);
+                    if (definitions.Count(parameter => ValuesEqual(parameter["Record"], before["Record"])
+                            && ValuesEqual(parameter["Type"], before["Type"])) != 1)
+                        throw new InvalidOperationException("Для значения рецепта не найдено однозначное определение параметра шага.");
+                    var key = ContextReplacementKey(before, RecipeValueKey);
                     var newValue = Convert.ChangeType(replacement, before["Step_Number"].GetType(), CultureInfo.InvariantCulture);
                     var after = new Dictionary<string, object>(before, StringComparer.OrdinalIgnoreCase) { ["Step_Number"] = newValue };
-                    var newKey = ContextReplacementKey(after, childKeys);
-                    if ((await readChildren(child, newKey)).Count != 0)
-                        throw new InvalidOperationException($"Перенос на шаг {replacement} невозможен: в {child} уже есть строка с таким составным ключом.");
-                    await moveChild(child, childKeys, key, newValue);
-                    var actualChild = await readChildren(child, newKey);
+                    var newKey = ContextReplacementKey(after, RecipeValueKey);
+                    if ((await readChildren(RecipeValuesTable, newKey)).Count != 0)
+                        throw new InvalidOperationException($"Перенос на шаг {replacement} невозможен: в {RecipeValuesTable} уже есть строка с таким составным ключом.");
+                    await moveChild(RecipeValuesTable, RecipeValueKey, key, newValue);
+                    var actualChild = await readChildren(RecipeValuesTable, newKey);
                     EnsureSnapshotMatches(new[] { after }, actualChild);
-                    journal.Add(ContextReplacementJournal(child, childKeys, before, actualChild[0]));
+                    journal.Add(ContextReplacementJournal(RecipeValuesTable, RecipeValueKey, before, actualChild[0]));
                 }
             }
-
-            foreach (var child in children)
-                EnsureSnapshotMatches(Array.Empty<IReadOnlyDictionary<string, object>>(), await readChildren(child, childScope));
+            EnsureSnapshotMatches(Array.Empty<IReadOnlyDictionary<string, object>>(), await readChildren(RecipeValuesTable, childScope));
 
             var updated = new List<int>();
             var expectedAfter = new List<IReadOnlyDictionary<string, object>>();
@@ -129,7 +123,7 @@ public sealed partial class ProgramManagementRepository
             {
                 var schema = GetOfflineSchema(TransitionTable);
                 foreach (var other in _offline.Project.TableSchemas.Where(table =>
-                    table.TableName != TransitionTable && !children.Contains(table.TableName, StringComparer.OrdinalIgnoreCase) &&
+                    table.TableName != TransitionTable && table.TableName != ParameterTable && table.TableName != RecipeValuesTable &&
                     HasStepContextColumns(table.Columns.Select(column => column.Name), scope.Keys)))
                     if (SnapshotOfflineRows(other.TableName, scope).Count > 0)
                         throw new InvalidOperationException($"Не подтверждена замена ссылок в {other.TableName}.");
@@ -184,11 +178,10 @@ public sealed partial class ProgramManagementRepository
                 throw new InvalidOperationException("Изменение вхождения не подтвердилось. Удаление отменено.");
         }
 
-        foreach (var child in children.Where(name => preview.Children[name].Count > 0))
+        if (preview.Children[RecipeValuesTable].Count > 0)
         {
-            var childKeys = child == ParameterTable ? UniqueKeyColumns[ParameterTable] : RecipeValueKey;
-            await EnsureUniqueIndexAsync(connection, transaction, child, childKeys, ct);
-            await EnsureSafeReplacementSqlAsync(connection, transaction, child, ct);
+            await EnsureUniqueIndexAsync(connection, transaction, RecipeValuesTable, RecipeValueKey, ct);
+            await EnsureSafeReplacementSqlAsync(connection, transaction, RecipeValuesTable, ct);
         }
 
         await ApplyAsync(onlineSchema,
